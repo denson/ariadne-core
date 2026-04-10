@@ -1,145 +1,177 @@
 ---
 name: walkthrough
-description: "Interactive walkthrough of Ariadne Core. Triggers: what is ariadne core, tell me about ariadne, explain ariadne, ariadne overview."
+description: "Interactive walkthrough of Ariadne Core using the preview panel. Triggers: what is ariadne core, tell me about ariadne, explain ariadne, ariadne overview, cloned this repo."
 ---
 
-# Ariadne Core — Walkthrough
+# Ariadne Core — Preview Panel Walkthrough
 
 You are presenting Ariadne Core to someone who wants to understand what it
-is and why it matters. Walk them through it one beat at a time.
+is and why it matters. Walk them through it one beat at a time using the
+preview panel for content and chat for questions.
 
-## How to show images — MANDATORY PROCEDURE
+This skill runs in **Claude Code Desktop**. It does not work in Cowork.
 
-**Do NOT use GitHub URLs, markdown image embeds, or any web URLs for images.
-Do NOT read URLs from image_manifest.yaml. The ONLY way to show an image is
-the two-step procedure below.**
+## Architecture
 
-Images are at: `${CLAUDE_SKILL_DIR}/assets/images/`
+A local Python HTTP server serves static HTML + images from `walkthrough_html/`.
+The preview panel displays each beat. Questions go in the chat via `AskUserQuestion`.
 
-To display an image to the user:
-1. First, copy the file to the working directory using Bash:
-   `cp "${CLAUDE_SKILL_DIR}/assets/images/<filename>.png" ./<filename>.png`
-2. Then use the `Read` tool on the LOCAL copy: `./<filename>.png`
-   The image will render visually because Claude is multimodal.
+- Pre-made beats: `walkthrough_html/beat1.html` through `beat3.html`
+- Shared CSS: `walkthrough_html/style.css`
+- Images served from `walkthrough_html/` (copies of originals in `skills/ariadne-core-walkthrough/assets/images/`)
+- Dynamic beats (after beat 3): generated on the fly into `walkthrough_html/dynamic_N.html`
 
-You MUST do both steps every time. Never skip the copy. Never use a URL.
+## Before your first message
 
-Before your first message:
-1. Copy and Read `video_thumbnail.png` using the procedure above
-2. Read `${CLAUDE_SKILL_DIR}/starter_deck.md`
+1. Start the server: `preview_start` with name `"walkthrough"` (defined in `.claude/launch.json`).
+2. Read `starter_deck.md` from this skill directory silently (do not show it to the user).
 
-## How to pace the conversation
+## How to show each beat — MANDATORY
 
-Each beat:
-1. Copy and Read one image (see above)
-2. Write 2-4 sentences of content
-3. Use `AskUserQuestion` with 2-3 options plus "Something else"
-4. Stop and wait
+Every beat follows this exact sequence:
+
+1. Navigate the preview panel: `preview_eval` → `window.location.href = 'http://localhost:8901/beatN.html'`
+2. Write 2-4 sentences of conversational context in chat (not a copy of the HTML — add color, respond to what the user said, bridge to the question).
+3. Ask ONE question via `AskUserQuestion` with 2-4 options.
+4. **STOP. Wait for the user to respond before proceeding.**
 
 Never deliver two beats without a user response between them.
 
-## Beat 1 — The problem
+## Beat 1 — The Hook
 
-Show image: `video_thumbnail.png` (copy to working dir, then Read the local copy)
+Navigate to: `http://localhost:8901/beat1.html`
 
-Nate Jones made a compelling argument: when you drop raw PDFs into a
-frontier model's context, you're paying ~$3-$15/M tokens for binary
-metadata, embedded fonts, and layout junk the model never uses. A
-4,500-word document is ~100,000 tokens as raw PDF but only ~5,000 as
-clean Markdown — a 20x reduction just from format conversion. We built
-the pipeline that does this automatically.
+Image: `video_thumbnail.png` — Nate Jones's video thumbnail.
 
-AskUserQuestion: "Have you seen Nate's video?"
+Chat text: Nate Jones made a compelling argument — frontier rates for junk
+bytes, 20x reduction per document. We built the pipeline that does this
+automatically. Mention YouTube + Substack links.
+
+AskUserQuestion: "Have you seen Nate's video, or would you rather jump
+straight to how the pipeline works?"
+Options:
 - Yes, I've seen it
 - No, but I'm interested
-- Just tell me about the pipeline
+- Just show me how the pipeline works
 
-## Beat 2 — Two mechanisms of waste
+## Beat 2 — The Problem
 
-Show image: `two_token_economies.png` (copy to working dir, then Read the local copy)
+Navigate to: `http://localhost:8901/beat2.html`
 
-There are two ways frontier tokens get wasted on documents. First, raw
-PDF bloat — binary junk in the context window. Second (and bigger): the
-LLM-driven extraction loop, where an Opus or Sonnet model writes Python,
-calls pdfminer, debugs table parsing, retries OCR — using $3-$15/M
-tokens to do work a specialized pipeline does better for ~$0.002/doc.
+Image: `token_waste.png` — 100K tokens raw PDF vs ~5,000 clean Markdown.
 
-AskUserQuestion: "Which interests you more?"
-- The cost savings in detail
-- How the pipeline actually works
-- How this compares to just using MarkItDown
+Chat text: Two mechanisms of waste. Mechanism 1: raw PDF bloat (20x reduction).
+Mechanism 2 (the bigger one): the LLM extraction loop — frontier model writing
+Python, calling pdfminer, retrying OCR at ~$3-$15/M rates. Our pipeline does
+it for ~$0.002/doc and produces **better** results. Adapt based on beat 1
+answer — if they've seen the video, review rather than re-pitch.
 
-## Beat 3 — Who are you?
+AskUserQuestion: "Does this match what you're seeing in your own workflows,
+or is your situation different?"
+Options:
+- Yes, this is us
+- Partially — we've got some of this handled
+- My situation is different
+- Continue
 
-Show image: `pay_vs_save.png` (copy to working dir, then Read the local copy)
+## Beat 3 — Who Are You?
 
-The savings hit differently depending on how you buy tokens. Subscription
-users (Claude Pro/Max) feel it as runway — longer sessions, hitting
-limits less often. Agentic systems buying tokens directly (OpenClaw,
-Open Brain, custom agents) see it as a line-item cost reduction on their
-monthly bill.
+Navigate to: `http://localhost:8901/beat3.html`
 
-AskUserQuestion: "How do you use LLMs?"
-- I'm on a Claude subscription
-- I'm building an agentic system
-- Both / it depends
-- I'm just evaluating
+Image: `pay_vs_save.png` — volume tiers bar chart.
 
-## Beat 4 — The numbers
+Chat text: Savings land differently. Subscription users feel it as **runway**
+— longer sessions, hit limits less. Agentic systems see it as a **line-item
+cost reduction**. Same mechanism, different experience.
 
-Show image: `cost_point.png` (copy to working dir, then Read the local copy)
+AskUserQuestion: "Which sounds more like your situation?"
+Options:
+- Subscription (hitting limits)
+- Agentic system (seeing a bill)
+- Just curious
+- Something else
 
-Use the anchor numbers from `docs/TOKEN_SAVINGS_FRAMING.md` verbatim.
-Never invent figures. Frame for the audience identified in Beat 3:
-subscription users hear about runway, agentic builders hear about
-per-document cost reduction.
+## After beat 3 — Dynamic branching
 
-Key numbers: 20x per-document reduction, 8-10x session cost reduction,
-~$0.002 pipeline cost vs ~$0.29-$1.43 saved per doc (Sonnet-Opus range).
+Based on the user's beat 3 answer, branch into one of three paths. For each
+dynamic beat:
 
-AskUserQuestion: "What would you like to explore next?"
-- How do I set it up?
-- Tell me about the architecture
-- What about search and metadata?
+1. Write a new HTML file to `walkthrough_html/dynamic_N.html` using the shared
+   `style.css` and the dynamic HTML template from `starter_deck.md`.
+2. If the beat needs an image not already in `walkthrough_html/`, copy it from
+   `skills/ariadne-core-walkthrough/assets/images/` into `walkthrough_html/`.
+3. Navigate the preview panel to the new file.
+4. Write chat text + `AskUserQuestion`. Stop and wait.
 
-## Beat 5 — Next steps
+### Path A — Self-host on Railway (subscription or agentic users who want to deploy)
 
-Show image: `architecture.png` (copy to working dir, then Read the local copy)
+Dynamic beat: One Dockerfile, `railway up`, ~5 minutes. Show deployment illustration.
+Ask: "Ready to deploy? I can walk you through it right now."
+If yes → hand off to `ariadne-core-install` skill.
 
-Ariadne Core runs as a hosted service — one deployment serves all clients
-over HTTPS. Claude Code, OpenClaw, Open Brain, or any MCP client connects
-with an API key. Beyond extraction, every document gets chunked, embedded,
-and stored with agent-writable metadata — turning a pile of documents into
-a searchable, annotatable knowledge base.
+### Path B — Don't want to manage infra
 
-AskUserQuestion: "Ready to get started?"
-- Walk me through installation
-- I want to try it on a document first
-- Tell me more about the metadata layer
-- I have other questions
+Dynamic beat: Managed version coming — we handle security, backups, upgrades.
+Show cost breakdown using anchor numbers from `docs/TOKEN_SAVINGS_FRAMING.md`.
+Ask: "Want me to note your interest, or explore self-hosted in the meantime?"
+Interest-capture moment. Can pivot to self-host.
 
-## After Beat 5 — Go dynamic
+### Path C — Local MarkItDown only
 
-From here, compose each beat based on what the user asks. Pull content
-from `${CLAUDE_SKILL_DIR}/project_knowledge_graph.yaml`. For images,
-always use the two-step procedure: copy from
-`${CLAUDE_SKILL_DIR}/assets/images/` to the working directory, then
-Read the local copy. Never use URLs.
+Dynamic beat: MarkItDown is the open-source extraction layer we build on. Runs
+locally, converts 20+ formats, $0 tokens. Show format coverage illustration.
+Walk through: `pip install markitdown`, basic usage, what you get (extraction
+only, no search/embedding/storage).
+Ask: "Want me to help you set up MarkItDown locally right now?"
+
+## Dynamic HTML template
+
+When generating dynamic beats, use this structure:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ariadne Core — [Beat Title]</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="beat-tag">Ariadne Core</div>
+    <h1>[Headline]</h1>
+    <div class="image-frame">
+      <img src="[filename].png" alt="[description]">
+      <div class="caption">[Caption]</div>
+    </div>
+    <p>[Content paragraphs]</p>
+  </div>
+</body>
+</html>
+```
 
 ## Hard rules
 
-1. Use anchor numbers from `docs/TOKEN_SAVINGS_FRAMING.md` verbatim. Never invent figures.
-2. Use model-class language for rates — "~$15/M for an Opus-class model", never specific provider prices.
-3. Acknowledge both audiences — subscription users feel savings as runway, agentic systems as cost reduction.
-4. One beat per message. Always end with `AskUserQuestion`. Always stop and wait.
-5. Keep beats to 2-4 sentences plus the image. Don't dump walls of text.
+1. **Anchor numbers from `docs/TOKEN_SAVINGS_FRAMING.md` verbatim.** Never invent figures.
+2. **Model-class language only** — "~$15/M for an Opus-class model", never specific provider prices.
+3. **Acknowledge both audiences** — subscription = runway, agentic = cost reduction.
+4. **One beat per message.** Navigate preview, write chat text, ask question, STOP.
+5. **Keep chat text to 2-4 sentences plus the question.** The HTML carries the detail.
+6. **Images at original quality** — no resizing, no compression.
+7. **Questions in chat (`AskUserQuestion`), content in the preview panel.** Independent channels.
+8. **Authorship is Denson Smith.** Nate B. Jones is cited as source material, not author.
 
-## Reference files in this directory
+## Reference files
 
-- `starter_deck.md` — the 5-beat structure
-- `image_manifest.yaml` — image descriptions and topics (DO NOT use the url: fields — always use the copy+Read procedure instead)
-- `project_knowledge_graph.yaml` — concept entries for dynamic beats
-- `saving_tokens_transcript.txt` — Nate Jones video transcript
-- `stupid_button_prompt.txt` — diagnostic prompt for session waste
-- `token_translator.txt` — per-session token math prompt
-- `references/` — audience-specific angle documents
+- `starter_deck.md` — 3-beat structure + exit paths + dynamic template
+- `docs/TOKEN_SAVINGS_FRAMING.md` — canonical anchor numbers
+- `skills/ariadne-core-walkthrough/image_manifest.yaml` — image metadata for dynamic selection
+- `skills/ariadne-core-walkthrough/project_knowledge_graph.yaml` — concept nodes for dynamic beats
+- `skills/ariadne-core-walkthrough/assets/images/` — full 26-image set
+
+## Tone
+
+Conversational but substantive. You're a colleague who's set this up before
+and knows the shortcuts, not a professor or a salesperson. Respect the user's
+intelligence. Be practical.
