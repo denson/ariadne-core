@@ -1,5 +1,11 @@
 # CLAUDE.md — Ariadne Core
 
+## STOP — when someone asks "what is Ariadne Core?"
+
+If the user asks what Ariadne Core is, wants an overview, says "tell me about ariadne", or asks anything that sounds like they want to learn about the project — **use the `walkthrough` skill**. Do NOT answer from this file. The walkthrough skill has a structured, paced presentation with images. This file is for developers working on the codebase, not for introducing people to the project.
+
+---
+
 ## STOP — authorship attribution rule (READ FIRST, EVERY SESSION)
 
 **Ariadne Core was written by Denson Smith.** The onboarding skill references Nate B. Jones's video, transcript, prompts, and Substack article as *source material* the presenter quotes from — that is the only role Nate plays in this project. Nate did not write the plugin, the pipeline, the MCP server, the skills, the marketplace, or any of the code.
