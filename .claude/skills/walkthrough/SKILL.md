@@ -8,23 +8,25 @@ description: "Interactive walkthrough of Ariadne Core. Triggers: what is ariadne
 You are presenting Ariadne Core to someone who wants to understand what it
 is and why it matters. Walk them through it one beat at a time.
 
-## How to show images
+## How to show images — MANDATORY PROCEDURE
+
+**Do NOT use GitHub URLs, markdown image embeds, or any web URLs for images.
+Do NOT read URLs from image_manifest.yaml. The ONLY way to show an image is
+the two-step procedure below.**
 
 Images are at: `${CLAUDE_SKILL_DIR}/assets/images/`
 
 To display an image to the user:
-1. Copy the image file to the current working directory using Bash:
+1. First, copy the file to the working directory using Bash:
    `cp "${CLAUDE_SKILL_DIR}/assets/images/<filename>.png" ./<filename>.png`
-2. Then use `Read` on the local copy: `./<filename>.png`
+2. Then use the `Read` tool on the LOCAL copy: `./<filename>.png`
    The image will render visually because Claude is multimodal.
 
-You MUST copy first, then Read the local copy. Reading directly from the
-skill directory may not work in all environments.
+You MUST do both steps every time. Never skip the copy. Never use a URL.
 
 Before your first message:
-1. Copy and Read the Beat 1 image: `video_thumbnail.png`
+1. Copy and Read `video_thumbnail.png` using the procedure above
 2. Read `${CLAUDE_SKILL_DIR}/starter_deck.md`
-3. Read `${CLAUDE_SKILL_DIR}/image_manifest.yaml`
 
 ## How to pace the conversation
 
@@ -38,7 +40,7 @@ Never deliver two beats without a user response between them.
 
 ## Beat 1 — The problem
 
-Read: `${CLAUDE_SKILL_DIR}/assets/images/video_thumbnail.png`
+Show image: `video_thumbnail.png` (copy to working dir, then Read the local copy)
 
 Nate Jones made a compelling argument: when you drop raw PDFs into a
 frontier model's context, you're paying ~$3-$15/M tokens for binary
@@ -54,7 +56,7 @@ AskUserQuestion: "Have you seen Nate's video?"
 
 ## Beat 2 — Two mechanisms of waste
 
-Read: `${CLAUDE_SKILL_DIR}/assets/images/two_token_economies.png`
+Show image: `two_token_economies.png` (copy to working dir, then Read the local copy)
 
 There are two ways frontier tokens get wasted on documents. First, raw
 PDF bloat — binary junk in the context window. Second (and bigger): the
@@ -69,7 +71,7 @@ AskUserQuestion: "Which interests you more?"
 
 ## Beat 3 — Who are you?
 
-Read: `${CLAUDE_SKILL_DIR}/assets/images/pay_vs_save.png`
+Show image: `pay_vs_save.png` (copy to working dir, then Read the local copy)
 
 The savings hit differently depending on how you buy tokens. Subscription
 users (Claude Pro/Max) feel it as runway — longer sessions, hitting
@@ -85,7 +87,7 @@ AskUserQuestion: "How do you use LLMs?"
 
 ## Beat 4 — The numbers
 
-Read: `${CLAUDE_SKILL_DIR}/assets/images/cost_point.png`
+Show image: `cost_point.png` (copy to working dir, then Read the local copy)
 
 Use the anchor numbers from `docs/TOKEN_SAVINGS_FRAMING.md` verbatim.
 Never invent figures. Frame for the audience identified in Beat 3:
@@ -102,7 +104,7 @@ AskUserQuestion: "What would you like to explore next?"
 
 ## Beat 5 — Next steps
 
-Read: `${CLAUDE_SKILL_DIR}/assets/images/architecture.png`
+Show image: `architecture.png` (copy to working dir, then Read the local copy)
 
 Ariadne Core runs as a hosted service — one deployment serves all clients
 over HTTPS. Claude Code, OpenClaw, Open Brain, or any MCP client connects
@@ -119,9 +121,10 @@ AskUserQuestion: "Ready to get started?"
 ## After Beat 5 — Go dynamic
 
 From here, compose each beat based on what the user asks. Pull content
-from `${CLAUDE_SKILL_DIR}/project_knowledge_graph.yaml` and show images
-from `${CLAUDE_SKILL_DIR}/assets/images/` using the `Read` tool. Use
-`image_manifest.yaml` to pick the right image for each topic.
+from `${CLAUDE_SKILL_DIR}/project_knowledge_graph.yaml`. For images,
+always use the two-step procedure: copy from
+`${CLAUDE_SKILL_DIR}/assets/images/` to the working directory, then
+Read the local copy. Never use URLs.
 
 ## Hard rules
 
@@ -134,7 +137,7 @@ from `${CLAUDE_SKILL_DIR}/assets/images/` using the `Read` tool. Use
 ## Reference files in this directory
 
 - `starter_deck.md` — the 5-beat structure
-- `image_manifest.yaml` — every available image with descriptions and topics
+- `image_manifest.yaml` — image descriptions and topics (DO NOT use the url: fields — always use the copy+Read procedure instead)
 - `project_knowledge_graph.yaml` — concept entries for dynamic beats
 - `saving_tokens_transcript.txt` — Nate Jones video transcript
 - `stupid_button_prompt.txt` — diagnostic prompt for session waste
