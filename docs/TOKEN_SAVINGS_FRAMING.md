@@ -243,8 +243,8 @@ This list exists because an agent (me) made every one of these mistakes in the s
 
 The original sources for the framing above. Read these if you want to go deeper or verify a number.
 
-- [`docs/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt`](skills/ariadne-core-walkthrough/saving_tokens_transcript.txt) — Nate Jones video transcript. Source of the 100K→5K and $8–$10 → ~$1 numbers, plus the six waste patterns.
-- [`docs/skills/ariadne-core-walkthrough/stupid_button_prompt.txt`](skills/ariadne-core-walkthrough/stupid_button_prompt.txt) — "Stupid Button" diagnostic prompt. Rates a user's token burn 1–10 across the six waste patterns.
-- [`docs/skills/ariadne-core-walkthrough/token_translator.txt`](skills/ariadne-core-walkthrough/token_translator.txt) — "Token Translator" prompt. Reconstructs the hidden token math of a session phase-by-phase.
+- [`skills/ariadne-core-walkthrough/saving_tokens_transcript.txt`](skills/ariadne-core-walkthrough/saving_tokens_transcript.txt) — Nate Jones video transcript. Source of the 100K→5K and $8–$10 → ~$1 numbers, plus the six waste patterns.
+- [`skills/ariadne-core-walkthrough/stupid_button_prompt.txt`](skills/ariadne-core-walkthrough/stupid_button_prompt.txt) — "Stupid Button" diagnostic prompt. Rates a user's token burn 1–10 across the six waste patterns.
+- [`skills/ariadne-core-walkthrough/token_translator.txt`](skills/ariadne-core-walkthrough/token_translator.txt) — "Token Translator" prompt. Reconstructs the hidden token math of a session phase-by-phase.
 - **Article:** "Your Claude Sessions Cost 10x What They Should" — https://natesnewsletter.substack.com/p/your-claude-sessions-cost-10x-what
 - **PromptKit:** https://promptkit.natebjones.com/20260330_161_promptkit_1

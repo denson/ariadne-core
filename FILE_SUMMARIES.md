@@ -54,7 +54,7 @@ An implementation specification for a new MCP HTTP proxy running on the host mac
 
 ---
 
-## docs/skills/ariadne-document-intelligence/
+## skills/ariadne-document-intelligence/
 
 ### README.md
 A skill installation guide for the ariadne-document-intelligence skill (v2.0.0), describing what the skill teaches agents (ingestion, search, collection management, caller metadata), listing requirements, installation locations for different clients, and supported formats including image limitations.

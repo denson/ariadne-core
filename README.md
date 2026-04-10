@@ -2,7 +2,7 @@
 
 Ariadne Core works with any agentic system — Claude Code, Open Brain, OpenClaw, Cursor, Gemini, OpenAI Desktop, and more — to dramatically reduce document ingestion tokens. Our tool directly addresses the token cost problem Nate is talking about in [this video](https://youtu.be/5ztI_dbj6ek?si=I_EbV_afT7f7r4X0) ([article version](https://natesnewsletter.substack.com/p/your-claude-sessions-cost-10x-what)), and more. The document ingestion deep-dive starts a bit after [4:20](https://youtu.be/5ztI_dbj6ek?t=260). We'll let him make the case — we'll just explain how we address the problem and how to set it up for you and your agents to use.
 
-[![Your Claude Sessions Cost 10x What They Should](docs/skills/ariadne-core-walkthrough/assets/images/video_thumbnail.png)](https://youtu.be/5ztI_dbj6ek?t=260)
+[![Your Claude Sessions Cost 10x What They Should](skills/ariadne-core-walkthrough/assets/images/video_thumbnail.png)](https://youtu.be/5ztI_dbj6ek?t=260)
 
 ## Install the plugin
 
@@ -219,7 +219,7 @@ curl -X POST https://your-url.up.railway.app/api/search \
 | Hetzner VPS | ~$4.50/mo | Best value for always-on |
 | Any Docker host | Varies | `docker compose up -d` with `Dockerfile` |
 
-All options use the same `Dockerfile` and environment variables. See [deploy skill](docs/skills/ariadne-core-deploy/SKILL.md) for platform-specific instructions.
+All options use the same `Dockerfile` and environment variables. See [deploy skill](skills/ariadne-core-deploy/SKILL.md) for platform-specific instructions.
 
 ## MCP tools
 
@@ -336,12 +336,12 @@ ariadne-core/
 
 | Skill | Runtime | What it does |
 |-------|---------|-------------|
-| [Router](docs/skills/ariadne-core-router/SKILL.md) | Any | Routes to the right skill and serves as onboarding entry point |
-| [Onboarding](docs/skills/ariadne-core-walkthrough/SKILL.md) | Cowork | Standalone visual walkthrough with illustrations |
-| [Install](docs/skills/ariadne-core-install/SKILL.md) | Claude Code / terminal agent | Deploy and connect |
-| [Deploy](docs/skills/ariadne-core-deploy/SKILL.md) | Claude Code / terminal agent | Platform-specific deployment |
-| [Document Intelligence](docs/skills/ariadne-document-intelligence/SKILL.md) | Any | Best practices for using the tools |
-| [Build](docs/skills/ariadne-core-build/SKILL.md) | Claude Code / terminal agent | Developing on the codebase |
+| [Router](skills/ariadne-core-router/SKILL.md) | Any | Routes to the right skill and serves as onboarding entry point |
+| [Onboarding](skills/ariadne-core-walkthrough/SKILL.md) | Cowork | Standalone visual walkthrough with illustrations |
+| [Install](skills/ariadne-core-install/SKILL.md) | Claude Code / terminal agent | Deploy and connect |
+| [Deploy](skills/ariadne-core-deploy/SKILL.md) | Claude Code / terminal agent | Platform-specific deployment |
+| [Document Intelligence](skills/ariadne-document-intelligence/SKILL.md) | Any | Best practices for using the tools |
+| [Build](skills/ariadne-core-build/SKILL.md) | Claude Code / terminal agent | Developing on the codebase |
 
 ## Compatible providers
 

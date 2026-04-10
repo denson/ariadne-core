@@ -7,7 +7,6 @@ description: |
   ariadne skill". For general questions like "what is ariadne core", "tell
   me about ariadne", or "how do I get started", the onboarding skill handles
   those directly.
-author: Denson Smith
 version: 3.1.0
 ---
 

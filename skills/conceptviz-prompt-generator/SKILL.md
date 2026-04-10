@@ -10,7 +10,6 @@ description: |
   doc", "generate image prompts", or asks about making documentation, READMEs, or
   skills more engaging with illustrations. If the user is working on a SKILL.md or
   onboarding document and mentions images at all, this is the right skill.
-author: Denson Smith
 version: 1.0.0
 ---
 

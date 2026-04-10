@@ -17,11 +17,11 @@ The following documents need cost/storage guidance for self-hosting users:
 
 - **README.md** — The existing "Cost" section covers API costs (embedding, vision) and platform costs but doesn't address storage growth over time. Add guidance on what a typical agentic workload looks like (agents ingesting autonomously, not humans uploading manually) and how that affects their Postgres instance sizing and costs over months.
 
-- **Onboarding skill** (`docs/skills/ariadne-core-walkthrough/SKILL.md`) — When walking users through deployment options, surface the cost trajectory. Don't just say "free tier works" — explain that the free tier works to start but an active agent will outgrow it and what the step-up looks like.
+- **Onboarding skill** (`skills/ariadne-core-walkthrough/SKILL.md`) — When walking users through deployment options, surface the cost trajectory. Don't just say "free tier works" — explain that the free tier works to start but an active agent will outgrow it and what the step-up looks like.
 
-- **Install skill** (`docs/skills/ariadne-core-install/SKILL.md`) — During deployment, help users choose an appropriately sized Postgres instance based on their expected usage. Ask about their use case (monitoring a few sources vs. deep research) and recommend accordingly.
+- **Install skill** (`skills/ariadne-core-install/SKILL.md`) — During deployment, help users choose an appropriately sized Postgres instance based on their expected usage. Ask about their use case (monitoring a few sources vs. deep research) and recommend accordingly.
 
-- **Deploy skill** (`docs/skills/ariadne-core-deploy/SKILL.md`) — Platform-specific sizing guidance. What Railway plan for what usage profile. When to upgrade.
+- **Deploy skill** (`skills/ariadne-core-deploy/SKILL.md`) — Platform-specific sizing guidance. What Railway plan for what usage profile. When to upgrade.
 
 ### Key points to convey
 

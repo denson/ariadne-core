@@ -15,7 +15,7 @@ Some fixes interact with each other. Changing how one tool serializes its respon
 ## REFERENCE DOCUMENTS
 
 1. **SPEC.md** (repo root) — the source of truth for how the server should behave
-2. **SKILL.md** (`docs/skills/ariadne-document-intelligence/SKILL.md`) — how agents are told to use the server
+2. **SKILL.md** (`skills/ariadne-document-intelligence/SKILL.md`) — how agents are told to use the server
 
 Read both completely before reading any code.
 

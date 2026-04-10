@@ -11,7 +11,7 @@ Fixes applied since last run:
 
 ## Instructions
 
-1. Read `SPEC.md` and `docs/skills/ariadne-document-intelligence/SKILL.md`
+1. Read `SPEC.md` and `skills/ariadne-document-intelligence/SKILL.md`
 2. Run all 14 tests from `tests/VALIDATE_SKILL.md` in order
 3. Follow all CRITICAL RULES from that file (tester not fixer, MCP tools only, no workarounds)
 4. Write the completed summary table and discrepancy report to `tests/VALIDATION_RESULTS_002.md`

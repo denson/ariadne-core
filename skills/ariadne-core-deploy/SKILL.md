@@ -6,7 +6,6 @@ description: |
   deployment status, or troubleshoot a deploy. Triggers: "deploy ariadne", "push to
   railway", "update the deployment", "deploy to fly.io", "check deploy status", or
   any request involving hosting, deploying, or managing an Ariadne Core instance.
-author: Denson Smith
 version: 1.0.0
 ---
 

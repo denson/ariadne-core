@@ -4,9 +4,9 @@ This document tells you exactly what to build, in what order, and how to verify 
 
 1. **`SPEC.md`** — how the tool should behave. Source of truth.
 2. **`FIXES.md`** — every gap between the spec and the current code, with target state, current state, what to change, and how to test.
-3. **`docs/skills/ariadne-document-intelligence/SKILL.md`** — the canonical skill describing target behavior as working reality. This is your acceptance test. After you finish, an agent following this skill should be able to use every feature it describes.
+3. **`skills/ariadne-document-intelligence/SKILL.md`** — the canonical skill describing target behavior as working reality. This is your acceptance test. After you finish, an agent following this skill should be able to use every feature it describes.
 
-Do not modify `SPEC.md` or `docs/skills/ariadne-document-intelligence/SKILL.md`. They define the target. You change the code to match them.
+Do not modify `SPEC.md` or `skills/ariadne-document-intelligence/SKILL.md`. They define the target. You change the code to match them.
 
 ---
 
@@ -323,7 +323,7 @@ Replace every instance of `"25+"` with `"over 20"` in these files:
 
 Delete the old skill directory:
 ```bash
-rm -rf docs/skills/ariadne-core-integration/
+rm -rf skills/ariadne-core-integration/
 ```
 
 **Validate:**
@@ -332,7 +332,7 @@ rm -rf docs/skills/ariadne-core-integration/
 grep -r "25+" src/ --include="*.py"
 
 # Should not exist
-ls docs/skills/ariadne-core-integration/
+ls skills/ariadne-core-integration/
 # Expected: No such file or directory
 ```
 
@@ -385,7 +385,7 @@ All tests should pass, including the new ones you wrote.
 
 ### 2. Skill-based acceptance test
 
-Read `docs/skills/ariadne-document-intelligence/SKILL.md`. Walk through each process it describes and verify the tool supports it:
+Read `skills/ariadne-document-intelligence/SKILL.md`. Walk through each process it describes and verify the tool supports it:
 
 **Ingesting a document (skill section "Process: Ingesting a document"):**
 ```python
@@ -438,7 +438,7 @@ grep -rn "25+" src/ --include="*.py"
 # Should return nothing
 
 # Old skill directory deleted
-test -d docs/skills/ariadne-core-integration && echo "FAIL: old skill dir still exists" || echo "PASS"
+test -d skills/ariadne-core-integration && echo "FAIL: old skill dir still exists" || echo "PASS"
 
 # All six tools exist in MCP server
 python -c "

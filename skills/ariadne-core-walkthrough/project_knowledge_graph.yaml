@@ -48,9 +48,9 @@ concepts:
       - file: docs/TOKEN_SAVINGS_FRAMING.md
         section: "Mechanism 1 — Raw PDF bloat in the context window"
         github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
-      - file: docs/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+      - file: skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
         section: "100K → 5K reduction"
-        github_url: https://github.com/denson/ariadne-core/blob/main/docs/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
     images: [onboarding_token_waste, roadmap_two_token_economies, onboarding_format_mosaic]
 
   - id: mechanism_2_extraction_loop
@@ -138,9 +138,9 @@ concepts:
       magnitude smaller.
     see_also: [nate_jones_video, mechanism_1_raw_pdf_bloat, mechanism_2_extraction_loop, two_audiences_framing, stupid_button_diagnostic]
     sources:
-      - file: docs/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+      - file: skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
         section: "10x session cost"
-        github_url: https://github.com/denson/ariadne-core/blob/main/docs/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
     images: [video_thumbnail, roadmap_two_token_economies]
 
   - id: per_doc_pipeline_cost
@@ -210,9 +210,9 @@ concepts:
       - file: SPEC.md
         section: "search tool"
         github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
-      - file: docs/skills/ariadne-document-intelligence/SKILL.md
+      - file: skills/ariadne-document-intelligence/SKILL.md
         section: "Retrieval"
-        github_url: https://github.com/denson/ariadne-core/blob/main/docs/skills/ariadne-document-intelligence/SKILL.md
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-document-intelligence/SKILL.md
     images: [onboarding_search_dont_send, onboarding_connect_claude_code]
 
   - id: model_class_routing
@@ -300,9 +300,9 @@ concepts:
       host (Hetzner, DigitalOcean — ~$4.50/mo, bring your own HTTPS).
     see_also: [self_host_break_even, managed_pricing_overview, the_extraction_pipeline]
     sources:
-      - file: docs/skills/ariadne-core-deploy/SKILL.md
+      - file: skills/ariadne-core-deploy/SKILL.md
         section: "Railway deployment"
-        github_url: https://github.com/denson/ariadne-core/blob/main/docs/skills/ariadne-core-deploy/SKILL.md
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-deploy/SKILL.md
       - file: README.md
         section: "Deploying"
         github_url: https://github.com/denson/ariadne-core/blob/main/README.md
@@ -451,9 +451,9 @@ concepts:
       hook for any presenter session.
     see_also: [ten_x_session_savings, mechanism_1_raw_pdf_bloat, stupid_button_diagnostic, token_translator_prompt]
     sources:
-      - file: docs/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+      - file: skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
         section: "full transcript"
-        github_url: https://github.com/denson/ariadne-core/blob/main/docs/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
       - url: https://natesnewsletter.substack.com/p/your-claude-sessions-cost-10x-what
     images: [video_thumbnail, roadmap_two_token_economies]
 
@@ -469,8 +469,8 @@ concepts:
       the fix. Pair with the Token Translator prompt for a fuller picture.
     see_also: [token_translator_prompt, nate_jones_video, ten_x_session_savings]
     sources:
-      - file: docs/skills/ariadne-core-walkthrough/stupid_button_prompt.txt
-        github_url: https://github.com/denson/ariadne-core/blob/main/docs/skills/ariadne-core-walkthrough/stupid_button_prompt.txt
+      - file: skills/ariadne-core-walkthrough/stupid_button_prompt.txt
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/stupid_button_prompt.txt
     images: []
 
   - id: token_translator_prompt
@@ -485,8 +485,8 @@ concepts:
       session and see for themselves.
     see_also: [stupid_button_diagnostic, nate_jones_video, anchor_numbers]
     sources:
-      - file: docs/skills/ariadne-core-walkthrough/token_translator.txt
-        github_url: https://github.com/denson/ariadne-core/blob/main/docs/skills/ariadne-core-walkthrough/token_translator.txt
+      - file: skills/ariadne-core-walkthrough/token_translator.txt
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/token_translator.txt
     images: []
 
   - id: connect_claude_code
@@ -507,6 +507,6 @@ concepts:
       - file: README.md
         section: "MCP client connection"
         github_url: https://github.com/denson/ariadne-core/blob/main/README.md
-      - file: docs/skills/ariadne-document-intelligence/SKILL.md
-        github_url: https://github.com/denson/ariadne-core/blob/main/docs/skills/ariadne-document-intelligence/SKILL.md
+      - file: skills/ariadne-document-intelligence/SKILL.md
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-document-intelligence/SKILL.md
     images: [onboarding_connect_claude_code, onboarding_many_clients]

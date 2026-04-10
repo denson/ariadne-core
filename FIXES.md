@@ -2,7 +2,7 @@
 
 Gap tracker between how we want the tool to work (SPEC.md is the source of truth) and how the code works today. Each section is an instruction for Claude Code: target state, current state, what to change, and how to test it.
 
-The canonical skill at `docs/skills/ariadne-document-intelligence/SKILL.md` describes the target behavior as if it already works. After all fixes are implemented, an agent following the skill should be able to use every feature it describes without error.
+The canonical skill at `skills/ariadne-document-intelligence/SKILL.md` describes the target behavior as if it already works. After all fixes are implemented, an agent following the skill should be able to use every feature it describes without error.
 
 ---
 
@@ -178,7 +178,7 @@ Update the REST endpoint `GET /api/collections` (in `routes.py`) to also return 
 | `mcp_server.py` line 113 (convert_document docstring) | Change `"Supports 25+ formats: PDF, DOCX, PPTX, XLSX, HTML, CSV, EPUB, images, and more."` → `"Supports over 20 formats including PDF, DOCX, PPTX, XLSX, HTML, CSV, EPUB, and more."` |
 | `mcp_stdio_proxy.py` line 70 (convert_document docstring) | Same change as mcp_server.py |
 | `api/app.py` line 71 (FastAPI description) | Change `"25+ formats"` → `"over 20 formats"` |
-| `docs/skills/ariadne-core-integration/` | Delete this entire directory (replaced by `docs/skills/ariadne-document-intelligence/`) |
+| `skills/ariadne-core-integration/` | Delete this entire directory (replaced by `skills/ariadne-document-intelligence/`) |
 
 **Do NOT change:** `docs/docint-architecture.md` — it's the architecture vision doc. Leave as-is.
 
@@ -212,16 +212,16 @@ Similarly update the instructions block in `mcp_stdio_proxy.py` if it has one.
 
 ## 9. Merge skills — delete old `ariadne-core-integration` directory
 
-**Target state:** One skill package at `docs/skills/ariadne-document-intelligence/` inside the ariadne-core repo. The old `docs/skills/ariadne-core-integration/` directory is deleted. The OB1 repo's copy (`OB1/skills/ariadne-document-intelligence/`) is replaced with a pointer to the ariadne-core repo as the canonical source.
+**Target state:** One skill package at `skills/ariadne-document-intelligence/` inside the ariadne-core repo. The old `skills/ariadne-core-integration/` directory is deleted. The OB1 repo's copy (`OB1/skills/ariadne-document-intelligence/`) is replaced with a pointer to the ariadne-core repo as the canonical source.
 
 **Current state:** Two skill directories exist in the ariadne-core repo:
-- `docs/skills/ariadne-document-intelligence/` (v2.0.0) — the new canonical skill ✅ already updated
-- `docs/skills/ariadne-core-integration/` (v0.1.0) — the old one, should be deleted
+- `skills/ariadne-document-intelligence/` (v2.0.0) — the new canonical skill ✅ already updated
+- `skills/ariadne-core-integration/` (v0.1.0) — the old one, should be deleted
 
 The OB1 repo at `OB1/skills/ariadne-document-intelligence/` has a v1.1.0 copy that describes async job_id behavior, filters that don't exist, and an `output_dir` parameter that was never built.
 
 **What to change:**
-- Delete `docs/skills/ariadne-core-integration/` entirely from the ariadne-core repo
+- Delete `skills/ariadne-core-integration/` entirely from the ariadne-core repo
 - In the OB1 repo: replace `skills/ariadne-document-intelligence/SKILL.md` with a pointer noting the canonical source is in the ariadne-core repo, and copy the current v2.0.0 SKILL.md content
 - Update `skills/ariadne-document-intelligence/README.md` and `metadata.json` in OB1 to match
 

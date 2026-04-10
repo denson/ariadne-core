@@ -11,7 +11,7 @@ Execute the fixes described in `tests/COMPLY_PLAN.md`. The plan has been reviewe
 ## REFERENCE DOCUMENTS
 
 1. **SPEC.md** (repo root) — source of truth for behavior
-2. **SKILL.md** (`docs/skills/ariadne-document-intelligence/SKILL.md`) — how agents use the server
+2. **SKILL.md** (`skills/ariadne-document-intelligence/SKILL.md`) — how agents use the server
 3. **tests/COMPLY_PLAN.md** — the approved plan. Follow it.
 
 Read all three before starting.

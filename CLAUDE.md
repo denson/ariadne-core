@@ -4,7 +4,7 @@
 
 **Ariadne Core was written by Denson Smith.** The onboarding skill references Nate B. Jones's video, transcript, prompts, and Substack article as *source material* the presenter quotes from — that is the only role Nate plays in this project. Nate did not write the plugin, the pipeline, the MCP server, the skills, the marketplace, or any of the code.
 
-Before editing any file with an `author`, `owner`, `creator`, `maintainer`, `by`, `copyright`, or `holder` field — including `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, every `docs/skills/*/metadata.json`, every `docs/skills/*/SKILL.md` YAML frontmatter `author:` line, `LICENSE`, `pyproject.toml`, and `README.md` author/badge lines — verify the field names **Denson Smith**, not Nate B. Jones or anyone else.
+Before editing any file with an `author`, `owner`, `creator`, `maintainer`, `by`, `copyright`, or `holder` field — including `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, every `skills/*/metadata.json`, every `skills/*/SKILL.md` YAML frontmatter `author:` line, `LICENSE`, `pyproject.toml`, and `README.md` author/badge lines — verify the field names **Denson Smith**, not Nate B. Jones or anyone else.
 
 If you find the wrong name in any of those fields, **STOP and tell the user before fixing it**. Do not silently correct it. Audit the entire repo for the same wrong value before committing — this error has previously appeared in multiple files at once.
 
@@ -25,16 +25,16 @@ This repo is also a Claude Code plugin. Install with:
 /plugin install ariadne-core@ariadne-core
 ```
 
-Skills are at `docs/skills/`. Plugin manifest at `.claude-plugin/plugin.json`.
+Skills are at `skills/`. Plugin manifest at `.claude-plugin/plugin.json`.
 
 ## How to work in this repo
 
-Use the **ariadne-core-build** skill (`docs/skills/ariadne-core-build/SKILL.md`). It contains the full repo structure, source of truth references, guard rails, design decisions, architecture, sync requirements, and build instructions.
+Use the **ariadne-core-build** skill (`skills/ariadne-core-build/SKILL.md`). It contains the full repo structure, source of truth references, guard rails, design decisions, architecture, sync requirements, and build instructions.
 
 Before making changes, read these files in this order:
 
 1. `SPEC.md` — source of truth for all tool signatures, API endpoints, and behavior
-2. `docs/skills/ariadne-document-intelligence/SKILL.md` — what agents are taught about using the system
+2. `skills/ariadne-document-intelligence/SKILL.md` — what agents are taught about using the system
 3. `docs/docint-architecture.md` — full architecture spec
 
 If the code doesn't match the spec, the code is wrong.
@@ -108,9 +108,9 @@ Volume-derived monthly savings (Sonnet → Opus range):
 ### Authoritative sources
 
 - **Canonical framing doc:** [`docs/TOKEN_SAVINGS_FRAMING.md`](docs/TOKEN_SAVINGS_FRAMING.md) — read this end-to-end before any pricing/cost edit.
-- **Nate Jones video transcript:** [`docs/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt`](docs/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt) — source of the 20x and 10x numbers.
-- **"Stupid Button" diagnostic prompt:** [`docs/skills/ariadne-core-walkthrough/stupid_button_prompt.txt`](docs/skills/ariadne-core-walkthrough/stupid_button_prompt.txt) — rates a session 1–10 across six waste patterns.
-- **"Token Translator" prompt:** [`docs/skills/ariadne-core-walkthrough/token_translator.txt`](docs/skills/ariadne-core-walkthrough/token_translator.txt) — phase-by-phase session cost reconstruction.
+- **Nate Jones video transcript:** [`skills/ariadne-core-walkthrough/saving_tokens_transcript.txt`](skills/ariadne-core-walkthrough/saving_tokens_transcript.txt) — source of the 20x and 10x numbers.
+- **"Stupid Button" diagnostic prompt:** [`skills/ariadne-core-walkthrough/stupid_button_prompt.txt`](skills/ariadne-core-walkthrough/stupid_button_prompt.txt) — rates a session 1–10 across six waste patterns.
+- **"Token Translator" prompt:** [`skills/ariadne-core-walkthrough/token_translator.txt`](skills/ariadne-core-walkthrough/token_translator.txt) — phase-by-phase session cost reconstruction.
 - **Article:** "Your Claude Sessions Cost 10x What They Should" — https://natesnewsletter.substack.com/p/your-claude-sessions-cost-10x-what
 
 ## Roadmap & business docs

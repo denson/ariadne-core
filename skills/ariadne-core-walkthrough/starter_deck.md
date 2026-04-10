@@ -16,7 +16,7 @@ for rates, acknowledge both audiences.
 
 **image_markdown (embed verbatim — do not reach for `present_files`):**
 
-    ![Nate Jones — Your Claude Sessions Cost 10x What They Should](https://raw.githubusercontent.com/denson/ariadne-core/main/docs/skills/ariadne-core-walkthrough/assets/images/video_thumbnail.png)
+    ![Nate Jones — Your Claude Sessions Cost 10x What They Should](https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/video_thumbnail.png)
 
 **content_guidance:**
 This beat does three things in one message:

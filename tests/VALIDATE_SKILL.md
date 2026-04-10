@@ -8,7 +8,7 @@ Two documents and actual execution. That's it.
 
 1. **SPEC.md** (repo root) — **THE source of truth.** If anything conflicts with this, SPEC.md wins.
 
-2. **SKILL.md** (`docs/skills/ariadne-document-intelligence/SKILL.md`) — What agents are told to do. Written against SPEC.md.
+2. **SKILL.md** (`skills/ariadne-document-intelligence/SKILL.md`) — What agents are told to do. Written against SPEC.md.
 
 3. **Actual execution** — Call each MCP tool and see what happens.
 

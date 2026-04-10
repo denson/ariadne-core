@@ -8,7 +8,6 @@ description: |
   file sync requirements, or how the system is built. This is the development skill —
   for using Ariadne Core as an end user (ingesting documents, searching, etc.),
   use the ariadne-document-intelligence skill instead.
-author: Denson Smith
 version: 3.0.0
 ---
 
@@ -126,7 +125,7 @@ check the others for drift:
 | File | What it defines | Authority |
 |------|----------------|-----------|
 | `SPEC.md` | Tool signatures, API endpoints, behavior contracts | **Primary source of truth** |
-| `docs/skills/.../SKILL.md` | How agents should use the tools, caller metadata, processes | Must match SPEC tool signatures and response fields |
+| `skills/.../SKILL.md` | How agents should use the tools, caller metadata, processes | Must match SPEC tool signatures and response fields |
 | `src/pipeline/mcp_server.py` | MCP tool implementations | Must match SPEC tool signatures |
 | `src/pipeline/api/routes.py` | REST API endpoints (including `/api/upload`) | Must match SPEC API table |
 | `docs/mcp-setup.md` | Client connection instructions | Must reflect current architecture |

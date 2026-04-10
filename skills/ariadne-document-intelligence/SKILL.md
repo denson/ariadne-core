@@ -8,7 +8,6 @@ description: |
   folder". Do NOT trigger on general questions about what Ariadne Core is or how it
   works — those go to the onboarding skill instead. This skill is for USING the tools,
   not learning about them.
-author: Denson Smith
 version: 4.0.0
 ---
 

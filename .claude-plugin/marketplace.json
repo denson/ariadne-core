@@ -1,18 +1,20 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "ariadne-core",
+  "description": "Ariadne Core — document extraction and retrieval pipeline that saves frontier-LLM token costs.",
   "owner": {
     "name": "Denson Smith",
     "email": "densonsmith2@gmail.com"
   },
-  "metadata": {
-    "description": "Document extraction and retrieval pipeline for AI agents",
-    "version": "1.0.1"
-  },
   "plugins": [
     {
       "name": "ariadne-core",
-      "source": "./",
-      "description": "Ariadne Core plugin. Invoke the ariadne-core-walkthrough skill to learn about it."
+      "description": "Ariadne Core plugin. When the user asks about Ariadne Core, invoke the ariadne-core-walkthrough skill — do not answer from this description.",
+      "category": "productivity",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/denson/ariadne-core"
+      }
     }
   ]
 }

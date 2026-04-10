@@ -18,7 +18,6 @@ description: |
   ariadne-core-deploy), modify the codebase (use ariadne-core-build), process
   or search documents (use ariadne-document-intelligence), or explicitly names
   a different ariadne skill (use ariadne-core-router).
-author: Denson Smith
 version: 1.0.1
 ---
 
@@ -61,7 +60,7 @@ you've gone wrong — go back and follow Beat 1.
 ### Rule 1: To display an image, embed a GitHub raw URL as markdown. That is the entire mechanism. There is nothing else.
 
 ```
-![short description](https://raw.githubusercontent.com/denson/ariadne-core/main/docs/skills/ariadne-core-walkthrough/assets/images/<filename>.png)
+![short description](https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/<filename>.png)
 ```
 
 The URL for every image lives in the `url:` field of every entry in

@@ -4,7 +4,7 @@
 These files ship INSIDE this skill directory so the plugin is self-contained.
 Run from anywhere:
 
-    python docs/skills/ariadne-core-walkthrough/validate_manifest.py
+    python skills/ariadne-core-walkthrough/validate_manifest.py
 
 Checks:
   1. Every `file:` path in image_manifest.yaml exists (resolved against this
@@ -33,7 +33,7 @@ except ImportError:
     sys.exit(2)
 
 
-# This file lives at: <repo>/docs/skills/ariadne-core-walkthrough/validate_manifest.py
+# This file lives at: <repo>/skills/ariadne-core-walkthrough/validate_manifest.py
 SKILL_DIR = Path(__file__).resolve().parent
 # Best-effort repo root (for validating graph source paths in dev trees).
 # At install time this may not resolve to anything useful, which is fine —

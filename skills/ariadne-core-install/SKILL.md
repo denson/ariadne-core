@@ -12,7 +12,6 @@ description: |
   - AI agent mode (default): structured commands for autonomous execution
   - Human mode: step-by-step with explanations, links to the onboarding skill for
     visual walkthrough
-author: Denson Smith
 version: 3.0.0
 ---
 
