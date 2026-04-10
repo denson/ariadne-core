@@ -203,8 +203,11 @@ concepts:
       frontier model. The frontier model never sees a raw PDF, never burns
       tokens on binary layout metadata, never re-extracts tables. Works with
       any OpenAI-compatible embedding provider — OpenAI, Google Gemini, Groq,
-      DeepSeek, local models. This is the single biggest "aha moment" for
-      users who get the token-waste story but don't yet see the fix.
+      DeepSeek, local models. Unlike keyword search or grep, semantic search
+      finds content by **meaning**, not exact string match — ask "what were
+      the pricing terms?" and it finds the relevant paragraph even if it
+      never uses the word "pricing." This is the single biggest "aha moment"
+      for users who get the token-waste story but don't yet see the fix.
     see_also: [the_extraction_pipeline, mechanism_1_raw_pdf_bloat, beyond_extraction_metadata_layer, format_coverage]
     sources:
       - file: SPEC.md
@@ -357,18 +360,20 @@ concepts:
 
   - id: managed_value_prop
     name: "What $20/mo Managed actually buys"
-    one_line: "Security monitoring, automated backups, version upgrades, Railway provisioning, usage tracking — all the ops work you don't want to do yourself."
+    one_line: "Security monitoring, automated backups, version upgrades, Railway provisioning, usage tracking, and OAuth for Cowork — all the ops work you don't want to do yourself."
     body: |
-      The $20/mo Managed fee buys five specific things: security monitoring
+      The $20/mo Managed fee buys six specific things: security monitoring
       and patches, automated backups, version upgrades that we handle
-      end-to-end, infrastructure provisioning via the Railway API, and usage
-      tracking with storage alerts. Railway infrastructure (Postgres, Weaviate,
-      storage) is passed through at cost, not marked up. Same code as Personal
-      edition — we just run it so you don't have to. For an engineering team,
-      $20/mo is meaningfully less than the time cost of running the ops
-      yourself; for a hobbyist, the Personal edition is free and works fine.
-      Pick the tier that fits how you want to spend your time.
-    see_also: [managed_pricing_overview, self_host_break_even]
+      end-to-end, infrastructure provisioning via the Railway API, usage
+      tracking with storage alerts, and **OAuth authentication** — which is
+      required for Claude Cowork access and not included in Personal edition.
+      Railway infrastructure (Postgres, Weaviate, storage) is passed through
+      at cost, not marked up. Same code as Personal edition — we just run it
+      so you don't have to. For an engineering team, $20/mo is meaningfully
+      less than the time cost of running the ops yourself; for a hobbyist,
+      the Personal edition is free and works fine. Pick the tier that fits
+      how you want to spend your time.
+    see_also: [managed_pricing_overview, self_host_break_even, auth_and_client_compatibility]
     sources:
       - file: docs/roadmap/pro-infrastructure-summary.md
         section: "What $20/mo gets you"
@@ -380,14 +385,18 @@ concepts:
     one_line: "Self-hosted, API key auth, full pipeline (extract + store + search), single user + their agents. The free tier that ships every feature."
     body: |
       Personal edition is the free, open-source, self-hosted path. Single user
-      plus their agents, API key authentication, full pipeline: extract, store,
-      search, agent-writable metadata. Every feature ships here — including
-      the beyond-extraction metadata layer. Personal is the entry point most
-      users should start with. The five-tier roadmap is MarkItDown (extraction
-      only, not our product) → Personal (free/OSS) → Managed ($20/mo + infra)
-      → Team (shared database with team agent and dedup coordination) →
-      Enterprise (custom stacks, per-customer architecture).
-    see_also: [railway_deployment, self_host_break_even, managed_pricing_overview, team_edition, enterprise_edition, beyond_extraction_metadata_layer]
+      plus their agents, **API key authentication** — works with Claude Code,
+      Cursor, Open Brain, OpenClaw, and any MCP client that lets you set a
+      header. Full pipeline: extract, store, search, agent-writable metadata.
+      Every feature ships here — including the beyond-extraction metadata layer.
+      Personal is the entry point most users should start with. The five-tier
+      roadmap is MarkItDown (extraction only, not our product) → Personal
+      (free/OSS) → Managed ($20/mo + infra) → Team (shared database with team
+      agent and dedup coordination) → Enterprise (custom stacks, per-customer
+      architecture). **Claude Cowork requires OAuth**, which is not included in
+      Personal — users who need Cowork access should subscribe to Managed or
+      set up their own OAuth.
+    see_also: [railway_deployment, self_host_break_even, managed_pricing_overview, team_edition, enterprise_edition, beyond_extraction_metadata_layer, auth_and_client_compatibility, markitdown_standalone]
     sources:
       - file: docs/roadmap/roadmap.md
         section: "Personal edition"
@@ -502,7 +511,7 @@ concepts:
       (retrieve by ID), `list_documents`, `list_collections`, and `ingest`
       (batch-process a directory). The REST API is also available for scripts
       that don't speak MCP.
-    see_also: [railway_deployment, search_dont_send, the_extraction_pipeline]
+    see_also: [railway_deployment, search_dont_send, the_extraction_pipeline, auth_and_client_compatibility, mcp_tools_overview]
     sources:
       - file: README.md
         section: "MCP client connection"
@@ -510,3 +519,345 @@ concepts:
       - file: skills/ariadne-document-intelligence/SKILL.md
         github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-document-intelligence/SKILL.md
     images: [onboarding_connect_claude_code, onboarding_many_clients]
+
+  # ========== AUTH, TOOLS & TECHNICAL DETAILS ==========
+
+  - id: auth_and_client_compatibility
+    name: "Authentication and client compatibility"
+    one_line: "API key (Personal) works with Claude Code, Cursor, Open Brain, OpenClaw, any MCP client. Cowork requires OAuth — need self-hosted OAuth or Managed edition."
+    body: |
+      Personal edition authenticates with an **API key** via `X-API-Key`
+      header. This works with Claude Code, Cursor, Open Brain, OpenClaw, and
+      any MCP client or HTTP client that lets you set a header. **Claude
+      Cowork is the exception — it requires OAuth.** API keys won't work
+      there. To use Ariadne Core in Cowork, you either set up your own OAuth
+      flow on a self-hosted deployment, or subscribe to the **Managed
+      edition**, which includes OAuth out of the box. Same pipeline, same
+      tools, same document store either way — the only difference is how you
+      authenticate. API keys are stored as SHA-256 hashes; all endpoints
+      except `/api/health` require authentication. **Open Brain** connects
+      via MCP with an API key, same as Claude Code — the REST API is also
+      available for any HTTP client or custom integration.
+    see_also: [connect_claude_code, roadmap_personal_edition, managed_value_prop, mcp_tools_overview]
+    sources:
+      - file: SPEC.md
+        section: "Authentication"
+        github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
+    images: [onboarding_many_clients]
+
+  - id: persistent_memory_across_sessions
+    name: "Persistent memory across sessions"
+    one_line: "Your LLM gains a kind of persistent 'memory' across every document it has ever extracted — source-of-truth tracking, project context that survives sessions, cross-document recall."
+    body: |
+      Beyond per-session savings, **both audiences get a benefit that has
+      nothing to do with usage limits or token bills: their LLM gains
+      persistent "memory" across every document ever extracted, plus all the
+      metadata attached to each one.** Four concrete experiences: (1)
+      **Source-of-truth tracking** — drop the original URL into metadata at
+      ingestion time; months later, the LLM knows exactly where a passage
+      came from. (2) **Project context that survives session boundaries** —
+      tag documents with the project name once and every future agent session
+      gets the right scope automatically. (3) **Cumulative knowledge** —
+      every document adds to a corpus the LLM can search semantically forever
+      after; the next session starts with everything the previous one already
+      knew. (4) **Cross-document recall** — ask "what did I learn about
+      pricing across all the contracts I reviewed last quarter?" and get
+      results across hundreds of documents with source citations intact.
+    see_also: [beyond_extraction_metadata_layer, two_audiences_framing, search_dont_send]
+    sources:
+      - file: docs/TOKEN_SAVINGS_FRAMING.md
+        section: "What both audiences also get: persistent 'memory' across documents"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
+    images: [onboarding_search_dont_send]
+
+  - id: embedding_model_selection
+    name: "Embedding model selection and providers"
+    one_line: "Any OpenAI-compatible embedding provider works — OpenAI, Google Gemini, Groq, DeepSeek, Together, Mistral, or local via Ollama/LM Studio. BYOM is a config change."
+    body: |
+      Ariadne Core works with any OpenAI-compatible embedding provider.
+      Tested providers include OpenAI (default, text-embedding-3-small),
+      Google Gemini, Groq, DeepSeek, Together AI, Mistral, and Perplexity.
+      Local models work too — Ollama, LM Studio, and vLLM all expose
+      compatible endpoints. Switching providers is a config change: set
+      `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, and `EMBEDDING_BASE_URL`.
+      **Critical constraint:** the embedding model used for search queries
+      must match the model used when documents were stored. The system tracks
+      which model produced each vector and warns on mismatch. For English
+      workloads, bge-large-en-v1.5 (1024 dim) is a strong starting point;
+      for multilingual corpora, bge-m3 (1024 dim). Text-embedding-3-small
+      from OpenAI (~$0.02/M) is the default because it's cheap and good
+      enough for most use cases. **Fully local is possible:** with Ollama
+      for embeddings and a local vision model, the entire pipeline runs
+      with zero external API calls — extraction is already pure Python.
+    see_also: [the_extraction_pipeline, per_doc_pipeline_cost, model_class_routing, vision_and_image_handling]
+    sources:
+      - file: docs/docint-architecture.md
+        section: "Embedding models"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/docint-architecture.md
+      - file: README.md
+        section: "Compatible embedding providers"
+        github_url: https://github.com/denson/ariadne-core/blob/main/README.md
+    images: [onboarding_pipeline]
+
+  - id: dedup_and_provenance
+    name: "Dedup and provenance tracking"
+    one_line: "SHA-256 fingerprint on normalized text — skips all expensive processing on duplicates but still records who asked and when. Force flag overrides."
+    body: |
+      Every document is fingerprinted (SHA-256 on normalized extracted text)
+      before any expensive processing. If the fingerprint already exists in
+      the target collection, extraction, chunking, and embedding are all
+      skipped — but a `document_interactions` row is still created, recording
+      which agent asked, when, what model, and why. **Every call creates a
+      record, even dedup skips.** This means provenance is complete: you can
+      always trace who touched a document and what they did. The `force` flag
+      on `convert_document` and `ingest` overrides dedup when you know a
+      document has changed. Return fields include `content_fingerprint`,
+      `was_dedup_skip`, and `store_status`. Dedup scope is per-collection —
+      the same document can exist in multiple collections if needed. In Team
+      edition, dedup becomes coordination: when a user's agent encounters a
+      document already ingested by the team agent, the hash match returns
+      rich metadata instead of re-extracting.
+    see_also: [the_extraction_pipeline, team_edition, mcp_tools_overview, beyond_extraction_metadata_layer]
+    sources:
+      - file: SPEC.md
+        section: "Dedup behavior"
+        github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
+      - file: docs/docint-architecture.md
+        section: "Deduplication"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/docint-architecture.md
+    images: [roadmap_dedup_coordination]
+
+  - id: mcp_tools_overview
+    name: "The six MCP tools"
+    one_line: "convert_document, search, get_document, list_documents, list_collections, ingest — all accept caller metadata for provenance. REST API mirrors MCP."
+    body: |
+      Six tools are available via MCP and mirrored on the REST API.
+      **convert_document** extracts any file to Markdown, optionally chunks,
+      embeds, and stores it. **search** does semantic search across stored
+      chunks with filters (collection, file_type, source_file, tags,
+      document_id). **get_document** retrieves full content and interaction
+      history by ID. **list_documents** browses by collection or file type.
+      **list_collections** shows all collections with counts — call this
+      first to see what exists. **ingest** batch-processes a directory.
+      All tools that write data accept **caller metadata** (agent_id,
+      agent_type, model, initiated_by, agent_notes, agent_metadata) for
+      provenance tracking. Search supports filters on `collection`,
+      `file_type`, `source_file`, `tags`, and `document_id` — use tags
+      to scope search by project, agent, or any custom dimension. The REST
+      API is available at the same deployment URL for scripts and systems
+      that don't speak MCP.
+    see_also: [connect_claude_code, search_dont_send, dedup_and_provenance, auth_and_client_compatibility]
+    sources:
+      - file: SPEC.md
+        section: "MCP Tools"
+        github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
+    images: [onboarding_connect_claude_code]
+
+  - id: chunking_strategies
+    name: "Chunking strategies"
+    one_line: "Auto-selected by file type: by_title (default), by_page (presentations), fixed_size (flat text). Configurable via chunking_config parameter."
+    body: |
+      After extraction, documents are split into retrieval-sized chunks. The
+      strategy is **auto-selected by file type** if you don't specify one:
+      `.pptx` uses `by_page` (one chunk per slide), `.csv` and `.xlsx` use
+      `fixed_size` (no semantic headings to split on), `.txt` with no
+      headings uses `fixed_size` with high overlap, and everything else uses
+      `by_title` (splits at Markdown headings for semantic boundaries). You
+      can override the auto-selection by passing a `chunking_config` dict
+      with `strategy`, `max_characters`, and `overlap` keys. The right
+      chunking strategy affects retrieval quality — `by_title` keeps related
+      content together, `by_page` preserves slide context, `fixed_size` is
+      the fallback when document structure is flat or absent.
+    see_also: [the_extraction_pipeline, search_dont_send, mcp_tools_overview]
+    sources:
+      - file: SPEC.md
+        section: "Chunking strategies"
+        github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
+      - file: docs/docint-architecture.md
+        section: "Chunking"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/docint-architecture.md
+    images: [onboarding_pipeline]
+
+  - id: vision_and_image_handling
+    name: "Vision and image handling"
+    one_line: "Optional enrichment stage — a small multimodal model describes images in extracted Markdown. BYOM supported. Without a vision key, extraction still works but images get no descriptions."
+    body: |
+      Image enrichment is an optional pipeline stage that runs after
+      extraction and before chunking. A small multimodal model (~$0.14/M
+      class) describes images found in the extracted Markdown — the default
+      is gpt-4o-mini at ~$0.002 per image. **BYOM is supported:** if you
+      need a more powerful model, a domain-specific model for your content
+      (medical imaging, engineering schematics, handwritten forms), or a
+      model you're already paying for, set `VISION_MODEL` and
+      `VISION_BASE_URL` to any OpenAI-compatible endpoint. Without a vision
+      API key, extraction still works — images are preserved in the Markdown
+      with alt text but without semantic descriptions. The tool returns a
+      warning explaining that a vision key is needed for full image content.
+      Per-document cost for a typical 4,500-word doc with 3 images: ~$0.002
+      total (dominated by the vision calls, not the text embedding).
+    see_also: [per_doc_pipeline_cost, the_extraction_pipeline, embedding_model_selection, gemma4_and_model_economics]
+    sources:
+      - file: SPEC.md
+        section: "Image enrichment"
+        github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
+      - file: docs/docint-architecture.md
+        section: "Vision model options"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/docint-architecture.md
+    images: [onboarding_pipeline]
+
+  - id: gemma4_and_model_economics
+    name: "Gemma 4 and open-weight model economics (April 2026)"
+    one_line: "Gemma 4 moves pro-tier reasoning into the $0.10/M bracket. Model switching is a config change, not architecture. Open-weight options keep costs falling."
+    body: |
+      Google released the **Gemma 4** family on April 2, 2026 — Apache 2.0
+      licensed, open-weights. Gemma 4 31B (dense) ranks #3 on Arena AI and
+      supersedes GPT-5 Mini / Gemini 3 Flash in reasoning-per-dollar at
+      $0.14/M input. Gemma 4 26B (MoE) has only 3.8B active parameters,
+      superseding Llama 3.3 70B in speed/efficiency at $0.13/M. Gemma 4 E4B
+      runs locally for edge/mobile vision tasks. All variants include native
+      vision and audio, plus advanced function calling and JSON schema
+      support. **For Ariadne Core, Gemma 4 is now the default multimodal
+      model for Managed edition** — pro-tier quality at flash-tier cost.
+      Model switching is a config change: update `VISION_MODEL` and
+      `VISION_BASE_URL`. No code changes required. Open-weight models keep
+      costs falling, and the savings story gets bigger over time.
+    see_also: [vision_and_image_handling, per_doc_pipeline_cost, model_class_routing, embedding_model_selection]
+    sources:
+      - file: docs/roadmap/token_pricing_snapshot_update.md
+        section: "Gemma 4 family"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/token_pricing_snapshot_update.md
+    images: [roadmap_two_token_economies]
+
+  - id: storage_growth_and_scaling
+    name: "Storage growth and scaling"
+    one_line: "pgvector handles ~5M vectors comfortably. Weaviate option for Managed (30-40x RAM reduction). Storage billed at cost with dashboard visibility."
+    body: |
+      The default vector store is **pgvector** — same Postgres instance that
+      stores metadata and logs. It handles ~5M vectors with HNSW index,
+      covering 500K–1M documents comfortably. For Managed edition, **Weaviate
+      with product quantization** achieves a **30–40x RAM reduction** over
+      pgvector's HNSW (pgvector needs ~6–8 GB RAM per 1M vectors; Weaviate
+      PQ uses ~100–200 MB for the same data). Weaviate also adds native
+      hybrid search (BM25 + vector). Storage is billed at Railway's rate
+      ($0.17/GB) and visible in a dashboard with growth alerts — no surprise
+      bills. Every document ingested grows the database; it doesn't shrink
+      automatically. **Tiered storage is roadmapped:** active data stays in
+      the primary store for fast search; older data moves to bulk/archival
+      at reduced cost; distilled summaries of archived docs stay searchable.
+    see_also: [managed_pricing_overview, managed_value_prop, railway_deployment, the_extraction_pipeline]
+    sources:
+      - file: docs/roadmap/pro-infrastructure-summary.md
+        section: "Weaviate rationale"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/pro-infrastructure-summary.md
+      - file: docs/docint-architecture.md
+        section: "Vector store architecture"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/docint-architecture.md
+    images: [infra_storage_growth, roadmap_bulk_storage]
+
+  - id: markitdown_standalone
+    name: "MarkItDown standalone (tier-0 option)"
+    one_line: "MarkItDown is extraction only — 20+ formats, $0, MIT license, runs locally. Ariadne adds embeddings, search, metadata, and provenance on top."
+    body: |
+      **MarkItDown** (Microsoft, MIT license) is the extraction layer
+      Ariadne Core builds on. It converts PDF, DOCX, PPTX, XLSX, HTML, CSV,
+      EPUB, EML, MSG, ZIP, Jupyter notebooks, WAV, MP3, and more to clean
+      Markdown — all in pure Python at $0 in tokens. Users who only need
+      extraction can install MarkItDown directly (`pip install markitdown`)
+      and use it without Ariadne Core. What Ariadne adds on top:
+      deduplication, semantic chunking, vector embedding, search across
+      stored documents, agent-writable metadata, and provenance tracking.
+      Five documents don't need search; five hundred are unusable without it.
+      MarkItDown is the right choice for one-off extraction. Ariadne is the
+      right choice when you need the extracted content to be findable,
+      searchable, and persistent across sessions.
+    see_also: [the_extraction_pipeline, format_coverage, beyond_extraction_metadata_layer, roadmap_personal_edition, persistent_memory_across_sessions]
+    sources:
+      - file: README.md
+        section: "MarkItDown standalone"
+        github_url: https://github.com/denson/ariadne-core/blob/main/README.md
+      - file: docs/TOKEN_SAVINGS_FRAMING.md
+        section: "Beyond extraction"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
+    images: [onboarding_format_mosaic]
+
+  # ========== GAP-FILLS: DATA, PERFORMANCE, LIMITATIONS ==========
+
+  - id: data_portability
+    name: "Data portability and ownership"
+    one_line: "You self-host on your own Postgres — you own the database. Export the Postgres dump anytime. Embeddings are model-specific, so you'd re-embed to ingest into a different system."
+    body: |
+      In Personal edition, **you own the infrastructure**. The database is
+      a standard Postgres instance you deployed on Railway, Fly.io, or your
+      own server. You can `pg_dump` it anytime — the extracted Markdown,
+      metadata, chunks, provenance records, and search logs are all in
+      tables you control. Individual documents are also retrievable via
+      `get_document` (returns full Markdown + all chunks + interaction
+      history). **One caveat:** vector embeddings are model-specific. If you
+      move to a different system with a different embedding model, you'd
+      need to re-embed the chunks — the Markdown and metadata transfer
+      cleanly, but the vectors don't. Migration between Ariadne editions
+      is smoother: Personal → Managed is same DB, additive config, no
+      downtime. There is no lock-in — it's open source (Apache 2.0) and
+      the data is yours.
+    see_also: [roadmap_personal_edition, managed_value_prop, railway_deployment, embedding_model_selection]
+    sources:
+      - file: docs/roadmap/roadmap.md
+        section: "Migration Paths"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/roadmap.md
+      - file: README.md
+        section: "Personal Edition"
+        github_url: https://github.com/denson/ariadne-core/blob/main/README.md
+    images: [onboarding_hosting]
+
+  - id: performance_benchmarks
+    name: "Performance and latency"
+    one_line: "Search: <10ms at 10K chunks, <50ms at 1M. Extraction: <100ms/doc. The embedding API call (~0.1-0.5s) dominates end-to-end latency, not the vector search."
+    body: |
+      **Vector search latency** scales with corpus size: <10ms at 10,000
+      chunks, <20ms at 100,000 chunks, <50ms at 1,000,000 chunks (pgvector
+      with HNSW index). Qdrant is roughly 2x faster at each tier. On top
+      of the vector search, the query itself needs to be embedded — that
+      adds ~0.1–0.5s depending on the embedding provider, and it's the
+      dominant cost in end-to-end search latency. **Extraction throughput:**
+      MarkItDown processes documents in <100ms across 20+ formats — pure
+      Python, no model calls. The embedding step after extraction takes
+      longer (~1–2s per document depending on chunk count and provider).
+      A real pipeline example: extraction 8ms → embedding 1.4s for 2
+      chunks → stored. For sub-200ms search responses, the bottleneck is
+      the embedding API call for the query, not the vector lookup.
+    see_also: [storage_growth_and_scaling, the_extraction_pipeline, embedding_model_selection, search_dont_send]
+    sources:
+      - file: docs/docint-architecture.md
+        section: "Performance expectations"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/docint-architecture.md
+      - file: docs/roadmap/cost-analysis-pro-storage.md
+        section: "Search latency"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/cost-analysis-pro-storage.md
+    images: [onboarding_pipeline]
+
+  - id: scanned_pdf_limitations
+    name: "Scanned PDFs and OCR (current limitation)"
+    one_line: "MarkItDown can't do OCR — scanned PDFs with no text layer produce poor results. Suggest a separate OCR workflow for now; enhanced extraction is on the roadmap for Managed/Team."
+    body: |
+      **Scanned PDFs are a known Phase 1 limitation.** MarkItDown extracts
+      text from the PDF's text layer — if there's no text layer (a scanned
+      image), it produces empty or poor results. The `markitdown-ocr`
+      plugin exists as a fallback — it sends pages to a vision API as
+      images — but it's expensive and slow compared to proper OCR. **For
+      now, we suggest a separate workflow** using dedicated OCR tools for
+      scanned documents before ingesting the results into Ariadne. Phase 2
+      adds a second extraction engine with proper OCR + ML layout detection
+      behind a smart router that probes PDF text layers to decide which
+      engine handles each document. This enhanced extraction is planned for
+      **Managed and Team editions**; Personal edition remains MarkItDown-
+      only. Other Phase 1 limitations: legacy Office formats (.doc, .ppt),
+      complex table layouts with merged cells, and BMP/TIFF/HEIC images.
+    see_also: [format_coverage, the_extraction_pipeline, markitdown_standalone, vision_and_image_handling]
+    sources:
+      - file: SPEC.md
+        section: "Unsupported formats"
+        github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
+      - file: docs/docint-architecture.md
+        section: "Phase 2 extraction"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/docint-architecture.md
+    images: [onboarding_format_mosaic]
