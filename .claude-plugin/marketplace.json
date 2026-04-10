@@ -1,0 +1,18 @@
+{
+  "name": "ariadne-core",
+  "owner": {
+    "name": "Denson Smith",
+    "email": "densonsmith2@gmail.com"
+  },
+  "metadata": {
+    "description": "Document extraction and retrieval pipeline for AI agents",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "ariadne-core",
+      "source": "./",
+      "description": "Ariadne Core plugin. Invoke the ariadne-core-walkthrough skill to learn about it."
+    }
+  ]
+}

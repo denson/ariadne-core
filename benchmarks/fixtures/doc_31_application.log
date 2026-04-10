@@ -1,0 +1,200 @@
+2025-10-15T07:46:19Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T19:36:43Z [INFO] Memory usage: 2.1GB / 4.0GB
+2025-10-15T07:12:35Z [DEBUG] Cache miss for key user:12345
+2025-10-15T04:46:18Z [ERROR] Database connection pool at 80%
+2025-10-15T11:42:03Z [DEBUG] Database connection pool at 80%
+2025-10-15T07:14:15Z [ERROR] Background job completed in 1.2s
+2025-10-15T01:51:44Z [ERROR] Database connection pool at 80%
+2025-10-15T02:45:53Z [WARN] Request processed successfully
+2025-10-15T16:31:25Z [ERROR] Memory usage: 2.1GB / 4.0GB
+2025-10-15T23:17:23Z [INFO] Cache miss for key user:12345
+2025-10-15T12:58:44Z [DEBUG] Memory usage: 2.1GB / 4.0GB
+2025-10-15T10:50:29Z [ERROR] Retry attempt 2/3 for external API
+2025-10-15T22:57:46Z [DEBUG] Background job completed in 1.2s
+2025-10-15T20:21:12Z [ERROR] Memory usage: 2.1GB / 4.0GB
+2025-10-15T13:23:36Z [ERROR] Database connection pool at 80%
+2025-10-15T12:24:59Z [DEBUG] Cache miss for key user:12345
+2025-10-15T13:13:57Z [DEBUG] Request processed successfully
+2025-10-15T02:11:21Z [ERROR] Database connection pool at 80%
+2025-10-15T00:34:44Z [ERROR] Cache miss for key user:12345
+2025-10-15T10:59:53Z [INFO] Background job completed in 1.2s
+2025-10-15T02:52:21Z [ERROR] Background job completed in 1.2s
+2025-10-15T19:09:20Z [WARN] Retry attempt 2/3 for external API
+2025-10-15T12:25:19Z [ERROR] Background job completed in 1.2s
+2025-10-15T03:54:59Z [DEBUG] Database connection pool at 80%
+2025-10-15T14:55:17Z [WARN] Request processed successfully
+2025-10-15T11:49:45Z [WARN] Database connection pool at 80%
+2025-10-15T05:24:07Z [INFO] Cache miss for key user:12345
+2025-10-15T21:16:41Z [ERROR] Request processed successfully
+2025-10-15T05:26:52Z [WARN] Database connection pool at 80%
+2025-10-15T10:56:19Z [INFO] Cache miss for key user:12345
+2025-10-15T01:28:36Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T21:49:29Z [DEBUG] Database connection pool at 80%
+2025-10-15T21:57:01Z [WARN] Request processed successfully
+2025-10-15T20:43:46Z [INFO] Background job completed in 1.2s
+2025-10-15T16:52:22Z [INFO] Retry attempt 2/3 for external API
+2025-10-15T03:05:23Z [WARN] Database connection pool at 80%
+2025-10-15T17:17:20Z [DEBUG] Request processed successfully
+2025-10-15T11:52:42Z [WARN] Database connection pool at 80%
+2025-10-15T05:27:56Z [ERROR] Memory usage: 2.1GB / 4.0GB
+2025-10-15T08:54:43Z [DEBUG] Cache miss for key user:12345
+2025-10-15T03:31:12Z [DEBUG] Request processed successfully
+2025-10-15T21:01:44Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T23:52:09Z [DEBUG] Cache miss for key user:12345
+2025-10-15T14:28:08Z [WARN] Retry attempt 2/3 for external API
+2025-10-15T21:20:26Z [DEBUG] Retry attempt 2/3 for external API
+2025-10-15T14:00:07Z [WARN] Database connection pool at 80%
+2025-10-15T20:52:02Z [ERROR] Request processed successfully
+2025-10-15T14:59:34Z [ERROR] Database connection pool at 80%
+2025-10-15T11:20:41Z [INFO] Request processed successfully
+2025-10-15T00:58:09Z [INFO] Request processed successfully
+2025-10-15T05:46:08Z [DEBUG] Memory usage: 2.1GB / 4.0GB
+2025-10-15T05:20:29Z [INFO] Cache miss for key user:12345
+2025-10-15T13:01:38Z [WARN] Request processed successfully
+2025-10-15T18:44:50Z [ERROR] Database connection pool at 80%
+2025-10-15T12:33:51Z [INFO] Database connection pool at 80%
+2025-10-15T05:58:02Z [INFO] Retry attempt 2/3 for external API
+2025-10-15T06:24:39Z [WARN] Request processed successfully
+2025-10-15T22:09:33Z [ERROR] Cache miss for key user:12345
+2025-10-15T23:01:38Z [DEBUG] Database connection pool at 80%
+2025-10-15T23:40:54Z [WARN] Background job completed in 1.2s
+2025-10-15T11:08:46Z [DEBUG] Database connection pool at 80%
+2025-10-15T11:52:57Z [ERROR] Background job completed in 1.2s
+2025-10-15T04:10:09Z [WARN] Database connection pool at 80%
+2025-10-15T22:39:12Z [DEBUG] Database connection pool at 80%
+2025-10-15T09:23:54Z [WARN] Request processed successfully
+2025-10-15T22:53:57Z [DEBUG] Memory usage: 2.1GB / 4.0GB
+2025-10-15T07:08:14Z [WARN] Cache miss for key user:12345
+2025-10-15T02:32:22Z [DEBUG] Retry attempt 2/3 for external API
+2025-10-15T12:05:58Z [INFO] Retry attempt 2/3 for external API
+2025-10-15T14:02:32Z [INFO] Background job completed in 1.2s
+2025-10-15T19:31:50Z [WARN] Retry attempt 2/3 for external API
+2025-10-15T05:53:54Z [INFO] Background job completed in 1.2s
+2025-10-15T01:06:00Z [WARN] Retry attempt 2/3 for external API
+2025-10-15T04:25:06Z [DEBUG] Request processed successfully
+2025-10-15T17:14:57Z [ERROR] Memory usage: 2.1GB / 4.0GB
+2025-10-15T02:54:31Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T08:34:55Z [DEBUG] Memory usage: 2.1GB / 4.0GB
+2025-10-15T15:12:20Z [ERROR] Retry attempt 2/3 for external API
+2025-10-15T04:09:13Z [DEBUG] Cache miss for key user:12345
+2025-10-15T04:09:10Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T03:48:38Z [INFO] Memory usage: 2.1GB / 4.0GB
+2025-10-15T04:22:35Z [ERROR] Cache miss for key user:12345
+2025-10-15T21:43:40Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T23:22:25Z [WARN] Database connection pool at 80%
+2025-10-15T05:52:56Z [INFO] Retry attempt 2/3 for external API
+2025-10-15T11:41:03Z [ERROR] Database connection pool at 80%
+2025-10-15T20:50:46Z [DEBUG] Database connection pool at 80%
+2025-10-15T02:54:41Z [DEBUG] Database connection pool at 80%
+2025-10-15T01:17:25Z [INFO] Background job completed in 1.2s
+2025-10-15T03:52:15Z [DEBUG] Cache miss for key user:12345
+2025-10-15T21:20:14Z [INFO] Retry attempt 2/3 for external API
+2025-10-15T20:35:20Z [ERROR] Request processed successfully
+2025-10-15T21:04:14Z [WARN] Request processed successfully
+2025-10-15T12:42:03Z [DEBUG] Database connection pool at 80%
+2025-10-15T12:14:36Z [ERROR] Memory usage: 2.1GB / 4.0GB
+2025-10-15T11:24:04Z [DEBUG] Memory usage: 2.1GB / 4.0GB
+2025-10-15T08:50:30Z [ERROR] Memory usage: 2.1GB / 4.0GB
+2025-10-15T10:16:36Z [INFO] Cache miss for key user:12345
+2025-10-15T20:42:04Z [INFO] Database connection pool at 80%
+2025-10-15T13:46:17Z [ERROR] Request processed successfully
+2025-10-15T18:49:58Z [INFO] Request processed successfully
+2025-10-15T13:17:01Z [ERROR] Cache miss for key user:12345
+2025-10-15T23:24:37Z [INFO] Background job completed in 1.2s
+2025-10-15T10:28:35Z [WARN] Background job completed in 1.2s
+2025-10-15T05:03:30Z [DEBUG] Cache miss for key user:12345
+2025-10-15T00:16:10Z [INFO] Database connection pool at 80%
+2025-10-15T21:00:04Z [DEBUG] Database connection pool at 80%
+2025-10-15T04:46:42Z [DEBUG] Request processed successfully
+2025-10-15T09:04:12Z [INFO] Database connection pool at 80%
+2025-10-15T13:57:39Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T17:36:41Z [DEBUG] Retry attempt 2/3 for external API
+2025-10-15T01:36:33Z [DEBUG] Retry attempt 2/3 for external API
+2025-10-15T02:10:27Z [DEBUG] Database connection pool at 80%
+2025-10-15T07:05:51Z [DEBUG] Retry attempt 2/3 for external API
+2025-10-15T14:41:24Z [WARN] Database connection pool at 80%
+2025-10-15T10:44:36Z [INFO] Retry attempt 2/3 for external API
+2025-10-15T17:26:22Z [DEBUG] Memory usage: 2.1GB / 4.0GB
+2025-10-15T06:40:43Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T03:38:05Z [ERROR] Database connection pool at 80%
+2025-10-15T09:12:01Z [DEBUG] Cache miss for key user:12345
+2025-10-15T07:07:09Z [ERROR] Database connection pool at 80%
+2025-10-15T03:37:04Z [INFO] Database connection pool at 80%
+2025-10-15T11:31:51Z [ERROR] Request processed successfully
+2025-10-15T09:36:40Z [DEBUG] Cache miss for key user:12345
+2025-10-15T15:00:45Z [DEBUG] Cache miss for key user:12345
+2025-10-15T04:26:35Z [INFO] Request processed successfully
+2025-10-15T09:19:34Z [DEBUG] Retry attempt 2/3 for external API
+2025-10-15T12:19:36Z [DEBUG] Retry attempt 2/3 for external API
+2025-10-15T14:59:19Z [DEBUG] Background job completed in 1.2s
+2025-10-15T06:24:56Z [INFO] Retry attempt 2/3 for external API
+2025-10-15T22:02:16Z [ERROR] Retry attempt 2/3 for external API
+2025-10-15T00:26:15Z [ERROR] Request processed successfully
+2025-10-15T22:14:30Z [ERROR] Cache miss for key user:12345
+2025-10-15T18:47:24Z [WARN] Request processed successfully
+2025-10-15T13:39:11Z [ERROR] Background job completed in 1.2s
+2025-10-15T02:07:56Z [DEBUG] Retry attempt 2/3 for external API
+2025-10-15T18:44:24Z [ERROR] Database connection pool at 80%
+2025-10-15T06:03:44Z [WARN] Cache miss for key user:12345
+2025-10-15T14:46:00Z [ERROR] Background job completed in 1.2s
+2025-10-15T11:07:10Z [WARN] Cache miss for key user:12345
+2025-10-15T13:43:13Z [WARN] Retry attempt 2/3 for external API
+2025-10-15T07:05:54Z [DEBUG] Cache miss for key user:12345
+2025-10-15T09:58:33Z [ERROR] Background job completed in 1.2s
+2025-10-15T12:22:59Z [ERROR] Background job completed in 1.2s
+2025-10-15T21:27:15Z [ERROR] Retry attempt 2/3 for external API
+2025-10-15T08:55:57Z [ERROR] Cache miss for key user:12345
+2025-10-15T07:19:45Z [ERROR] Memory usage: 2.1GB / 4.0GB
+2025-10-15T09:39:07Z [ERROR] Request processed successfully
+2025-10-15T19:37:15Z [DEBUG] Background job completed in 1.2s
+2025-10-15T08:17:37Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T07:36:56Z [DEBUG] Cache miss for key user:12345
+2025-10-15T08:01:33Z [ERROR] Retry attempt 2/3 for external API
+2025-10-15T07:03:37Z [WARN] Database connection pool at 80%
+2025-10-15T13:08:38Z [ERROR] Background job completed in 1.2s
+2025-10-15T06:36:42Z [DEBUG] Memory usage: 2.1GB / 4.0GB
+2025-10-15T07:10:06Z [ERROR] Request processed successfully
+2025-10-15T14:08:03Z [INFO] Background job completed in 1.2s
+2025-10-15T15:48:02Z [WARN] Request processed successfully
+2025-10-15T09:57:54Z [DEBUG] Cache miss for key user:12345
+2025-10-15T09:40:45Z [ERROR] Database connection pool at 80%
+2025-10-15T10:30:51Z [DEBUG] Cache miss for key user:12345
+2025-10-15T01:15:00Z [WARN] Database connection pool at 80%
+2025-10-15T08:36:27Z [INFO] Cache miss for key user:12345
+2025-10-15T02:09:46Z [ERROR] Retry attempt 2/3 for external API
+2025-10-15T01:52:01Z [WARN] Background job completed in 1.2s
+2025-10-15T11:06:08Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T23:55:29Z [INFO] Database connection pool at 80%
+2025-10-15T11:33:45Z [ERROR] Retry attempt 2/3 for external API
+2025-10-15T10:37:21Z [DEBUG] Database connection pool at 80%
+2025-10-15T17:27:51Z [DEBUG] Request processed successfully
+2025-10-15T19:13:04Z [INFO] Background job completed in 1.2s
+2025-10-15T11:35:19Z [ERROR] Memory usage: 2.1GB / 4.0GB
+2025-10-15T22:20:25Z [WARN] Cache miss for key user:12345
+2025-10-15T02:04:14Z [DEBUG] Database connection pool at 80%
+2025-10-15T06:18:56Z [ERROR] Request processed successfully
+2025-10-15T13:10:59Z [WARN] Database connection pool at 80%
+2025-10-15T07:12:19Z [WARN] Request processed successfully
+2025-10-15T05:16:26Z [DEBUG] Cache miss for key user:12345
+2025-10-15T03:01:19Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T14:45:37Z [WARN] Memory usage: 2.1GB / 4.0GB
+2025-10-15T23:44:43Z [DEBUG] Background job completed in 1.2s
+2025-10-15T00:02:35Z [DEBUG] Background job completed in 1.2s
+2025-10-15T22:57:09Z [ERROR] Memory usage: 2.1GB / 4.0GB
+2025-10-15T18:03:09Z [ERROR] Retry attempt 2/3 for external API
+2025-10-15T21:31:28Z [INFO] Memory usage: 2.1GB / 4.0GB
+2025-10-15T14:16:12Z [ERROR] Request processed successfully
+2025-10-15T06:53:20Z [INFO] Cache miss for key user:12345
+2025-10-15T07:34:50Z [INFO] Database connection pool at 80%
+2025-10-15T05:10:52Z [ERROR] Request processed successfully
+2025-10-15T12:21:11Z [ERROR] Retry attempt 2/3 for external API
+2025-10-15T23:55:48Z [DEBUG] Cache miss for key user:12345
+2025-10-15T06:08:33Z [WARN] Database connection pool at 80%
+2025-10-15T07:00:08Z [WARN] Background job completed in 1.2s
+2025-10-15T10:25:36Z [INFO] Database connection pool at 80%
+2025-10-15T06:56:00Z [INFO] Database connection pool at 80%
+2025-10-15T07:12:16Z [WARN] Request processed successfully
+2025-10-15T14:04:46Z [DEBUG] Retry attempt 2/3 for external API
+2025-10-15T13:50:29Z [INFO] Memory usage: 2.1GB / 4.0GB
+2025-10-15T14:54:27Z [ERROR] Request processed successfully
+2025-10-15T19:39:22Z [WARN] Retry attempt 2/3 for external API

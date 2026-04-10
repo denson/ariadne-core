@@ -1,0 +1,6 @@
+{
+  "eval_id": 3,
+  "eval_name": "recall-search",
+  "prompt": "What did that Acme contract say about termination? I think there was something about a 90-day notice period but I'm not sure.",
+  "assertions": []
+}

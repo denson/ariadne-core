@@ -1,0 +1,28 @@
+# Ariadne Core — Postgres with pgvector
+# The application runs on the host via `ariadne-core serve`.
+#
+# Usage:
+#   cp .env.example .env   # fill in API keys
+#   docker compose up -d   # start Postgres
+#   ariadne-core serve   # start MCP server + REST API
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: pipeline
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d pipeline"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

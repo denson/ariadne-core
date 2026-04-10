@@ -1,0 +1,14 @@
+{
+  "eval_id": 1,
+  "run_type": "without_skill",
+  "expectations": [
+    {"text": "Uses convert_document (not ingest) for a single file", "passed": false, "evidence": "Uses convert_document AND then ingest as separate steps, treating them as distinct tools (convert=extract, ingest=store). Should be one convert_document call with store:true."},
+    {"text": "Collection name is descriptive and project-relevant (not 'default')", "passed": true, "evidence": "Uses 'vendor-agreements' collection"},
+    {"text": "Includes agent_type in caller metadata", "passed": true, "evidence": "agent_type: 'claude-code' in both calls"},
+    {"text": "Includes initiated_by with user:denson format", "passed": true, "evidence": "initiated_by: 'user:denson' in both calls"},
+    {"text": "Includes agent_notes describing the vendor review context", "passed": true, "evidence": "agent_notes: 'Vendor agreement review - processing Acme Corp MSA...'"},
+    {"text": "Calls list_collections first to check existing collections", "passed": false, "evidence": "Does not call list_collections. Goes straight to convert_document."},
+    {"text": "Applies relevant tags to the document", "passed": false, "evidence": "No tags parameter in either tool call"},
+    {"text": "User-facing message mentions collection name and chunk count", "passed": true, "evidence": "Mentions vendor-agreements collection and chunk creation"}
+  ]
+}

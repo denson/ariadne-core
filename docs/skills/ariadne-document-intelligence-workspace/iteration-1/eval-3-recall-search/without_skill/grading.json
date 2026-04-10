@@ -1,0 +1,13 @@
+{
+  "eval_id": 3,
+  "run_type": "without_skill",
+  "expectations": [
+    {"text": "Calls search tool BEFORE attempting to answer the question", "passed": true, "evidence": "Call 1 is search tool"},
+    {"text": "Search query includes termination-related terms", "passed": true, "evidence": "query: 'Acme contract termination 90-day notice period'"},
+    {"text": "Includes caller metadata (agent_type, initiated_by, agent_notes)", "passed": true, "evidence": "agent_type, initiated_by, agent_notes all present in search call"},
+    {"text": "Attempts to scope search to a relevant collection (not all collections)", "passed": false, "evidence": "collection: null — searches all collections instead of trying to scope"},
+    {"text": "Plans to synthesize answer from results (not dump raw chunks)", "passed": true, "evidence": "Response template says 'Here's what the contract says about termination' with synthesized output"},
+    {"text": "Includes fallback plan if document not found", "passed": true, "evidence": "Separate section for 'If search doesn't find the contract' with 3 suggestions"},
+    {"text": "Does NOT guess or fabricate contract terms from memory", "passed": true, "evidence": "Uses placeholder brackets for actual content, does not fabricate"}
+  ]
+}

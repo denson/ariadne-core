@@ -1,0 +1,14 @@
+{
+  "eval_id": 1,
+  "run_type": "with_skill",
+  "expectations": [
+    {"text": "Uses convert_document (not ingest) for a single file", "passed": true, "evidence": "Call 2 uses convert_document with uri file:///data/incoming/acme-msa-2026.pdf"},
+    {"text": "Collection name is descriptive and project-relevant (not 'default')", "passed": true, "evidence": "Uses 'acme-contract-review' collection based on vendor review context"},
+    {"text": "Includes agent_type in caller metadata", "passed": true, "evidence": "agent_type: 'claude-code' in convert_document params"},
+    {"text": "Includes initiated_by with user:denson format", "passed": true, "evidence": "initiated_by: 'user:denson' in convert_document params"},
+    {"text": "Includes agent_notes describing the vendor review context", "passed": true, "evidence": "agent_notes: 'User processing Acme Corp MSA as part of vendor agreement review workflow...'"},
+    {"text": "Calls list_collections first to check existing collections", "passed": true, "evidence": "Step 1 is list_collections call before convert_document"},
+    {"text": "Applies relevant tags to the document", "passed": true, "evidence": "tags: ['vendor-agreement', 'msa', 'acme-corp', 'contract-review']"},
+    {"text": "User-facing message mentions collection name and chunk count", "passed": true, "evidence": "Message says 'acme-contract-review collection (now 4 documents)' and '47 searchable chunks'"}
+  ]
+}

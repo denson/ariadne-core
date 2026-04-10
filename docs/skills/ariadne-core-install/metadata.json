@@ -1,0 +1,16 @@
+{
+  "name": "ariadne-core-install",
+  "version": "3.0.0",
+  "description": "Deploy Ariadne Core to Railway or another host and connect Claude Code or other MCP clients.",
+  "author": "Denson Smith",
+  "license": "Apache-2.0",
+  "category": "deployment",
+  "runtime": "claude-code",
+  "tags": [
+    "deployment",
+    "installation",
+    "railway",
+    "mcp",
+    "configuration"
+  ]
+}

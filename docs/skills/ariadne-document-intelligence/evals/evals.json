@@ -1,0 +1,52 @@
+{
+  "skill_name": "ariadne-document-intelligence",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I just got this contract from Acme Corp, it's at /data/incoming/acme-msa-2026.pdf. Can you process it so I can search it later? I'm doing a review of all our vendor agreements.",
+      "expected_output": "Agent should call convert_document with the PDF path, choose a meaningful collection name (not 'default'), include caller metadata, and report back which collection it used and how many chunks were created.",
+      "assertions": [
+        {"text": "Uses convert_document (not ingest) for a single file", "type": "boolean"},
+        {"text": "Collection name is descriptive and project-relevant (not 'default')", "type": "boolean"},
+        {"text": "Includes agent_type in caller metadata", "type": "boolean"},
+        {"text": "Includes initiated_by with user:denson format", "type": "boolean"},
+        {"text": "Includes agent_notes describing the vendor review context", "type": "boolean"},
+        {"text": "Calls list_collections first to check existing collections", "type": "boolean"},
+        {"text": "Applies relevant tags to the document", "type": "boolean"},
+        {"text": "User-facing message mentions collection name and chunk count", "type": "boolean"}
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I uploaded a bunch of research papers to /data/incoming/q4-research/ — there's like 12 PDFs and a few DOCX files in there. Can you get them all into the system? I'll want to search across them later for stuff about pricing models.",
+      "expected_output": "Agent should use the ingest tool (not convert_document one by one), choose a descriptive collection, include caller metadata, and tell the user how many files were found.",
+      "assertions": [
+        {"text": "Uses ingest tool (not convert_document) for a directory of files", "type": "boolean"},
+        {"text": "Collection name is descriptive (e.g. 'q4-research')", "type": "boolean"},
+        {"text": "Sets file_types filter to ['pdf', 'docx']", "type": "boolean"},
+        {"text": "Includes agent_notes mentioning pricing models research context", "type": "boolean"},
+        {"text": "Includes initiated_by with user:denson format", "type": "boolean"},
+        {"text": "User-facing message sets expectations about processing time", "type": "boolean"},
+        {"text": "Does NOT fabricate async job_id or queue-based workflow", "type": "boolean"},
+        {"text": "Applies tags relevant to the research topic", "type": "boolean"}
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "What did that Acme contract say about termination? I think there was something about a 90-day notice period but I'm not sure.",
+      "expected_output": "Agent should search first (not guess), use search tool with a relevant query, scope to collection if possible, include caller metadata, and synthesize an answer from results.",
+      "assertions": [
+        {"text": "Calls search tool BEFORE attempting to answer the question", "type": "boolean"},
+        {"text": "Search query includes termination-related terms", "type": "boolean"},
+        {"text": "Includes caller metadata (agent_type, initiated_by, agent_notes)", "type": "boolean"},
+        {"text": "Attempts to scope search to a relevant collection (not all collections)", "type": "boolean"},
+        {"text": "Plans to synthesize answer from results (not dump raw chunks)", "type": "boolean"},
+        {"text": "Includes fallback plan if document not found", "type": "boolean"},
+        {"text": "Does NOT guess or fabricate contract terms from memory", "type": "boolean"}
+      ],
+      "files": []
+    }
+  ]
+}

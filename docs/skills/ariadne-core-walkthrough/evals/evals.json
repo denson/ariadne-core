@@ -1,0 +1,17 @@
+[
+  {
+    "name": "cold_open",
+    "prompt": "What is Ariadne Core?",
+    "expected_output": "Should deliver the accessible hook: expensive models waste tokens on raw documents, Ariadne Core extracts and retrieves cheaply, 100x token savings. Should show img_01.png (Token Waste Problem). Should end with the routing question about what they're trying to do. Should NOT dump the full architecture or deployment steps yet."
+  },
+  {
+    "name": "developer_deploy",
+    "prompt": "I want to deploy Ariadne Core to Railway and connect it to Claude Code.",
+    "expected_output": "Should route to developer audience. Should walk through the five Railway deployment steps with exact commands. Should show the Claude Code connection command (claude mcp add). Should mention the three required env vars (EMBEDDING_API_KEY, VISION_API_KEY, ARIADNE_API_KEY). Should NOT mention DB_PASSWORD, Docker Desktop, STDIO, or Claude Desktop."
+  },
+  {
+    "name": "agent_builder_integration",
+    "prompt": "I'm building an Open Brain agent that needs to search documents. How does it connect to Ariadne Core?",
+    "expected_output": "Should route to agent builder audience. Should show REST API examples with X-API-Key header. Should explain provenance tracking (agent_id, agent_type). Should mention the upload endpoint for remote file ingestion. Should NOT walk through MCP setup or Claude Code connection."
+  }
+]

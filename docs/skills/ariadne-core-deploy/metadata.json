@@ -1,0 +1,16 @@
+{
+  "name": "ariadne-core-deploy",
+  "version": "1.0.0",
+  "description": "Platform-specific deployment instructions for Ariadne Core — Railway, Fly.io, or any Docker host.",
+  "author": "Denson Smith",
+  "license": "Apache-2.0",
+  "category": "deployment",
+  "runtime": "claude-code",
+  "tags": [
+    "deployment",
+    "railway",
+    "fly-io",
+    "docker",
+    "hosting"
+  ]
+}

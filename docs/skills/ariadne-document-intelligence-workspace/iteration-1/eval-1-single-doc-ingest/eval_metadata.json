@@ -1,0 +1,6 @@
+{
+  "eval_id": 1,
+  "eval_name": "single-doc-ingest",
+  "prompt": "I just got this contract from Acme Corp, it's at /data/incoming/acme-msa-2026.pdf. Can you process it so I can search it later? I'm doing a review of all our vendor agreements.",
+  "assertions": []
+}

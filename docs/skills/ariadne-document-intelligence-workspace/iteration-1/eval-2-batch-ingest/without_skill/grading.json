@@ -1,0 +1,14 @@
+{
+  "eval_id": 2,
+  "run_type": "without_skill",
+  "expectations": [
+    {"text": "Uses ingest tool (not convert_document) for a directory of files", "passed": true, "evidence": "Uses ingest tool with path parameter"},
+    {"text": "Collection name is descriptive (e.g. 'q4-research')", "passed": true, "evidence": "collection: 'q4-research'"},
+    {"text": "Sets file_types filter to ['pdf', 'docx']", "passed": true, "evidence": "file_types: ['pdf', 'docx']"},
+    {"text": "Includes agent_notes mentioning pricing models research context", "passed": true, "evidence": "agent_notes: 'Batch ingest of Q4 research papers for pricing model analysis'"},
+    {"text": "Includes initiated_by with user:denson format", "passed": true, "evidence": "initiated_by: 'user:denson'"},
+    {"text": "User-facing message sets expectations about processing time", "passed": true, "evidence": "'Estimated time — Should finish in about 45 seconds'"},
+    {"text": "Does NOT fabricate async job_id or queue-based workflow", "passed": false, "evidence": "Fabricates job_id 'ingest-20260405-abc123def456' and describes queue-based workflow: 'Batch ingestion queued. Check job status via get_document(job_id).' This is wrong — ingest is synchronous."},
+    {"text": "Applies tags relevant to the research topic", "passed": false, "evidence": "No tags parameter in the ingest call"}
+  ]
+}

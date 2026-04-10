@@ -1,0 +1,129 @@
+{
+  "api_version": "2.1",
+  "endpoints": [
+    {
+      "path": "/api/v2/users",
+      "method": "GET",
+      "description": "Users endpoint for Lorem ipsum dolor sit amet, consectetur ",
+      "auth_required": false,
+      "rate_limit": 496,
+      "response_codes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ]
+    },
+    {
+      "path": "/api/v2/users",
+      "method": "POST",
+      "description": "Users endpoint for Lorem ipsum dolor sit amet, consectetur ",
+      "auth_required": true,
+      "rate_limit": 504,
+      "response_codes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ]
+    },
+    {
+      "path": "/api/v2/documents",
+      "method": "GET",
+      "description": "Documents endpoint for Lorem ipsum dolor sit amet, consectetur ",
+      "auth_required": false,
+      "rate_limit": 653,
+      "response_codes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ]
+    },
+    {
+      "path": "/api/v2/documents",
+      "method": "POST",
+      "description": "Documents endpoint for Lorem ipsum dolor sit amet, consectetur ",
+      "auth_required": true,
+      "rate_limit": 786,
+      "response_codes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ]
+    },
+    {
+      "path": "/api/v2/search",
+      "method": "POST",
+      "description": "Search endpoint for Lorem ipsum dolor sit amet, consectetur ",
+      "auth_required": false,
+      "rate_limit": 853,
+      "response_codes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ]
+    },
+    {
+      "path": "/api/v2/collections",
+      "method": "GET",
+      "description": "Collections endpoint for Lorem ipsum dolor sit amet, consectetur ",
+      "auth_required": false,
+      "rate_limit": 761,
+      "response_codes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ]
+    },
+    {
+      "path": "/api/v2/health",
+      "method": "GET",
+      "description": "Health endpoint for Lorem ipsum dolor sit amet, consectetur ",
+      "auth_required": true,
+      "rate_limit": 986,
+      "response_codes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ]
+    },
+    {
+      "path": "/api/v2/stats",
+      "method": "GET",
+      "description": "Stats endpoint for Lorem ipsum dolor sit amet, consectetur ",
+      "auth_required": true,
+      "rate_limit": 824,
+      "response_codes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ]
+    }
+  ],
+  "schemas": {
+    "User": {
+      "id": "uuid",
+      "name": "string",
+      "email": "string"
+    },
+    "Document": {
+      "id": "uuid",
+      "title": "string",
+      "content": "text"
+    }
+  }
+}

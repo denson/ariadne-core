@@ -1,0 +1,14 @@
+{
+  "eval_id": 2,
+  "run_type": "with_skill",
+  "expectations": [
+    {"text": "Uses ingest tool (not convert_document) for a directory of files", "passed": true, "evidence": "Uses ingest tool with path /data/incoming/q4-research"},
+    {"text": "Collection name is descriptive (e.g. 'q4-research')", "passed": true, "evidence": "collection: 'q4-research'"},
+    {"text": "Sets file_types filter to ['pdf', 'docx']", "passed": true, "evidence": "file_types: ['pdf', 'docx'] in ingest params"},
+    {"text": "Includes agent_notes mentioning pricing models research context", "passed": true, "evidence": "agent_notes: 'User uploaded batch of Q4 research papers and wants to search across them for pricing models.'"},
+    {"text": "Includes initiated_by with user:denson format", "passed": true, "evidence": "initiated_by: 'user:denson'"},
+    {"text": "User-facing message sets expectations about processing time", "passed": true, "evidence": "'this should take a minute or two'"},
+    {"text": "Does NOT fabricate async job_id or queue-based workflow", "passed": true, "evidence": "No job_id or async queue mentioned. Treats as synchronous."},
+    {"text": "Applies tags relevant to the research topic", "passed": true, "evidence": "tags: ['q4-research', 'research-papers', 'pricing']"}
+  ]
+}

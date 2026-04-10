@@ -1,0 +1,57 @@
+# config/ariadne.yaml — Ariadne Core configuration
+# Uses ${VAR} interpolation from environment variables
+
+# --- Database ---
+database:
+  url: ${DATABASE_URL:-postgresql://app:${DB_PASSWORD}@localhost:5432/pipeline}
+
+# --- Vector Store ---
+vector_store:
+  backend: pgvector
+
+# --- Embedding ---
+embedding:
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  dimensions: 1536
+  provider: openai-compatible
+  base_url: ${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+  api_key: ${EMBEDDING_API_KEY}
+
+# --- Image Enrichment (Vision) ---
+image_enrichment:
+  enabled: true
+  provider: openai-compatible
+  base_url: ${VISION_BASE_URL:-https://api.openai.com/v1}
+  model: ${VISION_MODEL:-gpt-4o-mini}
+  api_key: ${VISION_API_KEY}
+  prompt: "Describe this image in detail. Include any text, data, charts, diagrams, or visual elements. Be specific about numbers, labels, and relationships shown."
+
+# --- MarkItDown ---
+markitdown:
+  enable_plugins: true
+
+# --- Chunking ---
+chunking:
+  default_strategy: by_title
+  max_characters: 1500
+  new_after_n_chars: 1000
+  overlap: 200
+  combine_under_n_chars: 200
+
+# --- API Server ---
+api:
+  host: 0.0.0.0
+  port: 8000
+  mcp_port: 8081
+  require_auth: false
+
+# --- Paths ---
+paths:
+  incoming: ./data/incoming
+  processed: ./data/processed
+  temp: ./data/temp
+
+# --- Logging ---
+logging:
+  level: info
+  format: json

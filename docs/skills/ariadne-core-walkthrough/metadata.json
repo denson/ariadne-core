@@ -1,0 +1,21 @@
+{
+  "name": "ariadne-core-walkthrough",
+  "version": "1.0.0",
+  "description": "Visual onboarding walkthrough for Ariadne Core — introduces the project, shows the architecture, and routes to the right next step based on audience.",
+  "author": "Denson Smith",
+  "license": "Apache-2.0",
+  "category": "onboarding",
+  "runtime": "cowork",
+  "tags": [
+    "onboarding",
+    "presentation",
+    "visual",
+    "document-processing",
+    "mcp"
+  ],
+  "assets": {
+    "images": "assets/images/",
+    "references": "references/",
+    "transcript": "saving_tokens_transcript.txt"
+  }
+}

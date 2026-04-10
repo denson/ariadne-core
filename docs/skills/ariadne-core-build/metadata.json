@@ -1,0 +1,15 @@
+{
+  "name": "ariadne-core-build",
+  "version": "3.0.0",
+  "description": "Development skill for building, testing, and extending the Ariadne Core codebase.",
+  "author": "Denson Smith",
+  "license": "Apache-2.0",
+  "category": "development",
+  "runtime": "claude-code",
+  "tags": [
+    "development",
+    "testing",
+    "architecture",
+    "contributing"
+  ]
+}

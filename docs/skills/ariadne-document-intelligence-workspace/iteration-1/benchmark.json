@@ -1,0 +1,192 @@
+{
+  "metadata": {
+    "skill_name": "ariadne-document-intelligence",
+    "skill_path": "/sessions/wonderful-kind-meitner/mnt/nate_skills/ariadne-core/docs/skills/ariadne-document-intelligence",
+    "executor_model": "claude-haiku-4-5-20251001",
+    "analyzer_model": "claude-opus-4-6",
+    "timestamp": "2026-04-05T07:35:00Z",
+    "evals_run": [1, 2, 3],
+    "runs_per_configuration": 3
+  },
+  "runs": [
+    {
+      "eval_id": 1,
+      "eval_name": "Single document ingest",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 22.4,
+        "tokens": 33831,
+        "tool_calls": 2,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Uses convert_document (not ingest) for a single file", "passed": true, "evidence": "Call 2 uses convert_document with uri file:///data/incoming/acme-msa-2026.pdf"},
+        {"text": "Collection name is descriptive and project-relevant (not 'default')", "passed": true, "evidence": "Uses 'acme-contract-review' collection"},
+        {"text": "Includes agent_type in caller metadata", "passed": true, "evidence": "agent_type: 'claude-code'"},
+        {"text": "Includes initiated_by with user:denson format", "passed": true, "evidence": "initiated_by: 'user:denson'"},
+        {"text": "Includes agent_notes describing the vendor review context", "passed": true, "evidence": "agent_notes describes vendor agreement review workflow"},
+        {"text": "Calls list_collections first to check existing collections", "passed": true, "evidence": "Step 1 is list_collections"},
+        {"text": "Applies relevant tags to the document", "passed": true, "evidence": "tags: ['vendor-agreement', 'msa', 'acme-corp', 'contract-review']"},
+        {"text": "User-facing message mentions collection name and chunk count", "passed": true, "evidence": "Message mentions 'acme-contract-review' and '47 searchable chunks'"}
+      ]
+    },
+    {
+      "eval_id": 1,
+      "eval_name": "Single document ingest",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.625,
+        "passed": 5,
+        "failed": 3,
+        "total": 8,
+        "time_seconds": 22.3,
+        "tokens": 29683,
+        "tool_calls": 2,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Uses convert_document (not ingest) for a single file", "passed": false, "evidence": "Uses convert_document AND then ingest as two separate steps — misunderstands API"},
+        {"text": "Collection name is descriptive and project-relevant (not 'default')", "passed": true, "evidence": "Uses 'vendor-agreements' collection"},
+        {"text": "Includes agent_type in caller metadata", "passed": true, "evidence": "agent_type: 'claude-code'"},
+        {"text": "Includes initiated_by with user:denson format", "passed": true, "evidence": "initiated_by: 'user:denson'"},
+        {"text": "Includes agent_notes describing the vendor review context", "passed": true, "evidence": "agent_notes present"},
+        {"text": "Calls list_collections first to check existing collections", "passed": false, "evidence": "Does not call list_collections"},
+        {"text": "Applies relevant tags to the document", "passed": false, "evidence": "No tags parameter in either tool call"},
+        {"text": "User-facing message mentions collection name and chunk count", "passed": true, "evidence": "Mentions collection and chunks"}
+      ]
+    },
+    {
+      "eval_id": 2,
+      "eval_name": "Batch ingest",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 28.3,
+        "tokens": 34202,
+        "tool_calls": 4,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Uses ingest tool (not convert_document) for a directory of files", "passed": true, "evidence": "Uses ingest tool with path parameter"},
+        {"text": "Collection name is descriptive (e.g. 'q4-research')", "passed": true, "evidence": "collection: 'q4-research'"},
+        {"text": "Sets file_types filter to ['pdf', 'docx']", "passed": true, "evidence": "file_types: ['pdf', 'docx']"},
+        {"text": "Includes agent_notes mentioning pricing models research context", "passed": true, "evidence": "agent_notes mentions pricing models"},
+        {"text": "Includes initiated_by with user:denson format", "passed": true, "evidence": "initiated_by: 'user:denson'"},
+        {"text": "User-facing message sets expectations about processing time", "passed": true, "evidence": "'should take a minute or two'"},
+        {"text": "Does NOT fabricate async job_id or queue-based workflow", "passed": true, "evidence": "No job_id or async queue mentioned"},
+        {"text": "Applies tags relevant to the research topic", "passed": true, "evidence": "tags: ['q4-research', 'research-papers', 'pricing']"}
+      ]
+    },
+    {
+      "eval_id": 2,
+      "eval_name": "Batch ingest",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.75,
+        "passed": 6,
+        "failed": 2,
+        "total": 8,
+        "time_seconds": 37.1,
+        "tokens": 34628,
+        "tool_calls": 7,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Uses ingest tool (not convert_document) for a directory of files", "passed": true, "evidence": "Uses ingest tool"},
+        {"text": "Collection name is descriptive (e.g. 'q4-research')", "passed": true, "evidence": "collection: 'q4-research'"},
+        {"text": "Sets file_types filter to ['pdf', 'docx']", "passed": true, "evidence": "file_types: ['pdf', 'docx']"},
+        {"text": "Includes agent_notes mentioning pricing models research context", "passed": true, "evidence": "agent_notes present"},
+        {"text": "Includes initiated_by with user:denson format", "passed": true, "evidence": "initiated_by: 'user:denson'"},
+        {"text": "User-facing message sets expectations about processing time", "passed": true, "evidence": "Mentions estimated time"},
+        {"text": "Does NOT fabricate async job_id or queue-based workflow", "passed": false, "evidence": "Fabricates job_id 'ingest-20260405-abc123def456' and queue-based workflow"},
+        {"text": "Applies tags relevant to the research topic", "passed": false, "evidence": "No tags parameter in ingest call"}
+      ]
+    },
+    {
+      "eval_id": 3,
+      "eval_name": "Recall search",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 7,
+        "failed": 0,
+        "total": 7,
+        "time_seconds": 22.3,
+        "tokens": 33589,
+        "tool_calls": 2,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Calls search tool BEFORE attempting to answer the question", "passed": true, "evidence": "Call 2 is search, preceded by list_collections"},
+        {"text": "Search query includes termination-related terms", "passed": true, "evidence": "query includes 'termination' and '90-day notice'"},
+        {"text": "Includes caller metadata (agent_type, initiated_by, agent_notes)", "passed": true, "evidence": "All three present"},
+        {"text": "Attempts to scope search to a relevant collection (not all collections)", "passed": true, "evidence": "collection: 'acme-contracts'"},
+        {"text": "Plans to synthesize answer from results (not dump raw chunks)", "passed": true, "evidence": "Template shows synthesized answer"},
+        {"text": "Includes fallback plan if document not found", "passed": true, "evidence": "Two fallback scenarios covered"},
+        {"text": "Does NOT guess or fabricate contract terms from memory", "passed": true, "evidence": "Uses placeholders for actual content"}
+      ]
+    },
+    {
+      "eval_id": 3,
+      "eval_name": "Recall search",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.857,
+        "passed": 6,
+        "failed": 1,
+        "total": 7,
+        "time_seconds": 16.9,
+        "tokens": 29256,
+        "tool_calls": 1,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Calls search tool BEFORE attempting to answer the question", "passed": true, "evidence": "Call 1 is search tool"},
+        {"text": "Search query includes termination-related terms", "passed": true, "evidence": "query includes termination terms"},
+        {"text": "Includes caller metadata (agent_type, initiated_by, agent_notes)", "passed": true, "evidence": "All three present"},
+        {"text": "Attempts to scope search to a relevant collection (not all collections)", "passed": false, "evidence": "collection: null — searches all collections"},
+        {"text": "Plans to synthesize answer from results (not dump raw chunks)", "passed": true, "evidence": "Template shows synthesized output"},
+        {"text": "Includes fallback plan if document not found", "passed": true, "evidence": "Fallback section with suggestions"},
+        {"text": "Does NOT guess or fabricate contract terms from memory", "passed": true, "evidence": "Uses placeholder brackets"}
+      ]
+    }
+  ],
+  "run_summary": {
+    "with_skill": {
+      "pass_rate": {"mean": 1.0, "stddev": 0.0, "min": 1.0, "max": 1.0},
+      "time_seconds": {"mean": 24.3, "stddev": 3.4, "min": 22.3, "max": 28.3},
+      "tokens": {"mean": 33874, "stddev": 308, "min": 33589, "max": 34202}
+    },
+    "without_skill": {
+      "pass_rate": {"mean": 0.744, "stddev": 0.095, "min": 0.625, "max": 0.857},
+      "time_seconds": {"mean": 25.4, "stddev": 10.4, "min": 16.9, "max": 37.1},
+      "tokens": {"mean": 31189, "stddev": 2962, "min": 29256, "max": 34628}
+    },
+    "delta": {
+      "pass_rate": "+0.256",
+      "time_seconds": "-1.1",
+      "tokens": "+2685"
+    }
+  },
+  "notes": [
+    "With-skill achieves 100% pass rate across all 3 evals vs 74.4% without skill",
+    "The skill's biggest impact is on: (1) calling list_collections first, (2) applying tags, (3) avoiding fabricated async patterns",
+    "Without-skill baseline still performs reasonably on caller metadata — agents seem to pick up on MCP tool parameter names",
+    "The 'no fabricated job_id' assertion is highly discriminating — only fails without skill",
+    "Collection scoping in search (eval 3) fails without skill — agent defaults to searching all collections",
+    "Token overhead of skill is modest (~2700 tokens, ~8%) for substantial quality improvement"
+  ]
+}

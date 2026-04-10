@@ -1,0 +1,6 @@
+{
+  "eval_id": 2,
+  "eval_name": "batch-ingest",
+  "prompt": "I uploaded a bunch of research papers to /data/incoming/q4-research/ — there's like 12 PDFs and a few DOCX files in there. Can you get them all into the system? I'll want to search across them later for stuff about pricing models.",
+  "assertions": []
+}

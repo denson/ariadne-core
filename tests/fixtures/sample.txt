@@ -1,0 +1,13 @@
+Ariadne Core Test Document
+
+This is a sample text document used for testing the extraction pipeline.
+
+## Section One
+
+The quick brown fox jumps over the lazy dog. This sentence contains every letter
+of the English alphabet and is commonly used for testing.
+
+## Section Two
+
+Document extraction should preserve the structure of the original content,
+including headings, paragraphs, and other formatting elements.
