@@ -1,15 +1,13 @@
 ---
 name: ariadne-core-deploy
-description: |
-  Deploy Ariadne Core to Railway or another hosting platform. Use this skill when
-  the user wants to deploy a new instance, update an existing deployment, check
-  deployment status, or troubleshoot a deploy. Triggers: "deploy ariadne", "push to
-  railway", "update the deployment", "deploy to fly.io", "check deploy status", or
-  any request involving hosting, deploying, or managing an Ariadne Core instance.
-version: 1.0.0
+description: "Deploy Ariadne Core to Railway or another host. Triggers: deploy ariadne, push to railway, update deployment, check deploy status."
 ---
 
 # Ariadne Core — Deploy
+
+Use this skill when the user wants to deploy a new instance, update an existing
+deployment, check deployment status, or troubleshoot a deploy. Covers Railway,
+Fly.io, Docker, or any hosting platform.
 
 ## Runtime Requirements
 

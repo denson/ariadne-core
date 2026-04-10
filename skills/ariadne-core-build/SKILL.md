@@ -1,17 +1,16 @@
 ---
 name: ariadne-core-build
-description: |
-  Build, maintain, and extend the Ariadne Core document extraction and retrieval
-  pipeline. Use this skill whenever you need to modify code, fix bugs, add features,
-  update configuration, write tests, or make any changes to the Ariadne Core repo.
-  Also use when the user asks about repo structure, design decisions, architecture,
-  file sync requirements, or how the system is built. This is the development skill —
-  for using Ariadne Core as an end user (ingesting documents, searching, etc.),
-  use the ariadne-document-intelligence skill instead.
-version: 3.0.0
+description: "Build, maintain, and extend the Ariadne Core codebase. Triggers: modify code, fix bugs, add features, write tests, repo structure questions."
 ---
 
 # Ariadne Core — Build & Maintain
+
+Use this skill for modifying code, fixing bugs, adding features, updating
+configuration, writing tests, or any changes to the Ariadne Core repo. Also
+covers repo structure, design decisions, architecture, and file sync questions.
+
+For using Ariadne Core as an end user (ingesting documents, searching, etc.),
+use the ariadne-document-intelligence skill instead.
 
 ## Runtime Requirements
 

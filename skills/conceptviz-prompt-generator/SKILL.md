@@ -1,16 +1,6 @@
 ---
 name: conceptviz-prompt-generator
-description: |
-  Analyze a document, suggest where illustrations would improve comprehension, and
-  generate ready-to-paste prompts for ConceptViz (https://conceptviz.app/). Use this
-  skill whenever the user wants to add visuals, diagrams, or illustrations to a
-  document — even if they don't mention ConceptViz by name. Also use it when someone
-  says "this needs a diagram", "illustrate this concept", "add images to this skill",
-  "where should I put visuals", "make this more visual", "create diagrams for this
-  doc", "generate image prompts", or asks about making documentation, READMEs, or
-  skills more engaging with illustrations. If the user is working on a SKILL.md or
-  onboarding document and mentions images at all, this is the right skill.
-version: 1.0.0
+description: "Generate illustration prompts for ConceptViz. Triggers: add visuals, illustrate this, create diagrams, make this more visual, add images."
 ---
 
 # ConceptViz Prompt Generator

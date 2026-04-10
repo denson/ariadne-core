@@ -1,27 +1,14 @@
 ---
 name: ariadne-core-walkthrough
-description: |
-  Walks the user through Ariadne Core — a document extraction and retrieval
-  pipeline that converts PDFs and 20+ formats to clean Markdown to dramatically
-  reduce frontier-LLM token costs. Presents an interactive 5-beat demo with
-  Nate Jones's video, the token-savings argument with concrete numbers, and
-  branching questions tailored to the user's situation.
-
-  TRIGGER when: user asks "what is ariadne core", "tell me about ariadne",
-  "tell me about ariadne core", "what is ariadne", "explain ariadne core",
-  "how do I get started with ariadne", "walk me through ariadne", "give me
-  the ariadne walkthrough", "present ariadne core", "what does ariadne core
-  do", "ariadne core overview", "show me ariadne core", or any general
-  question about what Ariadne Core is, what it does, or why it exists.
-
-  DO NOT TRIGGER when: user wants to deploy Ariadne Core (use
-  ariadne-core-deploy), modify the codebase (use ariadne-core-build), process
-  or search documents (use ariadne-document-intelligence), or explicitly names
-  a different ariadne skill (use ariadne-core-router).
-version: 1.0.1
+description: "Interactive walkthrough of Ariadne Core. Triggers: what is ariadne core, tell me about ariadne, explain ariadne, ariadne overview."
 ---
 
 # Ariadne Core — Onboarding (Dynamic Presenter)
+
+DO NOT use this skill when the user wants to deploy (use ariadne-core-deploy),
+modify the codebase (use ariadne-core-build), process or search documents (use
+ariadne-document-intelligence), or explicitly names a different skill (use
+ariadne-core-router).
 
 ## ⛔ STOP — READ THIS BEFORE YOU TOUCH ANY TOOL ⛔
 

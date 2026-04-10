@@ -1,17 +1,12 @@
 ---
 name: ariadne-document-intelligence
-description: |
-  Use Ariadne Core tools to process, search, and manage documents. Triggers when the
-  user wants to DO something with documents: upload, ingest, search, extract, or query.
-  Examples: "ingest this", "store this document", "process this file", "search my
-  documents", "find that PDF", "what does [document] say about [topic]", "ingest this
-  folder". Do NOT trigger on general questions about what Ariadne Core is or how it
-  works — those go to the onboarding skill instead. This skill is for USING the tools,
-  not learning about them.
-version: 4.0.0
+description: "Process, search, and manage documents using Ariadne Core tools. Triggers: ingest this, search my documents, process this file, find that PDF."
 ---
 
 # Ariadne Document Intelligence
+
+This skill is for USING the tools, not learning about them. For general questions
+about what Ariadne Core is or how it works, use the ariadne-core-walkthrough skill.
 
 ## Why this skill exists
 

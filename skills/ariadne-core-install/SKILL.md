@@ -1,21 +1,18 @@
 ---
 name: ariadne-core-install
-description: |
-  Deploy and connect Ariadne Core — a document extraction and retrieval pipeline.
-  Use this skill when the user wants to deploy Ariadne Core to Railway or another
-  host, connect Claude Code to an existing deployment, troubleshoot a connection, or
-  update a deployment. Triggers: "deploy ariadne", "set up ariadne core", "connect
-  ariadne core", "ariadne core isn't working", "set up document pipeline",
-  "configure MCP for ariadne", or any request to get Ariadne Core running.
-
-  This skill has two modes:
-  - AI agent mode (default): structured commands for autonomous execution
-  - Human mode: step-by-step with explanations, links to the onboarding skill for
-    visual walkthrough
-version: 3.0.0
+description: "Set up and connect Ariadne Core. Triggers: deploy ariadne, set up ariadne core, connect ariadne core, configure MCP, troubleshoot connection."
 ---
 
 # Ariadne Core — Deployment & Connection
+
+Use this skill when the user wants to deploy Ariadne Core to Railway or another
+host, connect Claude Code to an existing deployment, troubleshoot a connection,
+or update a deployment.
+
+This skill has two modes:
+- **AI agent mode** (default): structured commands for autonomous execution
+- **Human mode**: step-by-step with explanations, links to the onboarding skill
+  for visual walkthrough
 
 ## Runtime Requirements
 

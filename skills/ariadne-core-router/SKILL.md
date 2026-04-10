@@ -1,13 +1,6 @@
 ---
 name: ariadne-core
-description: |
-  Routes users to the right Ariadne Core skill by name. Only triggers on
-  explicit skill requests: "run the install skill", "run the deploy skill",
-  "run the build skill", "run the document intelligence skill", "run the
-  ariadne skill". For general questions like "what is ariadne core", "tell
-  me about ariadne", or "how do I get started", the onboarding skill handles
-  those directly.
-version: 3.1.0
+description: "Route to the right Ariadne Core skill by name. Triggers: run the install skill, run the deploy skill, run the build skill."
 ---
 
 # Ariadne Core — Router
