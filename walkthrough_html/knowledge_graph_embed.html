@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ariadne Core — Knowledge Graph</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: transparent;
+      --text: #e2e8f0;
+      --text-bright: #f1f5f9;
+      --text-dim: #94a3b8;
+      --text-muted: #64748b;
+      --panel-bg: rgba(30, 41, 59, 0.95);
+      --panel-border: rgba(51, 65, 85, 0.8);
+      --link-color: #475569;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --text: #334155;
+        --text-bright: #0f172a;
+        --text-dim: #64748b;
+        --text-muted: #94a3b8;
+        --panel-bg: rgba(255, 255, 255, 0.95);
+        --panel-border: rgba(203, 213, 225, 0.8);
+        --link-color: #cbd5e1;
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
+    #container { position: relative; width: 100%; height: 100vh; }
+    svg { width: 100%; height: 100%; display: block; }
+    .node circle { stroke-width: 2; cursor: pointer; transition: opacity 0.2s; }
+    .node text { font-size: 9px; fill: var(--text); pointer-events: none; transition: opacity 0.2s; }
+    .node.active circle { stroke: var(--text-bright); stroke-width: 3; }
+    .node.active text { fill: var(--text-bright); font-weight: 700; font-size: 10px; }
+    .node.dimmed circle { opacity: 0.12; }
+    .node.dimmed text { opacity: 0.12; }
+    .link { stroke-opacity: 0.12; stroke-width: 1; transition: stroke-opacity 0.2s; }
+    .link.active { stroke-opacity: 0.7; stroke-width: 2; }
+    .link.dimmed { stroke-opacity: 0.03; }
+    #tooltip {
+      position: absolute; display: none; background: var(--panel-bg);
+      border: 1px solid var(--panel-border); backdrop-filter: blur(8px);
+      border-radius: 8px; padding: 12px 16px; max-width: 340px; font-size: 13px;
+      line-height: 1.5; color: var(--text); pointer-events: none; z-index: 10;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    }
+    #tooltip h3 { font-size: 14px; color: var(--text-bright); margin-bottom: 6px; }
+    #tooltip .group-badge { font-size: 10px; font-family: monospace; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 8px; }
+    #tooltip .one-line { font-style: italic; color: var(--text-dim); margin-bottom: 8px; }
+    #tooltip .connections { font-size: 11px; color: var(--text-muted); }
+    #legend {
+      position: absolute; bottom: 12px; left: 12px; background: var(--panel-bg);
+      border: 1px solid var(--panel-border); backdrop-filter: blur(8px);
+      border-radius: 8px; padding: 10px 14px; font-size: 11px; z-index: 10;
+    }
+    #legend h4 { font-size: 11px; margin-bottom: 6px; color: var(--text-bright); }
+    #legend .item { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; color: var(--text); }
+    #legend .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    #title {
+      position: absolute; top: 12px; left: 12px; font-size: 15px; font-weight: 700;
+      color: var(--text-bright); z-index: 10;
+    }
+    #title span { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+    #stats {
+      position: absolute; top: 12px; right: 12px; font-size: 11px;
+      color: var(--text-muted); z-index: 10; text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="title">Ariadne Core Knowledge Graph<br><span>35 concepts · hover to explore · scroll to zoom · drag to pan</span></div>
+    <div id="stats"></div>
+    <div id="tooltip"></div>
+    <div id="legend">
+      <h4>Concept Groups</h4>
+      <div class="item"><div class="dot" style="background:#f59e0b"></div> Token Economics</div>
+      <div class="item"><div class="dot" style="background:#06b6d4"></div> Product & Architecture</div>
+      <div class="item"><div class="dot" style="background:#8b5cf6"></div> Deployment & Editions</div>
+      <div class="item"><div class="dot" style="background:#22c55e"></div> Onboarding / Education</div>
+      <div class="item"><div class="dot" style="background:#ec4899"></div> Auth, Tools & Technical</div>
+      <div class="item"><div class="dot" style="background:#f97316"></div> Data, Performance & Limits</div>
+    </div>
+    <svg id="graph"></svg>
+  </div>
+
+  <script>
+    const groups = {
+      "Token Economics": {
+        color: "#f59e0b",
+        ids: ["mechanism_1_raw_pdf_bloat","mechanism_2_extraction_loop","two_audiences_framing","anchor_numbers","ten_x_session_savings","per_doc_pipeline_cost"]
+      },
+      "Product & Architecture": {
+        color: "#06b6d4",
+        ids: ["the_extraction_pipeline","search_dont_send","model_class_routing","format_coverage","beyond_extraction_metadata_layer"]
+      },
+      "Deployment & Editions": {
+        color: "#8b5cf6",
+        ids: ["railway_deployment","self_host_break_even","managed_pricing_overview","managed_value_prop","roadmap_personal_edition","team_edition","enterprise_edition"]
+      },
+      "Onboarding / Education": {
+        color: "#22c55e",
+        ids: ["nate_jones_video","stupid_button_diagnostic","token_translator_prompt","connect_claude_code"]
+      },
+      "Auth, Tools & Technical": {
+        color: "#ec4899",
+        ids: ["auth_and_client_compatibility","persistent_memory_across_sessions","embedding_model_selection","dedup_and_provenance","mcp_tools_overview","chunking_strategies","vision_and_image_handling","gemma4_and_model_economics","storage_growth_and_scaling","markitdown_standalone"]
+      },
+      "Data, Performance & Limits": {
+        color: "#f97316",
+        ids: ["data_portability","performance_benchmarks","scanned_pdf_limitations"]
+      }
+    };
+
+    const concepts = [
+      {id:"mechanism_1_raw_pdf_bloat",name:"Raw PDF bloat",one_line:"~100K tokens as raw PDF \u2192 ~5K as Markdown \u2014 20x reduction per document.",see_also:["mechanism_2_extraction_loop","anchor_numbers","ten_x_session_savings","two_audiences_framing","nate_jones_video"]},
+      {id:"mechanism_2_extraction_loop",name:"LLM extraction loop",one_line:"Without a pipeline, frontier models burn $3\u2013$15/M writing Python to extract documents.",see_also:["mechanism_1_raw_pdf_bloat","the_extraction_pipeline","per_doc_pipeline_cost","model_class_routing","anchor_numbers"]},
+      {id:"two_audiences_framing",name:"Two audiences",one_line:"Subscription = runway; agentic systems = cost reduction. Same mechanism, different experience.",see_also:["mechanism_1_raw_pdf_bloat","mechanism_2_extraction_loop","ten_x_session_savings","nate_jones_video"]},
+      {id:"anchor_numbers",name:"Anchor numbers",one_line:"20x per doc, 8\u201310x per session, ~$0.002 pipeline cost, ~$0.29\u2013$1.43 saved per doc.",see_also:["mechanism_1_raw_pdf_bloat","mechanism_2_extraction_loop","ten_x_session_savings","per_doc_pipeline_cost","managed_pricing_overview"]},
+      {id:"ten_x_session_savings",name:"10x session savings",one_line:"Wasteful Opus session: $8\u2013$10. Clean session: ~$1. That\u2019s the 10x.",see_also:["nate_jones_video","mechanism_1_raw_pdf_bloat","mechanism_2_extraction_loop","two_audiences_framing","stupid_button_diagnostic"]},
+      {id:"per_doc_pipeline_cost",name:"Pipeline cost (~$0.002)",one_line:"Pure Python extraction at $0 + small model embedding + vision = ~$0.002/doc.",see_also:["mechanism_2_extraction_loop","the_extraction_pipeline","model_class_routing","managed_pricing_overview"]},
+      {id:"the_extraction_pipeline",name:"Extraction pipeline",one_line:"Seven steps: Extract \u2192 Dedup \u2192 Enrich \u2192 Chunk \u2192 Embed \u2192 Store \u2192 Track.",see_also:["mechanism_2_extraction_loop","per_doc_pipeline_cost","search_dont_send","format_coverage","beyond_extraction_metadata_layer"]},
+      {id:"search_dont_send",name:"Search, don\u2019t send",one_line:"Search returns relevant chunks \u2014 pennies per query instead of dollars per session.",see_also:["the_extraction_pipeline","mechanism_1_raw_pdf_bloat","beyond_extraction_metadata_layer","format_coverage"]},
+      {id:"model_class_routing",name:"Model-class routing",one_line:"Frontier for reasoning, small models for extraction/embedding. Right model for each job.",see_also:["mechanism_2_extraction_loop","per_doc_pipeline_cost","the_extraction_pipeline"]},
+      {id:"format_coverage",name:"20+ formats",one_line:"PDF, DOCX, PPTX, XLSX, HTML, CSV, EPUB, EML, MSG, ZIP, audio, images \u2014 all to Markdown.",see_also:["the_extraction_pipeline","search_dont_send","mechanism_1_raw_pdf_bloat"]},
+      {id:"beyond_extraction_metadata_layer",name:"Metadata + search layer",one_line:"Agent-writable, agent-readable metadata over every chunk. Searchable, persistent, composable.",see_also:["the_extraction_pipeline","search_dont_send","roadmap_personal_edition","two_audiences_framing"]},
+      {id:"railway_deployment",name:"Railway deployment",one_line:"Create account + CLI \u2192 agent runs railway up \u2192 live in ~5 minutes.",see_also:["self_host_break_even","managed_pricing_overview","the_extraction_pipeline"]},
+      {id:"self_host_break_even",name:"Self-host vs Managed",one_line:"Personal is free + ~$5/mo hosting. Managed adds $20/mo for ops you don\u2019t want to do.",see_also:["managed_pricing_overview","managed_value_prop","railway_deployment","roadmap_personal_edition"]},
+      {id:"managed_pricing_overview",name:"Managed pricing",one_line:"$20/mo management fee + Railway at cost. Savings dwarf the fee at any real volume.",see_also:["self_host_break_even","managed_value_prop","anchor_numbers","mechanism_1_raw_pdf_bloat","two_audiences_framing"]},
+      {id:"managed_value_prop",name:"What $20/mo buys",one_line:"Security, backups, upgrades, provisioning, tracking, and OAuth for Cowork.",see_also:["managed_pricing_overview","self_host_break_even","auth_and_client_compatibility"]},
+      {id:"roadmap_personal_edition",name:"Personal edition",one_line:"Free, open source, API key auth, full pipeline. The entry point.",see_also:["railway_deployment","self_host_break_even","managed_pricing_overview","team_edition","enterprise_edition","beyond_extraction_metadata_layer","auth_and_client_compatibility","markitdown_standalone"]},
+      {id:"team_edition",name:"Team edition",one_line:"Shared DB + team agent. Dedup becomes coordination, not just performance.",see_also:["roadmap_personal_edition","enterprise_edition","the_extraction_pipeline"]},
+      {id:"enterprise_edition",name:"Enterprise edition",one_line:"Same skills layer, data layer picked per customer. Snowflake, existing vector DB, on-prem.",see_also:["team_edition","roadmap_personal_edition","managed_pricing_overview"]},
+      {id:"nate_jones_video",name:"Nate Jones video",one_line:"The 12-minute video that frames the token-waste problem and gives us the anchor numbers.",see_also:["ten_x_session_savings","mechanism_1_raw_pdf_bloat","stupid_button_diagnostic","token_translator_prompt"]},
+      {id:"stupid_button_diagnostic",name:"Stupid Button diagnostic",one_line:"Rates a session 1\u201310 across six waste patterns.",see_also:["token_translator_prompt","nate_jones_video","ten_x_session_savings"]},
+      {id:"token_translator_prompt",name:"Token Translator",one_line:"Reconstructs session token math phase-by-phase.",see_also:["stupid_button_diagnostic","nate_jones_video","anchor_numbers"]},
+      {id:"connect_claude_code",name:"Connect Claude Code",one_line:"One claude mcp add command \u2192 six tools ready.",see_also:["railway_deployment","search_dont_send","the_extraction_pipeline","auth_and_client_compatibility","mcp_tools_overview"]},
+      {id:"auth_and_client_compatibility",name:"Auth & clients",one_line:"API key for most clients. Cowork requires OAuth \u2192 Managed edition or self-hosted OAuth.",see_also:["connect_claude_code","roadmap_personal_edition","managed_value_prop","mcp_tools_overview"]},
+      {id:"persistent_memory_across_sessions",name:"Persistent memory",one_line:"Source-of-truth tracking, project context surviving sessions, cross-document recall.",see_also:["beyond_extraction_metadata_layer","two_audiences_framing","search_dont_send"]},
+      {id:"embedding_model_selection",name:"Embedding models",one_line:"Any OpenAI-compatible provider. Multilingual options. Fully local with Ollama.",see_also:["the_extraction_pipeline","per_doc_pipeline_cost","model_class_routing","vision_and_image_handling"]},
+      {id:"dedup_and_provenance",name:"Dedup & provenance",one_line:"SHA-256 fingerprint, skips expensive work, still records every interaction.",see_also:["the_extraction_pipeline","team_edition","mcp_tools_overview","beyond_extraction_metadata_layer"]},
+      {id:"mcp_tools_overview",name:"Six MCP tools",one_line:"convert_document, search, get_document, list_documents, list_collections, ingest.",see_also:["connect_claude_code","search_dont_send","dedup_and_provenance","auth_and_client_compatibility"]},
+      {id:"chunking_strategies",name:"Chunking strategies",one_line:"Auto-selected by file type: by_title, by_page, fixed_size. Configurable.",see_also:["the_extraction_pipeline","search_dont_send","mcp_tools_overview"]},
+      {id:"vision_and_image_handling",name:"Vision & images",one_line:"Optional enrichment \u2014 small multimodal model describes images. BYOM supported.",see_also:["per_doc_pipeline_cost","the_extraction_pipeline","embedding_model_selection","gemma4_and_model_economics"]},
+      {id:"gemma4_and_model_economics",name:"Gemma 4 economics",one_line:"Pro-tier reasoning at $0.10/M. Model switching is a config change.",see_also:["vision_and_image_handling","per_doc_pipeline_cost","model_class_routing","embedding_model_selection"]},
+      {id:"storage_growth_and_scaling",name:"Storage & scaling",one_line:"pgvector to ~5M vectors. Weaviate for 30\u201340x RAM reduction. Tiered storage roadmapped.",see_also:["managed_pricing_overview","managed_value_prop","railway_deployment","the_extraction_pipeline"]},
+      {id:"markitdown_standalone",name:"MarkItDown standalone",one_line:"Extraction only, 20+ formats, $0, MIT. Ariadne adds search, metadata, provenance.",see_also:["the_extraction_pipeline","format_coverage","beyond_extraction_metadata_layer","roadmap_personal_edition","persistent_memory_across_sessions"]},
+      {id:"data_portability",name:"Data portability",one_line:"Your Postgres, your data. pg_dump anytime. Re-embed to move to a different system.",see_also:["roadmap_personal_edition","managed_value_prop","railway_deployment","embedding_model_selection"]},
+      {id:"performance_benchmarks",name:"Performance & latency",one_line:"Search <50ms at 1M chunks. Extraction <100ms/doc. Embedding API is the bottleneck.",see_also:["storage_growth_and_scaling","the_extraction_pipeline","embedding_model_selection","search_dont_send"]},
+      {id:"scanned_pdf_limitations",name:"Scanned PDFs",one_line:"No OCR in Phase 1. Separate workflow for now. Enhanced extraction roadmapped for Managed/Team.",see_also:["format_coverage","the_extraction_pipeline","markitdown_standalone","vision_and_image_handling"]}
+    ];
+
+    function getGroup(id) {
+      for (const [name, g] of Object.entries(groups)) {
+        if (g.ids.includes(id)) return { name, color: g.color };
+      }
+      return { name: "Unknown", color: "#64748b" };
+    }
+
+    // Use container size, not window — embed-friendly
+    const container = document.getElementById("container");
+    const W = container.clientWidth || 900;
+    const H = container.clientHeight || 600;
+
+    // Build links
+    const linkSet = new Set();
+    const links = [];
+    concepts.forEach(c => {
+      c.see_also.forEach(target => {
+        const key = [c.id, target].sort().join("--");
+        if (!linkSet.has(key) && concepts.find(t => t.id === target)) {
+          linkSet.add(key);
+          links.push({ source: c.id, target });
+        }
+      });
+    });
+
+    const svg = document.getElementById("graph");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+    // Stats
+    document.getElementById("stats").textContent = `${concepts.length} nodes \u00b7 ${links.length} edges`;
+
+    // Force simulation (no dependencies)
+    const nodes = concepts.map((c, i) => {
+      const g = getGroup(c.id);
+      const groupIdx = Object.keys(groups).indexOf(g.name);
+      const angle = (groupIdx / Object.keys(groups).length) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+      const radius = Math.min(W, H) * 0.25 + Math.random() * Math.min(W, H) * 0.15;
+      return {
+        ...c,
+        x: W / 2 + Math.cos(angle) * radius,
+        y: H / 2 + Math.sin(angle) * radius,
+        vx: 0, vy: 0,
+        group: g
+      };
+    });
+
+    const nodeMap = {};
+    nodes.forEach(n => nodeMap[n.id] = n);
+
+    // Run simulation
+    for (let iter = 0; iter < 400; iter++) {
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          let dx = nodes[j].x - nodes[i].x;
+          let dy = nodes[j].y - nodes[i].y;
+          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          let force = 1000 / (dist * dist);
+          let fx = (dx / dist) * force;
+          let fy = (dy / dist) * force;
+          nodes[i].vx -= fx; nodes[i].vy -= fy;
+          nodes[j].vx += fx; nodes[j].vy += fy;
+        }
+      }
+
+      links.forEach(l => {
+        const s = nodeMap[l.source];
+        const t = nodeMap[l.target];
+        if (!s || !t) return;
+        let dx = t.x - s.x;
+        let dy = t.y - s.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        let force = (dist - 100) * 0.006;
+        let fx = (dx / dist) * force;
+        let fy = (dy / dist) * force;
+        s.vx += fx; s.vy += fy;
+        t.vx -= fx; t.vy -= fy;
+      });
+
+      nodes.forEach(n => {
+        n.vx += (W / 2 - n.x) * 0.003;
+        n.vy += (H / 2 - n.y) * 0.003;
+        n.vx *= 0.82; n.vy *= 0.82;
+        n.x += n.vx; n.y += n.vy;
+        n.x = Math.max(50, Math.min(W - 50, n.x));
+        n.y = Math.max(50, Math.min(H - 50, n.y));
+      });
+    }
+
+    // Draw links
+    links.forEach(l => {
+      const s = nodeMap[l.source];
+      const t = nodeMap[l.target];
+      if (!s || !t) return;
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", s.x); line.setAttribute("y1", s.y);
+      line.setAttribute("x2", t.x); line.setAttribute("y2", t.y);
+      line.setAttribute("stroke", "var(--link-color)");
+      line.classList.add("link");
+      line.dataset.source = l.source;
+      line.dataset.target = l.target;
+      svg.appendChild(line);
+    });
+
+    // Draw nodes
+    nodes.forEach(n => {
+      const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      g.classList.add("node");
+      g.dataset.id = n.id;
+
+      const r = 7 + n.see_also.length * 0.8;
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("cx", n.x); circle.setAttribute("cy", n.y);
+      circle.setAttribute("r", r);
+      circle.setAttribute("fill", n.group.color);
+      circle.setAttribute("stroke", n.group.color);
+      circle.setAttribute("fill-opacity", "0.25");
+      g.appendChild(circle);
+
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      text.setAttribute("x", n.x); text.setAttribute("y", n.y - r - 4);
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = n.name;
+      g.appendChild(text);
+
+      svg.appendChild(g);
+    });
+
+    // Tooltip
+    const tooltip = document.getElementById("tooltip");
+    let pinned = null;
+
+    function highlight(id) {
+      const n = nodeMap[id];
+      if (!n) return;
+      const connected = new Set(n.see_also);
+      connected.add(id);
+      // Also include nodes that link TO this node
+      concepts.forEach(c => { if (c.see_also.includes(id)) connected.add(c.id); });
+
+      document.querySelectorAll(".node").forEach(el => {
+        el.classList.toggle("active", el.dataset.id === id);
+        el.classList.toggle("dimmed", !connected.has(el.dataset.id));
+      });
+      document.querySelectorAll(".link").forEach(el => {
+        const isConn = (el.dataset.source === id || el.dataset.target === id);
+        el.classList.toggle("active", isConn);
+        el.classList.toggle("dimmed", !isConn);
+        if (isConn) el.setAttribute("stroke", n.group.color);
+      });
+
+      const inbound = concepts.filter(c => c.see_also.includes(id) && c.id !== id).map(c => nodeMap[c.id]?.name || c.id);
+      const outbound = n.see_also.map(sid => nodeMap[sid]?.name || sid);
+
+      tooltip.innerHTML = `
+        <div class="group-badge" style="color:${n.group.color}">${n.group.name}</div>
+        <h3>${n.name}</h3>
+        <div class="one-line">${n.one_line}</div>
+        <div class="connections">\u2192 ${outbound.join(" \u00b7 ")}</div>
+        ${inbound.length ? `<div class="connections" style="margin-top:4px">\u2190 ${inbound.join(" \u00b7 ")}</div>` : ""}
+      `;
+      tooltip.style.display = "block";
+    }
+
+    function clearHighlight() {
+      document.querySelectorAll(".node").forEach(el => { el.classList.remove("active","dimmed"); });
+      document.querySelectorAll(".link").forEach(el => {
+        el.classList.remove("active","dimmed");
+        el.setAttribute("stroke", "var(--link-color)");
+      });
+      tooltip.style.display = "none";
+    }
+
+    container.addEventListener("mousemove", e => {
+      const rect = container.getBoundingClientRect();
+      let tx = e.clientX - rect.left + 16;
+      let ty = e.clientY - rect.top + 16;
+      if (tx + 350 > rect.width) tx = e.clientX - rect.left - 356;
+      if (ty + 200 > rect.height) ty = e.clientY - rect.top - 200;
+      tooltip.style.left = tx + "px";
+      tooltip.style.top = ty + "px";
+    });
+
+    document.querySelectorAll(".node").forEach(el => {
+      el.addEventListener("mouseenter", () => { if (!pinned) highlight(el.dataset.id); });
+      el.addEventListener("mouseleave", () => { if (!pinned) clearHighlight(); });
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (pinned === el.dataset.id) { pinned = null; clearHighlight(); }
+        else { pinned = el.dataset.id; highlight(el.dataset.id); }
+      });
+    });
+
+    svg.addEventListener("click", () => { pinned = null; clearHighlight(); });
+
+    // Pan & zoom
+    let viewBox = { x: 0, y: 0, w: W, h: H };
+    let isPanning = false;
+    let panStart = { x: 0, y: 0 };
+
+    function applyViewBox() {
+      svg.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+    }
+
+    svg.addEventListener("wheel", e => {
+      e.preventDefault();
+      const scale = e.deltaY > 0 ? 1.08 : 1 / 1.08;
+      const rect = svg.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) / rect.width;
+      const my = (e.clientY - rect.top) / rect.height;
+      const newW = viewBox.w * scale;
+      const newH = viewBox.h * scale;
+      viewBox.x += (viewBox.w - newW) * mx;
+      viewBox.y += (viewBox.h - newH) * my;
+      viewBox.w = newW;
+      viewBox.h = newH;
+      applyViewBox();
+    }, { passive: false });
+
+    svg.addEventListener("mousedown", e => {
+      if (e.button === 0 && !e.target.closest(".node")) {
+        isPanning = true;
+        panStart.x = e.clientX;
+        panStart.y = e.clientY;
+        svg.style.cursor = "grabbing";
+      }
+    });
+
+    window.addEventListener("mousemove", e => {
+      if (!isPanning) return;
+      const rect = svg.getBoundingClientRect();
+      const dx = (e.clientX - panStart.x) * (viewBox.w / rect.width);
+      const dy = (e.clientY - panStart.y) * (viewBox.h / rect.height);
+      viewBox.x -= dx;
+      viewBox.y -= dy;
+      panStart.x = e.clientX;
+      panStart.y = e.clientY;
+      applyViewBox();
+    });
+
+    window.addEventListener("mouseup", () => {
+      isPanning = false;
+      svg.style.cursor = "";
+    });
+
+    // Double-click to reset view
+    svg.addEventListener("dblclick", e => {
+      e.preventDefault();
+      viewBox = { x: 0, y: 0, w: W, h: H };
+      applyViewBox();
+    });
+  </script>
+</body>
+</html>
