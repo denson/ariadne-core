@@ -275,7 +275,10 @@ concepts:
       session starts with everything the previous one already knew. Token
       savings make it cheap to ingest a lot of documents; persistent searchable
       memory makes a large corpus useful instead of overwhelming. **Always
-      pitch the two together.**
+      pitch the two together.** The SPEC's Metadata Conventions section
+      defines recommended keys and tag conventions so that metadata written
+      by one agent is discoverable and useful to another — without conventions,
+      flexible metadata becomes unsearchable noise.
     see_also: [the_extraction_pipeline, search_dont_send, roadmap_personal_edition, two_audiences_framing]
     sources:
       - file: docs/TOKEN_SAVINGS_FRAMING.md
@@ -641,11 +644,15 @@ concepts:
       first to see what exists. **ingest** batch-processes a directory.
       All tools that write data accept **caller metadata** (agent_id,
       agent_type, model, initiated_by, agent_notes, agent_metadata) for
-      provenance tracking. Search supports filters on `collection`,
-      `file_type`, `source_file`, `tags`, and `document_id` — use tags
-      to scope search by project, agent, or any custom dimension. The REST
-      API is available at the same deployment URL for scripts and systems
-      that don't speak MCP.
+      provenance tracking. The SPEC defines **Metadata Conventions** —
+      recommended `agent_metadata` keys (project, source_url, intent,
+      findings, status, related_documents), tag conventions (lowercase,
+      hyphenated, namespace prefixes), and worked examples for common
+      workflows — so metadata from different agents is interoperable.
+      Search supports filters on `collection`, `file_type`, `source_file`,
+      `tags`, and `document_id` — use tags to scope search by project,
+      agent, or any custom dimension. The REST API is available at the
+      same deployment URL for scripts and systems that don't speak MCP.
     see_also: [connect_claude_code, search_dont_send, dedup_and_provenance, auth_and_client_compatibility]
     sources:
       - file: SPEC.md
@@ -828,7 +835,7 @@ concepts:
     see_also: [storage_growth_and_scaling, the_extraction_pipeline, embedding_model_selection, search_dont_send]
     sources:
       - file: docs/docint-architecture.md
-        section: "Performance expectations"
+        section: "Performance Expectations"
         github_url: https://github.com/denson/ariadne-core/blob/main/docs/docint-architecture.md
       - file: docs/roadmap/cost-analysis-pro-storage.md
         section: "Search latency"
