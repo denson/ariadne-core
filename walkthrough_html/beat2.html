@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ariadne Core — The Problem</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="beat-tag">Ariadne Core</div>
+    <h1>Two mechanisms of waste</h1>
+    <div class="image-frame">
+      <img src="token_waste.png" alt="100K tokens raw PDF vs ~5,000 clean Markdown">
+      <div class="caption">Same 4,500-word document — ~100,000 tokens as raw PDF vs ~5,000 as clean Markdown</div>
+    </div>
+    <p><strong>Mechanism 1 — Raw PDF bloat.</strong> Binary metadata, embedded fonts, and layout junk inflate a 4,500-word document from ~5,000 tokens of actual content to ~100,000 tokens in the context window. Every one of those extra tokens hits at frontier rates (~$3&ndash;$15/M for Sonnet-class through Opus-class).</p>
+    <p><strong>Mechanism 2 — The LLM extraction loop.</strong> This is the bigger one. Without a pipeline, a frontier model has to figure out extraction itself: write Python, call pdfminer, debug table parsing, retry OCR, look at images with frontier vision rates. We're using the most expensive tokens available to do work a specialized pipeline does <strong>better</strong> for ~$0.002/doc.</p>
+    <p>Not just cheaper &mdash; <strong>better</strong>. A deterministic pipeline + purpose-built small models capture tables, layout structure, and image semantics more accurately than a frontier model improvising extraction code on the fly.</p>
+  </div>
+</body>
+</html>
