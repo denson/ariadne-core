@@ -2,7 +2,7 @@
 name: ariadne-core
 description: |
   Ariadne Core plugin entry point. Do NOT answer questions about Ariadne
-  Thread from this file — instead, invoke the appropriate skill:
+  Core from this file — instead, invoke the appropriate skill:
   - General questions ("what is ariadne", "tell me about ariadne", "how does
     it work") → invoke the ariadne-core-walkthrough skill
   - Document actions (ingest, search, extract) → invoke the

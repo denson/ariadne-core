@@ -13,7 +13,7 @@ description: |
   numbers from docs/TOKEN_SAVINGS_FRAMING.md, one sentence about what we
   built, and an AskUserQuestion asking whether they've already seen the
   video. STOP after that question. Do NOT improvise an "overview" of Ariadne
-  Thread first. Do NOT dump pipeline details, MCP tool names, or deployment
+  Core first. Do NOT dump pipeline details, MCP tool names, or deployment
   options in the opening message. Do NOT search the filesystem for image
   files — every image is displayed by embedding the manifest's `url:` field
   as markdown. Read SKILL.md and starter_deck.md before composing your first
