@@ -1,0 +1,512 @@
+schema_version: 1
+
+# Project knowledge graph for Ariadne Core.
+#
+# Each concept is an atomic unit the dynamic presenter can pull from when a
+# user asks about something. Concepts cross-link via `see_also`, point at
+# source docs (with GitHub URLs for agent-accessible context), and carry a
+# list of relevant `images` from image_manifest.yaml.
+#
+# The presenter should:
+#   1. Match user intent to a concept (by id, name, or topics in body)
+#   2. Use the body as raw material — paraphrase in the voice of
+#      TOKEN_SAVINGS_FRAMING.md, but NEVER invent anchor numbers
+#   3. Pick an image from the concept's `images` list that fits the audience
+#   4. Compose a follow-up question from `see_also` as option seeds
+#
+# Fields:
+#   id        — stable reference
+#   name      — human-readable
+#   one_line  — single-sentence hook (for summaries and menu options)
+#   body      — 3-8 sentences in the voice of TOKEN_SAVINGS_FRAMING.md
+#   see_also  — other concept ids this connects to
+#   sources   — file paths + section anchors + GitHub URLs
+#   images    — image_manifest.yaml ids relevant to this concept
+#
+# GitHub URL base: https://github.com/denson/ariadne-core/blob/main/
+
+github_base: &github_base https://github.com/denson/ariadne-core/blob/main/
+
+concepts:
+
+  # ========== TOKEN ECONOMICS — THE CORE STORY ==========
+
+  - id: mechanism_1_raw_pdf_bloat
+    name: "Raw PDF bloat in the context window"
+    one_line: "A 4,500-word document is ~100K tokens as raw PDF but only ~5K as clean Markdown — a 20x reduction per document, before retrieval is even involved."
+    body: |
+      PDFs carry embedded fonts, layout metadata, and binary structure. When a
+      frontier model reads a raw PDF — drags it into context, looks at it with
+      vision tokens, parses the layout — every one of those ~100,000 tokens
+      hits at the frontier rate. Converted to clean Markdown, the same
+      4,500-word document is ~5,000 tokens. That's a **20x reduction per
+      document**, just from format conversion. Multiply across a multi-document
+      research session and you get the session-cost blowup Nate Jones describes.
+      This is only Mechanism 1 — it's the floor of the savings, not the ceiling.
+    see_also: [mechanism_2_extraction_loop, anchor_numbers, ten_x_session_savings, two_audiences_framing, nate_jones_video]
+    sources:
+      - file: docs/TOKEN_SAVINGS_FRAMING.md
+        section: "Mechanism 1 — Raw PDF bloat in the context window"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
+      - file: skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+        section: "100K → 5K reduction"
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+    images: [onboarding_token_waste, roadmap_two_token_economies, onboarding_format_mosaic]
+
+  - id: mechanism_2_extraction_loop
+    name: "The LLM-driven extraction loop (the big one)"
+    one_line: "Without a pipeline, a frontier model has to figure out extraction itself — writing Python, calling pdfminer, debugging table parsing — at Sonnet-to-Opus-class rates."
+    body: |
+      This is the bigger half of the savings story and the one that gets
+      missed. Without a deterministic pipeline, a frontier model has to figure
+      out extraction on the fly: write Python in the conversation, call
+      pdfminer, debug table parsing, retry when OCR fails, look at images at
+      frontier vision rates. **We are using the most expensive possible tokens
+      (Sonnet-class through Opus-class, ~$3–$15/M) to do work that a cheap
+      specialized pipeline can do better — not just cheaper.** A deterministic
+      pipeline plus purpose-built small models captures tables, layout
+      structure, and image semantics more accurately than a frontier model
+      improvising extraction code. Ariadne Core's pipeline replaces the loop
+      entirely: MarkItDown + format parsers extract in pure Python at $0 in
+      tokens; small embedding and multimodal models handle the rest.
+    see_also: [mechanism_1_raw_pdf_bloat, the_extraction_pipeline, per_doc_pipeline_cost, model_class_routing, anchor_numbers]
+    sources:
+      - file: docs/TOKEN_SAVINGS_FRAMING.md
+        section: "Mechanism 2 — The LLM-driven extraction loop"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
+    images: [onboarding_pipeline, roadmap_two_token_economies, onboarding_search_dont_send]
+
+  - id: two_audiences_framing
+    name: "Two audiences feel the savings differently"
+    one_line: "Subscription users feel savings as runway (hitting limits less often); agentic systems buying tokens directly feel them as line-item cost reduction."
+    body: |
+      The same mechanism lands differently on different users, and any pricing
+      pitch has to acknowledge both experiences. **Single users on Claude Code
+      or Claude Cowork** are on flat-rate frontier subscriptions — they're not
+      buying tokens by the million, they're on usage limits. For them the
+      savings are invisible in dollars but show up as **runway**: longer
+      productive sessions, more work per day before they get rate-limited.
+      **Agentic systems buying tokens directly** (OpenClaw, Open Brain, OB1,
+      custom agents) see savings as a **direct line-item cost reduction** on
+      the monthly frontier bill, predictable per document volume. Never frame
+      the savings only in dollars; never frame them only as runway.
+    see_also: [mechanism_1_raw_pdf_bloat, mechanism_2_extraction_loop, ten_x_session_savings, nate_jones_video]
+    sources:
+      - file: docs/TOKEN_SAVINGS_FRAMING.md
+        section: "Two audiences feel the savings differently"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
+      - file: CLAUDE.md
+        section: "Two audiences feel the savings differently"
+        github_url: https://github.com/denson/ariadne-core/blob/main/CLAUDE.md
+    images: [roadmap_two_token_economies, roadmap_pay_vs_save]
+
+  - id: anchor_numbers
+    name: "The canonical anchor numbers"
+    one_line: "Use these verbatim: 100K→5K tokens (20x), $8–10→$1 session cost (8–10x), ~95K frontier tokens saved per doc, ~$0.002 per doc pipeline cost."
+    body: |
+      Every doc that cites savings must use these numbers — no invented
+      figures. Raw PDF tokens (4,500-word doc): ~100,000. Clean Markdown
+      tokens: ~5,000. Per-document token ratio: 20x. Wasteful 30-turn Opus
+      session on raw PDFs: $8–$10. Clean 30-turn markdown-first session: ~$1.
+      Session cost reduction: 8–10x. Opus-class input rate: ~$15/M. Sonnet-class
+      input rate: ~$3/M. Frontier tokens saved per doc retrieval: ~95,000
+      (100K − 5K). Cost saved per doc at Sonnet-class: ~$0.29. At Opus-class:
+      ~$1.43. Our pipeline cost per doc: ~$0.002. Our pipeline extraction
+      token cost: $0. For user-facing pricing, use model-class language
+      ("~$15/M for an Opus-class model") rather than specific provider rates.
+    see_also: [mechanism_1_raw_pdf_bloat, mechanism_2_extraction_loop, ten_x_session_savings, per_doc_pipeline_cost, managed_pricing_overview]
+    sources:
+      - file: docs/TOKEN_SAVINGS_FRAMING.md
+        section: "Anchor numbers"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
+      - file: CLAUDE.md
+        section: "Anchor numbers"
+        github_url: https://github.com/denson/ariadne-core/blob/main/CLAUDE.md
+    images: [roadmap_diy_vs_managed_cost, roadmap_pay_vs_save]
+
+  - id: ten_x_session_savings
+    name: "Nate's 10x session-cost punchline"
+    one_line: "A wasteful 30-turn Opus session on raw PDFs runs $8–$10; the same work done cleanly runs ~$1. That's the 10x."
+    body: |
+      Nate Jones's punchline from "Your Claude Sessions Cost 10x What They
+      Should": a wasteful 30-turn session with raw PDFs on Opus runs $8–$10;
+      the same work done cleanly — markdown-first, fresh conversations, model-
+      appropriate routing — runs ~$1. **That's the 10x.** It's the session-
+      level consequence of the two mechanisms working together. For subscription
+      users this shows up as runway; for direct-token-buying agentic systems,
+      as a line-item reduction. Either way, the session cost is an order of
+      magnitude smaller.
+    see_also: [nate_jones_video, mechanism_1_raw_pdf_bloat, mechanism_2_extraction_loop, two_audiences_framing, stupid_button_diagnostic]
+    sources:
+      - file: skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+        section: "10x session cost"
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+    images: [video_thumbnail, roadmap_two_token_economies]
+
+  - id: per_doc_pipeline_cost
+    name: "Per-document pipeline cost (~$0.002)"
+    one_line: "Our deterministic pipeline extracts in pure Python at $0 in tokens, then spends ~$0.0001 on embeddings and ~$0.002 on image descriptions — total ~$0.002 per document."
+    body: |
+      MarkItDown and the format parsers extract in pure Python at $0 in tokens.
+      A small embedding model (~$0.02/M class) handles text for ~$0.0001 per
+      document. A small multimodal model (~$0.14/M class — Gemma 4 / Gemini
+      Flash class) handles images by default at ~$0.002 per document. **Total
+      per-document cost to us: ~$0.002.** BYOM is supported if a user needs a
+      more powerful model or one that performs better on their particular
+      content (medical imaging, engineering schematics, handwritten forms).
+      The frontier model only ever sees clean Markdown via a search interface
+      — and gets *better* extracted content than it would have produced itself.
+    see_also: [mechanism_2_extraction_loop, the_extraction_pipeline, model_class_routing, managed_pricing_overview]
+    sources:
+      - file: docs/TOKEN_SAVINGS_FRAMING.md
+        section: "Our pipeline cost"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
+      - file: docs/roadmap/pro-pricing.md
+        section: "Cost per document"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/pro-pricing.md
+    images: [onboarding_pipeline, roadmap_diy_vs_managed_cost]
+
+  # ========== PRODUCT & ARCHITECTURE ==========
+
+  - id: the_extraction_pipeline
+    name: "The extraction pipeline (pure Python + small models)"
+    one_line: "Seven steps: Extract → Dedup → Enrich → Chunk → Embed → Store → Track. Four are free Python; three use cheap API calls."
+    body: |
+      The deterministic extraction pipeline has seven stages. **Extract**
+      (MarkItDown) parses PDF, DOCX, PPTX, XLSX, and 20+ formats in pure
+      Python — free. **Dedup** fingerprints content hashes so already-ingested
+      documents skip re-processing — free, and in Team edition it becomes
+      coordination, not just deduplication. **Enrich** adds image descriptions
+      via a cheap multimodal model — optional. **Chunk** splits Markdown into
+      semantic sections — free. **Embed** computes vectors via a cheap embedding
+      model. **Store** persists chunks + vectors + metadata to Postgres with
+      pgvector. **Track** records provenance for every interaction. The
+      expensive frontier model never touches raw documents — it queries the
+      search interface.
+    see_also: [mechanism_2_extraction_loop, per_doc_pipeline_cost, search_dont_send, format_coverage, beyond_extraction_metadata_layer]
+    sources:
+      - file: docs/docint-architecture.md
+        section: "Pipeline overview"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/docint-architecture.md
+      - file: SPEC.md
+        section: "Pipeline stages"
+        github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
+    images: [onboarding_pipeline, onboarding_architecture]
+
+  - id: search_dont_send
+    name: "Search, don't send"
+    one_line: "Instead of dragging whole documents into context, search returns only the relevant chunks — pennies per query instead of dollars per session."
+    body: |
+      The architectural fix is a retrieval interface, not a raw-document dump.
+      A user's agent asks a question; Ariadne Core returns the top-scored
+      chunks with relevance scores; the agent hands just those chunks to the
+      frontier model. The frontier model never sees a raw PDF, never burns
+      tokens on binary layout metadata, never re-extracts tables. Works with
+      any OpenAI-compatible embedding provider — OpenAI, Google Gemini, Groq,
+      DeepSeek, local models. This is the single biggest "aha moment" for
+      users who get the token-waste story but don't yet see the fix.
+    see_also: [the_extraction_pipeline, mechanism_1_raw_pdf_bloat, beyond_extraction_metadata_layer, format_coverage]
+    sources:
+      - file: SPEC.md
+        section: "search tool"
+        github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
+      - file: skills/ariadne-document-intelligence/SKILL.md
+        section: "Retrieval"
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-document-intelligence/SKILL.md
+    images: [onboarding_search_dont_send, onboarding_connect_claude_code]
+
+  - id: model_class_routing
+    name: "Model-class routing (frontier for reasoning, small for extraction)"
+    one_line: "Frontier-tier models answer questions; small specialized models handle extraction, embedding, and image description. The right model for each job."
+    body: |
+      The key insight: different stages of the pipeline want different model
+      classes. Frontier-tier models (Sonnet-class through Opus-class,
+      ~$3–$15/M) are right for reasoning, synthesis, and the final answer.
+      Small embedding models (~$0.02/M class) are right for vector
+      representations. Small multimodal models (~$0.14/M class — Gemma 4 /
+      Gemini Flash class) are right for image descriptions. Pure Python
+      parsers are right for format conversion. Using frontier models for
+      extraction burns money on a task where frontier models are not even the
+      best tool — a specialized pipeline captures tables and layout structure
+      more accurately.
+    see_also: [mechanism_2_extraction_loop, per_doc_pipeline_cost, the_extraction_pipeline]
+    sources:
+      - file: docs/TOKEN_SAVINGS_FRAMING.md
+        section: "Model-class language"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
+    images: [roadmap_two_token_economies, roadmap_diy_vs_managed_cost]
+
+  - id: format_coverage
+    name: "20+ format coverage"
+    one_line: "MarkItDown handles PDF, DOCX, PPTX, XLSX, HTML, CSV, JSON, EPUB, EML, MSG, ZIP, IPYNB, audio/video transcription, and images — all to clean Markdown."
+    body: |
+      MarkItDown (Microsoft, MIT license) handles 20+ input formats and emits
+      clean Markdown. PDF, DOCX, PPTX, XLSX, HTML, XML, JSON, TXT, MD, RTF,
+      EPUB, EML, MSG, ZIP, IPYNB, WAV, MP3, JPG, PNG, CSV and more. Extraction
+      is free because it's pure Python — not an LLM call. Ariadne Core adds
+      embedding, search, provenance, and agent-writable metadata on top; those
+      are the stages that cost pennies per document. If a user only needs
+      extraction and nothing else, MarkItDown is open source and they can use
+      it directly.
+    see_also: [the_extraction_pipeline, search_dont_send, mechanism_1_raw_pdf_bloat]
+    sources:
+      - file: README.md
+        section: "Supported formats"
+        github_url: https://github.com/denson/ariadne-core/blob/main/README.md
+    images: [onboarding_format_mosaic]
+
+  - id: beyond_extraction_metadata_layer
+    name: "Beyond extraction — agent-writable metadata + persistent memory"
+    one_line: "After extraction, Ariadne chunks, embeds, and stores with agent-writable metadata — turning a pile of docs into a searchable, annotatable, persistent knowledge base."
+    body: |
+      Token savings are the headline number, but they are not the whole reason
+      to use Ariadne Core instead of just MarkItDown. After extraction,
+      Ariadne **chunks the Markdown, computes semantic embeddings, and stores
+      everything in a vector database with structured metadata**. That metadata
+      is **agent-writable, agent-readable, and searchable** — an agent can
+      inject project names, notes, tags, status flags, or extracted entities
+      as structured JSON; future agents can filter, find, and read those notes
+      back without re-extracting the source; metadata filters compose with
+      semantic search. This ships in **every edition, including Personal**.
+      The corpus and its metadata persist across session boundaries — the next
+      session starts with everything the previous one already knew. Token
+      savings make it cheap to ingest a lot of documents; persistent searchable
+      memory makes a large corpus useful instead of overwhelming. **Always
+      pitch the two together.**
+    see_also: [the_extraction_pipeline, search_dont_send, roadmap_personal_edition, two_audiences_framing]
+    sources:
+      - file: docs/TOKEN_SAVINGS_FRAMING.md
+        section: "Beyond extraction"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/TOKEN_SAVINGS_FRAMING.md
+      - file: CLAUDE.md
+        section: "Beyond extraction"
+        github_url: https://github.com/denson/ariadne-core/blob/main/CLAUDE.md
+    images: [onboarding_search_dont_send, onboarding_many_clients]
+
+  # ========== DEPLOYMENT & EDITIONS ==========
+
+  - id: railway_deployment
+    name: "Railway deployment (simplest setup)"
+    one_line: "Create a Railway account and install the CLI — that's it. Your agent runs `railway up` and you're live in ~5 minutes."
+    body: |
+      The simplest way to run Ariadne Core is Railway. The user creates a
+      Railway account and installs the Railway CLI — the only two manual
+      steps, about 2 minutes. Their agent does the rest: `railway login`,
+      `railway init`, `railway add --plugin postgresql`, `railway variables
+      set` for the three keys (EMBEDDING_API_KEY, VISION_API_KEY,
+      ARIADNE_API_KEY), then `railway up`. Total time: ~5 minutes. Railway has
+      a free tier to try and a ~$5/mo hobby plan; Postgres with pgvector is
+      included. Alternatives: Fly.io (~$5/mo, scales to zero) or any Docker
+      host (Hetzner, DigitalOcean — ~$4.50/mo, bring your own HTTPS).
+    see_also: [self_host_break_even, managed_pricing_overview, the_extraction_pipeline]
+    sources:
+      - file: skills/ariadne-core-deploy/SKILL.md
+        section: "Railway deployment"
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-deploy/SKILL.md
+      - file: README.md
+        section: "Deploying"
+        github_url: https://github.com/denson/ariadne-core/blob/main/README.md
+    images: [onboarding_hosting, onboarding_agent_heavy_lifting, onboarding_connect_claude_code, onboarding_env_vars]
+
+  - id: self_host_break_even
+    name: "Self-hosting break-even vs Managed"
+    one_line: "Personal edition is free and open source; Managed adds $20/mo for the operations work (security, backups, upgrades) on top of Railway at cost."
+    body: |
+      Personal edition is the free, open-source, self-hosted path. The user
+      runs it on Railway, Fly.io, or any Docker host for ~$5/mo in hosting.
+      They are responsible for security patches, backups, and version
+      upgrades. **Managed edition** adds $20/mo on top of Railway-at-cost
+      hosting for the operations work: security monitoring, automated backups,
+      version upgrades, infrastructure provisioning via the Railway API, and
+      usage tracking with storage alerts. The break-even question is: do you
+      want to spend the engineering time on those tasks, or pay $20/mo to not
+      think about them? Same code either way — we run it so you don't have to.
+    see_also: [managed_pricing_overview, managed_value_prop, railway_deployment, roadmap_personal_edition]
+    sources:
+      - file: docs/roadmap/pro-pricing.md
+        section: "Managed Edition"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/pro-pricing.md
+      - file: docs/roadmap/pro-infrastructure-summary.md
+        section: "What $20/mo gets you"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/pro-infrastructure-summary.md
+    images: [roadmap_diy_vs_managed_cost, infra_what_20_gets_you]
+
+  - id: managed_pricing_overview
+    name: "Managed edition pricing"
+    one_line: "$20/mo management fee + Railway infrastructure at cost. Users see meaningful storage growth within 3–6 months; storage alerts keep costs visible."
+    body: |
+      Managed edition is flat $20/mo for the management fee — security,
+      backups, upgrades, provisioning, tracking — plus Railway infrastructure
+      passed through at cost. Hosting cost by volume: ~50 docs/mo → $5 Railway
+      + $20 mgmt = ~$25/mo. ~300 docs/mo → ~$26/mo. ~1,000 docs/mo → ~$32/mo.
+      ~10,000 docs/mo → ~$65–70/mo. Storage is billed at cost and visible in
+      the dashboard — users see growth spikes (bulk ingests, quarterly batches)
+      with bell alerts so nothing is a surprise. Compare against frontier-token
+      savings at the same volumes: even at the Sonnet-class floor, a Moderate
+      user comes out ~$60/mo ahead of DIY; a Heavy user is an order of magnitude
+      ahead.
+    see_also: [self_host_break_even, managed_value_prop, anchor_numbers, mechanism_1_raw_pdf_bloat, two_audiences_framing]
+    sources:
+      - file: docs/roadmap/pro-pricing.md
+        section: "Volume tables"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/pro-pricing.md
+      - file: docs/roadmap/pro-infrastructure-summary.md
+        section: "Cost summary"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/pro-infrastructure-summary.md
+    images: [roadmap_diy_vs_managed_cost, roadmap_pay_vs_save, infra_storage_growth, infra_per_user_architecture]
+
+  - id: managed_value_prop
+    name: "What $20/mo Managed actually buys"
+    one_line: "Security monitoring, automated backups, version upgrades, Railway provisioning, usage tracking — all the ops work you don't want to do yourself."
+    body: |
+      The $20/mo Managed fee buys five specific things: security monitoring
+      and patches, automated backups, version upgrades that we handle
+      end-to-end, infrastructure provisioning via the Railway API, and usage
+      tracking with storage alerts. Railway infrastructure (Postgres, Weaviate,
+      storage) is passed through at cost, not marked up. Same code as Personal
+      edition — we just run it so you don't have to. For an engineering team,
+      $20/mo is meaningfully less than the time cost of running the ops
+      yourself; for a hobbyist, the Personal edition is free and works fine.
+      Pick the tier that fits how you want to spend your time.
+    see_also: [managed_pricing_overview, self_host_break_even]
+    sources:
+      - file: docs/roadmap/pro-infrastructure-summary.md
+        section: "What $20/mo gets you"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/pro-infrastructure-summary.md
+    images: [infra_what_20_gets_you, infra_per_user_architecture]
+
+  - id: roadmap_personal_edition
+    name: "Personal edition (free + open source)"
+    one_line: "Self-hosted, API key auth, full pipeline (extract + store + search), single user + their agents. The free tier that ships every feature."
+    body: |
+      Personal edition is the free, open-source, self-hosted path. Single user
+      plus their agents, API key authentication, full pipeline: extract, store,
+      search, agent-writable metadata. Every feature ships here — including
+      the beyond-extraction metadata layer. Personal is the entry point most
+      users should start with. The five-tier roadmap is MarkItDown (extraction
+      only, not our product) → Personal (free/OSS) → Managed ($20/mo + infra)
+      → Team (shared database with team agent and dedup coordination) →
+      Enterprise (custom stacks, per-customer architecture).
+    see_also: [railway_deployment, self_host_break_even, managed_pricing_overview, team_edition, enterprise_edition, beyond_extraction_metadata_layer]
+    sources:
+      - file: docs/roadmap/roadmap.md
+        section: "Personal edition"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/roadmap.md
+    images: [roadmap_five_tiers, roadmap_data_vs_mcp]
+
+  - id: team_edition
+    name: "Team edition — dedup as coordination"
+    one_line: "A team agent ingests documents for everyone; dedup isn't just a performance trick, it's how multiple users share knowledge without re-extracting."
+    body: |
+      Team edition adds a shared database and a team agent that ingests
+      documents on behalf of the whole team. The key insight: **the content
+      hash isn't just dedup — it's coordination.** When a user's agent
+      encounters a document that was already ingested by the team agent, the
+      hash match returns rich metadata ("Already ingested by Team Agent,
+      Collection: Q1 Filings, 3 related documents available") instead of
+      re-extracting the file. The team agent does the heavy lifting; everyone
+      else gets instant access. Collection permissions let teams scope who
+      sees what.
+    see_also: [roadmap_personal_edition, enterprise_edition, the_extraction_pipeline]
+    sources:
+      - file: docs/roadmap/roadmap.md
+        section: "Team edition"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/roadmap.md
+    images: [roadmap_dedup_coordination, roadmap_five_tiers]
+
+  - id: enterprise_edition
+    name: "Enterprise edition — custom stacks"
+    one_line: "Same Ariadne Core skills layer, but the data layer is picked per customer: Snowflake, existing vector DB, on-prem, or our default."
+    body: |
+      Enterprise is not one stack — it's a menu. The skills layer (MCP server
+      + tools) is the same for everyone; the data layer is selected per
+      customer. Four scenarios cover most cases: (1) customer already has
+      Snowflake → Snowflake Postgres + Cortex Search. (2) Starting fresh →
+      Postgres + Weaviate, our default. (3) Already has a vector DB (Pinecone,
+      Qdrant, Milvus) → integrate with theirs. (4) Strict data residency →
+      on-prem deployment, self-hosted Weaviate + Postgres, air-gapped option.
+      RBAC, custom extraction pipelines, and graph representations (future) are
+      all available.
+    see_also: [team_edition, roadmap_personal_edition, managed_pricing_overview]
+    sources:
+      - file: docs/roadmap/roadmap.md
+        section: "Enterprise edition"
+        github_url: https://github.com/denson/ariadne-core/blob/main/docs/roadmap/roadmap.md
+    images: [roadmap_enterprise_menu, roadmap_five_tiers, roadmap_data_vs_mcp]
+
+  # ========== ONBOARDING / EDUCATION ==========
+
+  - id: nate_jones_video
+    name: "Nate Jones: Your Claude Sessions Cost 10x What They Should"
+    one_line: "The 12-minute video that frames the token-waste problem and gives us the 20x and 10x anchor numbers we use everywhere."
+    body: |
+      Nate Jones's video "Your Claude Sessions Cost 10x What They Should" is
+      the source of the anchor numbers we use throughout the pricing and
+      savings story. His core argument: users are burning frontier-rate tokens
+      on tasks the frontier model shouldn't be doing — reading raw PDFs,
+      figuring out extraction on the fly, maintaining long sessions that churn
+      context. The fix is markdown-first workflows, fresh conversations, and
+      model-appropriate routing. Ariadne Core is the infrastructure that
+      makes the markdown-first part automatic. Use this video as the cold-open
+      hook for any presenter session.
+    see_also: [ten_x_session_savings, mechanism_1_raw_pdf_bloat, stupid_button_diagnostic, token_translator_prompt]
+    sources:
+      - file: skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+        section: "full transcript"
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/saving_tokens_transcript.txt
+      - url: https://natesnewsletter.substack.com/p/your-claude-sessions-cost-10x-what
+    images: [video_thumbnail, roadmap_two_token_economies]
+
+  - id: stupid_button_diagnostic
+    name: "The Stupid Button diagnostic prompt"
+    one_line: "A diagnostic prompt that rates a session 1–10 across six token-waste patterns — useful for showing a user where their own costs are leaking."
+    body: |
+      The "Stupid Button" prompt is a diagnostic: paste it into a session, and
+      it rates that session 1–10 across six common token-waste patterns (raw
+      PDFs in context, long-running conversations without refresh, re-reading
+      the same docs, expensive-model-for-cheap-task, etc.). Useful when a user
+      wants to understand where their own costs come from before buying into
+      the fix. Pair with the Token Translator prompt for a fuller picture.
+    see_also: [token_translator_prompt, nate_jones_video, ten_x_session_savings]
+    sources:
+      - file: skills/ariadne-core-walkthrough/stupid_button_prompt.txt
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/stupid_button_prompt.txt
+    images: []
+
+  - id: token_translator_prompt
+    name: "The Token Translator prompt"
+    one_line: "A prompt that reconstructs session token math phase-by-phase, so a user can see exactly where their money went."
+    body: |
+      The Token Translator prompt reconstructs a session's token math phase by
+      phase: how much was spent reading raw documents, how much on re-reading,
+      how much on the actual reasoning. It turns an opaque API bill into a
+      line-item breakdown. Useful when a user is skeptical that raw-PDF
+      overhead is as large as we claim — they can run the prompt on their own
+      session and see for themselves.
+    see_also: [stupid_button_diagnostic, nate_jones_video, anchor_numbers]
+    sources:
+      - file: skills/ariadne-core-walkthrough/token_translator.txt
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-core-walkthrough/token_translator.txt
+    images: []
+
+  - id: connect_claude_code
+    name: "Connect Claude Code to Ariadne Core"
+    one_line: "One `claude mcp add` command and you have six tools: convert_document, search, get_document, list_documents, list_collections, ingest."
+    body: |
+      Connecting Claude Code (or any MCP client) to a running Ariadne Core
+      deployment is one command: `claude mcp add ariadne-core
+      https://your-deployment.up.railway.app/mcp --transport http --scope
+      user --header "X-API-Key:your-api-key"`. Restart Claude Code and six
+      tools become available: `convert_document` (extract any file to
+      Markdown), `search` (semantic search across stored docs), `get_document`
+      (retrieve by ID), `list_documents`, `list_collections`, and `ingest`
+      (batch-process a directory). The REST API is also available for scripts
+      that don't speak MCP.
+    see_also: [railway_deployment, search_dont_send, the_extraction_pipeline]
+    sources:
+      - file: README.md
+        section: "MCP client connection"
+        github_url: https://github.com/denson/ariadne-core/blob/main/README.md
+      - file: skills/ariadne-document-intelligence/SKILL.md
+        github_url: https://github.com/denson/ariadne-core/blob/main/skills/ariadne-document-intelligence/SKILL.md
+    images: [onboarding_connect_claude_code, onboarding_many_clients]

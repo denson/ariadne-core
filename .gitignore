@@ -13,7 +13,8 @@ venv/
 # IDE
 .vscode/
 .idea/
-.claude/
+.claude/*
+!.claude/skills/
 
 # OS
 .DS_Store

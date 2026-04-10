@@ -1,0 +1,541 @@
+schema_version: 1
+
+# Image manifest for the ariadne-core-walkthrough skill.
+#
+# This file ships INSIDE the skill directory so the plugin is self-contained.
+# Each entry is an image the dynamic presenter can choose to show. The `prompt`
+# field is the verbatim ConceptViz prompt used to generate the image — it IS
+# the natural-language description for the LLM. Do not paraphrase prompts into
+# a separate "description" field; the prompt is canonical.
+#
+# Fields:
+#   id                 — stable reference used from project_knowledge_graph.yaml
+#   file               — skill-relative path to the PNG (resolved against the
+#                        skill directory that contains this manifest)
+#   audience           — [general | engineering | business] (one or more)
+#   topics             — free-form tags used for fuzzy matching
+#   mechanism          — which token-waste mechanism the image depicts:
+#                        1 = raw PDF bloat, 2 = LLM extraction loop, both, none
+#   when_to_show       — plain-language guidance for the presenter
+#   anchors_depicted   — canonical anchor numbers visible in the image (verbatim)
+#   short_description  — one-line summary (for quick skimming)
+#   prompt             — verbatim ConceptViz prompt, inline
+
+images:
+
+  # ========== ONBOARDING-SKILL IMAGES (human-audience) ==========
+
+  - id: video_thumbnail
+    file: assets/images/video_thumbnail.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/video_thumbnail.png
+    audience: [general, business, engineering]
+    topics: [nate-jones, hook, opening-beat, 10x-sessions]
+    mechanism: both
+    when_to_show: |
+      The cold-open hook. Use at the very start of any session where the user
+      has not yet agreed there is a problem worth solving. Pair with the line
+      "Nate Jones made a video saying Claude sessions cost 10x what they
+      should — he's right, and Ariadne Core is the fix."
+    anchors_depicted: ["10x session cost reduction"]
+    short_description: "YouTube thumbnail for 'Your Claude Sessions Cost 10x What They Should' — Nate Jones's video."
+    prompt: |
+      (External asset — thumbnail from https://youtu.be/5ztI_dbj6ek . Not generated via ConceptViz.)
+
+  - id: onboarding_token_waste
+    file: assets/images/img_01.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_01.png
+    audience: [general]
+    topics: [token-waste, mechanism-1, value-prop, before-after]
+    mechanism: 1
+    when_to_show: |
+      Beat 2 of the starter deck — after the hook, to show the problem in a
+      single picture. Best when the user has not yet seen concrete numbers.
+    anchors_depicted: ["100,000 tokens raw PDF", "~500 tokens clean Markdown"]
+    short_description: "Split scene: strained brain buried under raw PDFs (98,247 tokens) vs calm brain reading clean Markdown (487 tokens)."
+    prompt: |
+      A split scene divided vertically by a thin line. Left side (warm orange-red tint, labeled "Without Ariadne Core"): a glowing brain icon (representing an expensive LLM like Claude Opus) is buried under an avalanche of raw document pages — oversized PDF icons, spreadsheet grids, slide decks, and Word docs are piled on top of and around the brain, which looks strained with stress lines radiating outward. A token counter in the corner spins wildly showing "98,247 tokens" in alarming red. The brain is trying to read through the mess, with tiny thought bubbles showing "where is the revenue data?" lost among irrelevant pages. Right side (cool green-blue tint, labeled "With Ariadne Core"): the same glowing brain, now relaxed and focused, sitting comfortably. In front of it, a single clean card of Markdown text with a few highlighted paragraphs — exactly the relevant content. The token counter shows "487 tokens" in calm green. The brain has a clear thought bubble: the answer, cleanly formed. Between the two sides, a subtle arrow pointing from left to right with the label "100x fewer tokens." Caption at bottom: "100,000 tokens of raw PDF, or 500 tokens of what matters."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: onboarding_pipeline
+    file: assets/images/img_02.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_02.png
+    audience: [general, engineering]
+    topics: [pipeline, extraction, architecture, free-steps, conveyor]
+    mechanism: 2
+    when_to_show: |
+      When the user asks "how does it work?" or you need to show that the
+      expensive model never touches raw documents. Good bridge from "what's
+      the problem?" to "here's the fix."
+    anchors_depicted: ["$0 extraction cost", "pennies per document"]
+    short_description: "Conveyor belt with 7 labeled stations: Extract, Dedup, Enrich, Chunk, Embed, Store, Track — four free, three cheap."
+    prompt: |
+      A horizontal conveyor belt flowing left to right across the full width of the image. On the far left, a pile of raw documents enters the belt: a PDF icon, a DOCX icon, a PPTX icon, an XLSX icon, and several smaller format icons (HTML, CSV, TXT) — all messy, overlapping, different sizes. The belt passes through seven clearly labeled stations, each with a simple icon above it:
+      Station 1 "Extract": a hammer icon labeled "MarkItDown" — Badge: "Free."
+      Station 2 "Dedup": a fingerprint stamp — Badge: "Free."
+      Station 3 "Enrich": a camera-eye icon — Badge: "Vision API (optional)."
+      Station 4 "Chunk": scissors cutting at dotted lines — Badge: "Free."
+      Station 5 "Embed": a magnet pulling small vector arrows — Badge: "Embedding API."
+      Station 6 "Store": a vault door with the Postgres elephant logo.
+      Station 7 "Track": a ledger book with entries — provenance recorded.
+      On the far right, clean outputs exit: a neat stack of Markdown pages and a search results card with ranked results. Banner below: "Extraction is free. Embedding and search cost pennies per document." Caption: "Seven steps. Four are free. Three use cheap API calls. The expensive model never touches raw documents."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: onboarding_many_clients
+    file: assets/images/img_03.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_03.png
+    audience: [general, engineering]
+    topics: [deployment, mcp, auth, api-key, oauth, clients]
+    mechanism: none
+    when_to_show: |
+      When the user asks who connects to Ariadne Core or how auth works.
+      Shows Personal edition (API key) vs Managed (OAuth) side by side.
+    anchors_depicted: []
+    short_description: "Cloud labeled Ariadne Core with two client cards below: API Key (Personal) and OAuth (Managed)."
+    prompt: |
+      A cloud shape at the top center of the image, labeled "Ariadne Core" in bold. Inside the cloud, four small icons arranged in a 2x2 grid: MCP Server (plug icon), REST API (endpoint icon), Postgres (elephant), MarkItDown (hammer). The cloud has a single HTTPS padlock on its border.
+      Below the cloud, two large rounded rectangle cards side by side:
+      Left card (gold/amber tinted): key icon at the top, heading "API Key", subtitle "Personal Edition." Four client icons stacked vertically: "Claude Code", "Open Brain", "OpenClaw", "Cursor".
+      Right card (blue tinted): shield icon at the top, heading "OAuth", subtitle "Managed Edition." Five client icons: "Claude Code", "Open Brain", "OpenClaw", "Cursor", and "Claude Cowork" with small tag "OAuth only".
+      Callout: "API key auth included with Personal Edition. OAuth available in Managed and higher, or roll your own."
+      Caption: "One deployment. Many clients. Two ways to authenticate."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: onboarding_hosting
+    file: assets/images/img_04.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_04.png
+    audience: [general, engineering]
+    topics: [deployment, hosting, railway, fly, docker, getting-started]
+    mechanism: none
+    when_to_show: |
+      When the user asks "where do I run this?" or "how much does hosting
+      cost?" Three platform cards: Railway (recommended), Fly.io, any Docker host.
+    anchors_depicted: ["~$5/mo Railway hobby", "~$5/mo Fly.io", "~$4.50/mo Docker host"]
+    short_description: "Three hosting cards: Railway (recommended), Fly.io, any Docker host — all under $5/mo."
+    prompt: |
+      Three platform cards arranged side by side, like product comparison cards on a pricing page.
+      Left card (highlighted as "recommended"): train icon. Title: "Railway." Subtitle: "Simplest setup." Bullets: "Free tier to try", "~$5/mo hobby plan", "5 minutes to deploy", "Postgres included." Badge: "We recommend this."
+      Center card: paper airplane icon. Title: "Fly.io." Subtitle: "Scales to zero." Bullets: "Free tier available", "~$5/mo", "Sleeps when idle."
+      Right card: server box icon. Title: "Any Docker Host." Subtitle: "Full control." Bullets: "Hetzner, DigitalOcean, your own server", "~$4.50/mo", "Bring your own HTTPS."
+      Shared footer: "Same Dockerfile everywhere. Pick what fits your workflow."
+      Caption: "Cheap or free to try. A few dollars a month for always-on."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: onboarding_agent_heavy_lifting
+    file: assets/images/img_05.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_05.png
+    audience: [general]
+    topics: [getting-started, agent-autonomy, railway, setup, two-minutes]
+    mechanism: none
+    when_to_show: |
+      When the user is considering whether to try it but worried about setup.
+      Shows "you do 2 minutes, your agent does the rest" — five railway
+      commands executed by the agent.
+    anchors_depicted: ["~5 minutes total setup"]
+    short_description: "Two-part deploy illustration: 'You (2 minutes)' above, 'Your Agent (3 minutes)' below with 5 railway commands."
+    prompt: |
+      Top section "You (2 minutes)": two icons with checkmarks: (1) browser with Railway logo — "Create a Railway account", (2) terminal with download — "Install the Railway CLI". Speech bubble: "That's it. Your agent handles the rest."
+      Bottom section "Your Agent (3 minutes)": vertical timeline with 5 numbered steps, each with icon and one-line command.
+      Step 1: key — "railway login" — "Authenticate."
+      Step 2: folder — "railway init" — "Create project."
+      Step 3: database cylinder with pgvector badge — "railway add --plugin postgresql" — "Add database."
+      Step 4: lock with tags (EMBEDDING_API_KEY, VISION_API_KEY, ARIADNE_API_KEY) — "railway variables set ..." — "Set keys."
+      Step 5: rocket — "railway up" — "Deploy."
+      Finish line with checkmark, sample URL, clock icon "~5 minutes total."
+      Caption: "You create two accounts. Your agent does the rest."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: onboarding_connect_claude_code
+    file: assets/images/img_06.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_06.png
+    audience: [general, engineering]
+    topics: [getting-started, mcp, claude-code, tools, six-tools]
+    mechanism: none
+    when_to_show: |
+      When the user is ready to connect their agent and wants to see what
+      tools become available. Good handoff beat — "here's what you'll actually
+      use."
+    anchors_depicted: []
+    short_description: "Terminal showing claude mcp add command, plus a fan of 6 pastel cards (the tool names)."
+    prompt: |
+      Top half: terminal window showing "claude mcp add ariadne-core https://your-url/mcp --transport http --scope user --header X-API-Key:your-key". A "restart Claude Code" arrow below.
+      Bottom half: six cards arranged in a fan, each a different pastel shade, each showing a tool name and one-line description:
+      - "convert_document — Extract any document to Markdown"
+      - "search — Find relevant chunks by meaning"
+      - "get_document — Get full content by ID"
+      - "list_documents — Browse your document store"
+      - "list_collections — See how documents are organized"
+      - "ingest — Batch-process a directory"
+      Caption: "One command. Six tools. Ready to use."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: onboarding_format_mosaic
+    file: assets/images/img_07.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_07.png
+    audience: [general]
+    topics: [format-coverage, markitdown, extraction, 20-formats]
+    mechanism: 1
+    when_to_show: |
+      When the user asks "what formats does it handle?" or when you want a
+      visual for "it's all the same to us: clean Markdown out."
+    anchors_depicted: ["20+ input formats", "$0 extraction cost"]
+    short_description: "20+ file-type icons flow through a MarkItDown box into a single large Markdown document."
+    prompt: |
+      Left zone "Input Formats": four rows of small document icons, each labeled:
+      Row 1: PDF, DOCX, PPTX, XLSX, CSV. Row 2: HTML, XML, JSON, TXT, MD. Row 3: RTF, EPUB, EML, MSG, ZIP. Row 4: IPYNB, WAV, MP3, JPG, PNG.
+      Center zone "Conversion": large arrow passing through box labeled "MarkItDown" with "MIT License" badge.
+      Right zone "Output": single large clean Markdown document icon.
+      Note below: "Extraction is just the first step. Ariadne Core adds embedding, search, and provenance on top."
+      Caption: "20+ formats in. Clean Markdown out. Extraction is free."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: onboarding_search_dont_send
+    file: assets/images/img_08.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_08.png
+    audience: [general]
+    topics: [search, retrieval, value-prop, mechanism-1, before-after]
+    mechanism: 1
+    when_to_show: |
+      Best "aha moment" image. Use when the user understands the problem but
+      hasn't seen the architectural fix. Pair with the line "search first,
+      send what matters."
+    anchors_depicted: ["$$$ vs $0.01 per query"]
+    short_description: "Left: person shoving filing cabinet into envelope for AI ($$$). Right: search box returns 3 relevance-scored cards ($0.01)."
+    prompt: |
+      Two panels side by side with vertical divider.
+      Left panel (circle-X corner badge): person stuffing entire filing cabinet into a bulging envelope addressed "Your AI Model." Price tag: "$$$." AI recipient has spiral eyes.
+      Right panel (checkmark-in-shield corner badge): same person calmly typing into search box labeled "Ariadne Core." Three small cards float back with relevance scores 0.94, 0.87, 0.82. Person hands these to the AI, who looks focused. Price tag: "$0.01."
+      Note: "Works with any OpenAI-compatible embedding provider — OpenAI, Google Gemini, Groq, DeepSeek, local models, and more."
+      Caption: "Don't send the whole library. Search first, send what matters."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: onboarding_architecture
+    file: assets/images/architecture.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/architecture.png
+    audience: [engineering]
+    topics: [architecture, internals, mcp, fastapi, postgres, pgvector]
+    mechanism: none
+    when_to_show: |
+      For engineering-audience users who want to see the container internals
+      — MCP server, FastAPI, auth layer, MarkItDown, pipeline, Postgres.
+      Not for general audience; this is a technical diagram.
+    anchors_depicted: []
+    short_description: "Container diagram: MCP Server + FastAPI on top, Auth bar, MarkItDown → Pipeline, Postgres+pgvector below."
+    prompt: |
+      Large rounded rectangle labeled "ariadne-core container" containing:
+      Top layer: "MCP Server" (/mcp) and "FastAPI" (/api/upload, /api/documents, /api/search, /api/health) with lock on all except /api/health. Label: "Single-port mode — both share PORT 8000."
+      Middle: "Auth" bar labeled "API Key or OAuth."
+      Below: "MarkItDown" → "Post-Processing Pipeline" (fingerprint, enrich, chunk, embed, store).
+      Bottom: "Postgres + pgvector" cylinder with tables (documents, chunks, collections, document_interactions, api_keys).
+      Outside: arrows from Claude Code, Open Brain, OpenClaw, Claude Cowork (OAuth / Managed) passing through the auth layer.
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: onboarding_env_vars
+    file: assets/images/env_vars.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/env_vars.png
+    audience: [engineering]
+    topics: [deployment, config, environment, reference]
+    mechanism: none
+    when_to_show: |
+      Reference card for deploy-time config. Show when the user is actively
+      deploying and asks about environment variables.
+    anchors_depicted: []
+    short_description: "Clean infographic table of required and optional environment variables with defaults."
+    prompt: |
+      Infographic reference card, not a spreadsheet screenshot.
+      Header: "Variable | Required | Default | What it does"
+      Required: DATABASE_URL, EMBEDDING_API_KEY, VISION_API_KEY, ARIADNE_API_KEY.
+      Optional: PORT, MCP_PORT, EMBEDDING_MODEL (default text-embedding-3-small), VISION_MODEL (default gpt-4o-mini), EMBEDDING_BASE_URL, VISION_BASE_URL.
+      Subtle color coding distinguishes required from optional.
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  # ========== ROADMAP-SKILL IMAGES (engineering / business audience) ==========
+
+  - id: roadmap_five_tiers
+    file: assets/images/tiers.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/tiers.png
+    audience: [business, engineering]
+    topics: [editions, tiers, personal, managed, team, enterprise, pricing]
+    mechanism: none
+    when_to_show: |
+      When the user asks what editions exist or where they fit on the tier
+      ladder. Good overview for anyone evaluating the product.
+    anchors_depicted: ["Managed: $20/mo + infra"]
+    short_description: "Five pricing-style cards: MarkItDown, Personal, Managed ($20/mo + infra), Team, Enterprise."
+    prompt: |
+      Five comparison cards arranged left to right like a pricing page, growing slightly taller.
+      Card 1 "MarkItDown" (light gray): hammer icon. "Extraction Only (Microsoft)." Bullets: "Runs locally," "No storage or search," "Built-in MCP server," "Not our product." Note: "Where it all starts."
+      Card 2 "Personal" (green): wrench icon. "Free / Open Source." Bullets: "Self-hosted," "API key auth," "Full pipeline: extract + store + search," "Single user + their agents."
+      Card 3 "Managed — $20/mo + infra" (blue): cloud icon. Bullets: "We manage security, backups, upgrades," "Own Railway Postgres + Weaviate," "BYO models or buy from us," "Single user + their agents."
+      Card 4 "Team" (amber): group icon. "Shared Database." Bullets: "Team agent ingests for everyone," "Dedup = coordination," "Collection permissions," "Multiple users + agents."
+      Card 5 "Enterprise" (purple): building icon. "Custom Solutions." Bullets: "Custom extraction pipelines," "Custom storage backends," "RBAC + full governance," "Graph representations (future)."
+      Footer: "Start anywhere. Grow when you need to."
+      Caption: "From local extraction to enterprise knowledge infrastructure — pick where you need to be."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: roadmap_data_vs_mcp
+    file: assets/images/mcp_server.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/mcp_server.png
+    audience: [engineering]
+    topics: [architecture, mcp, data-layer, tier-boundary, skills-layer]
+    mechanism: none
+    when_to_show: |
+      When the user asks what's actually different between editions or why
+      the skills layer is the same for everyone. Shows the boundary line.
+    anchors_depicted: []
+    short_description: "Two-layer diagram: MCP clients connect to a single Skills Layer; Data Layer below splits into four tier-specific columns."
+    prompt: |
+      Two-layer horizontal diagram.
+      Top layer "MCP Server + Skills Layer" (blue): plug icons for Claude Code, OpenClaw, Open Brain, Cursor, Claude Cowork all connecting down to a bar labeled "MCP Server + Skills." Callout: "Same tools for every tier. Doesn't know or care how many users are behind the data layer."
+      Bottom layer "Data Layer" (warm gray): four columns by tier.
+      Personal: single database "Personal (self-hosted)."
+      Managed: Postgres elephant + Weaviate hexagon on Railway. Heading: "Managed ($20/mo + infra) — Own DB, managed by us."
+      Team: larger database with user silhouettes and "Team Agent" robot feeding documents.
+      Enterprise: large database "Per-customer deployment" with stack-selection menu icon.
+      Arrow from MCP bar to all four columns labeled "Same interface."
+      Dividing line between layers labeled: "This boundary is the architecture."
+      Caption: "Tier differences live below the line. The skills layer is the same for everyone."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: roadmap_dedup_coordination
+    file: assets/images/team_agent.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/team_agent.png
+    audience: [business, engineering]
+    topics: [team, dedup, coordination, shared-knowledge, team-agent]
+    mechanism: none
+    when_to_show: |
+      When the user asks about Team edition or why dedup matters. Shows that
+      a hash comparison is coordination, not just deduplication.
+    anchors_depicted: []
+    short_description: "Top: team agent ingests documents into shared vault. Bottom: user's agent encounters same doc, hash match returns metadata instead of re-ingesting."
+    prompt: |
+      Top section "Step 1: Team Agent Ingests": robot "Team Agent" on left. Conveyor belt with documents (SEC Filings, Regulatory Updates, Research Papers) passing through stations Extract (hammer), Chunk (scissors), Embed (magnet), Store (vault door). Documents enter a "Shared Data Store" vault, each stamped with a fingerprint hash.
+      Bottom section "Step 2: User Encounters Same Document": person + small robot "User + Their Agent" holding a PDF. Arrow sends PDF toward vault. Large fingerprint comparison icon with checkmark. Instead of entering vault, a card fans out showing: "Already ingested by Team Agent," "Collection: Q1 Filings," "Ingested: March 15," "3 related documents available."
+      Callout: "The hash isn't just dedup — it's coordination."
+      Caption: "The team agent does the heavy lifting. Everyone else gets instant access."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: roadmap_diy_vs_managed_cost
+    file: assets/images/cost_point.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/cost_point.png
+    audience: [engineering, business]
+    topics: [cost-breakdown, diy-vs-managed, pipeline-cost, per-doc-cost, engineering-transparency]
+    mechanism: both
+    when_to_show: |
+      When the user wants to verify the math behind our pricing. This is the
+      engineering white-paper version: token costs near zero, hosting is the
+      real cost, +$20/mo management fee for operations work. Pair with
+      TOKEN_SAVINGS_FRAMING.md for the savings side.
+    anchors_depicted:
+      - "$0 extraction"
+      - "~$0.0001 embed/doc"
+      - "~$0.002 vision/doc (small multimodal class, ~$0.14/M)"
+      - "~$5–30/mo Railway hosting"
+      - "+$20/mo managed fee"
+      - "~$15/mo–$14,300/mo frontier savings"
+      - "~95K frontier tokens saved/doc"
+      - "20x raw-PDF reduction"
+    short_description: "Engineering white-paper cost breakdown: per-doc pipeline cost, monthly DIY vs Managed totals, frontier tokens saved by volume."
+    prompt: |
+      Engineering-document style cost breakdown on light warm-gray background. NOT marketing — transparent line-item explanation.
+      Heading: "Where the money actually goes." Subheading: "Token costs are nearly zero — our deterministic pipeline does the heavy lifting in pure code. Hosting is the real cost. Managed adds $20/mo for operations work."
+      SECTION 1 — Per-document cost breakdown:
+        Pre-written extraction (MarkItDown + format parsers) — Pure Python — $0
+        Text chunking — Pure code — $0
+        Text embedding (small embedding class, ~$0.02/M) — ~5K tokens/doc — ~$0.0001
+        Image description (small multimodal class, ~$0.14/M, only when images present) — ~3 images × 5K tokens/doc — ~$0.002
+        Footnote: "Total: ~$0.002 per document. Small multimodal models in this class include Gemma 4, Gemini Flash, and similar."
+      SECTION 2 — Monthly cost by volume:
+        ~50 docs/mo: Hosting $5, Tokens ~$0.10, DIY total ~$5, Managed ~$25
+        ~300: $5, ~$0.60, ~$6, ~$26
+        ~1,000: $10, ~$2, ~$12, ~$32
+        ~10,000: $30, ~$20, ~$50, ~$70
+        "+$20 mgmt fee" bracket: "Flat $20/mo at every volume — security, backups, version upgrades."
+      SECTION 3 — Frontier tokens saved by volume (paired with Section 2):
+        ~50: ~4.75M tokens saved, ~$15/mo Sonnet-class, ~$70/mo Opus-class
+        ~300: ~28.5M, ~$85, ~$430
+        ~1,000: ~95M, ~$290, ~$1,430
+        ~10,000: ~950M, ~$2,900, ~$14,300
+        Footnote: "Anchor: ~95,000 frontier tokens saved per document retrieval (a 4,500-word doc is ~100K tokens raw, ~5K as Markdown — 20x reduction). Mechanism 1 only — floor, not ceiling. Does NOT include Mechanism 2 (frontier tokens burned on extraction loop), real savings are larger."
+      SECTION 4 — Where the savings come from:
+        (1) Raw PDF bloat in the context window — 20x reduction per doc.
+        (2) The LLM-driven extraction loop — this is the big one. Frontier models burning Sonnet/Opus-class rates to write Python and call pdfminer, when a cheap specialized pipeline does it better.
+        Two audiences, two ways the savings feel: Claude Code / Cowork subscribers feel it as runway; agentic systems buying tokens directly feel it as line-item cost reduction.
+      Footer: "What we charge is small. What you stop burning is large. The $20/mo is for the engineering time you don't spend on security, backups, and updates."
+      Caption: "Honest breakdown. The DIY math and the savings math are both right there — verify them yourself."
+      Visual style: engineering document, clean tables, thin borders, monospaced numbers. Think "white paper," not "pricing page."
+
+  - id: roadmap_enterprise_menu
+    file: assets/images/enterprise_options.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/enterprise_options.png
+    audience: [business, engineering]
+    topics: [enterprise, custom-stack, snowflake, weaviate, on-prem, data-residency]
+    mechanism: none
+    when_to_show: |
+      When the user asks about Enterprise edition or how Ariadne Core
+      adapts to a customer's existing stack (Snowflake, Pinecone, etc.).
+    anchors_depicted: []
+    short_description: "Restaurant menu style with 4 customer scenarios: has Snowflake, starting fresh, has vector DB, strict data residency."
+    prompt: |
+      Menu-style layout. Heading: "Enterprise Data Layer — Selected Per Customer."
+      Row 1 (blue): "Customer has Snowflake" → Snowflake Postgres Native Tables → Cortex Search → Snowflake Graph.
+      Row 2 (green): "Starting fresh" → Postgres + Weaviate (our default) → Managed vector search → Graph representations (future).
+      Row 3 (amber): "Has existing vector DB" → Integrate with theirs (Pinecone, Qdrant, Milvus) → Their system → Weaviate adapter or custom.
+      Row 4 (gray): "Strict data residency" → On-prem deployment → Self-hosted Weaviate + Postgres → Air-gapped option.
+      Footer: "Same Ariadne Core. Different foundations. We architect it for the customer's reality."
+      Caption: "Not one stack. A menu. We pick what fits."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: roadmap_two_token_economies
+    file: assets/images/two_token_economies.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/two_token_economies.png
+    audience: [general, business, engineering]
+    topics: [token-economics, value-prop, mechanism-1, pennies-vs-dollars, dramatic-scale]
+    mechanism: 1
+    when_to_show: |
+      Single strongest value-prop image for any audience. Use when the user
+      has understood the problem and you want to show the scale asymmetry
+      between what we charge (pennies) vs what we save (dollars).
+    anchors_depicted: ["100K → 5K tokens", "20x reduction", "pennies/million vs hundreds-to-thousands/month"]
+    short_description: "Left (small, cool): what we charge for (small multimodal class, pennies). Right (large, warm): what we save you (frontier tokens, $100s–$1000s/mo)."
+    prompt: |
+      Split scene divided vertically.
+      Left side (cool blue, "Tokens We Charge For"): small calm scene. API cloud "Small Multimodal Model (class)" with unified multimodal icon below. Price tag: "pennies per million tokens." Banner: "Included with Managed — or bring your own model." Bottom: coin stack "Our tokens: pennies."
+      Right side (warm amber-red, "Tokens We Save You"): dramatically larger. Glowing frontier brain labeled "Frontier-Tier Models (Sonnet-class through Opus-class)." Avalanche of raw PDF icons crossed out with X. Next to it, a single clean Markdown card with checkmark. Token counter: "100,000 tokens → 5,000 tokens" with "20x" callout. (Correct anchor: 20x, per TOKEN_SAVINGS_FRAMING.md. Not 200x.) Stack of dollar bills: "Frontier tokens saved: $hundreds to $thousands/month (Mechanism 1 floor — real savings larger)."
+      Between the sides: "We charge pennies. You save dollars."
+      Caption: "The tokens we charge for are a rounding error on the tokens we save you."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: roadmap_pay_vs_save
+    file: assets/images/pay_vs_save.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/pay_vs_save.png
+    audience: [business, engineering]
+    topics: [savings, cost-comparison, bar-chart, mechanism-1, volume-based, two-audiences]
+    mechanism: 1
+    when_to_show: |
+      When the user wants to see the dollar math behind the savings across
+      different usage volumes. Paired with pro-pricing.md. Engineering-style
+      chart, not marketing hero.
+    anchors_depicted:
+      - "Light ~50 docs/mo: $25 paid, $15–70 saved"
+      - "Moderate ~300: $25–26 paid, $85–430 saved"
+      - "Heavy ~1,000: $32 paid, $290–1,430 saved"
+      - "Very heavy ~10,000: $65–70 paid, $2,900–14,300 saved"
+      - "~95K frontier tokens saved/doc retrieval"
+    short_description: "Grouped horizontal log-scale bar chart: what you pay us vs frontier $ saved at Sonnet-class and Opus-class, across four volumes."
+    prompt: |
+      Side-by-side bar chart, engineering-document style, anchor numbers from TOKEN_SAVINGS_FRAMING.md.
+      Heading: "What you pay us vs. what you stop burning on frontier extraction." Subheading: "Anchor: ~95,000 frontier tokens saved per document retrieval — 4,500-word doc is ~100K raw, ~5K as Markdown."
+      MAIN CHART: four rows top-to-bottom: "Light (~50 docs/mo)", "Moderate (~300)", "Heavy (~1,000)", "Very heavy (~10,000)". Each row has three horizontal bars on shared log scale:
+      1. "What you pay us" (cool blue): $25 / $25–26 / $32 / $65–70.
+      2. "Frontier $ saved/mo @ Sonnet-class (~$3/M)" (medium amber): $15 / $85 / $290 / $2,900.
+      3. "Frontier $ saved/mo @ Opus-class (~$15/M)" (deep amber): $70 / $430 / $1,430 / $14,300.
+      Log x-axis $1 to $20,000. Note: "Log scale — frontier savings span four orders of magnitude." "Bars 2 and 3 are what the user does NOT pay." "Mechanism 1 only — floor, not ceiling."
+      LEGEND: three swatches matching bars, with footnote pointing at pro-pricing.md and TOKEN_SAVINGS_FRAMING.md.
+      TWO-AUDIENCE PANEL below chart:
+        Left (cool blue): "Single users on Claude Code / Claude Cowork" — flat-rate subscription, savings felt as runway.
+        Right (warm amber): "Agentic systems buying tokens directly" — savings as direct line-item reduction.
+        Bracket: "Same mechanism. Different lived experience. Both must be acknowledged in any pricing pitch."
+      Footer: "What we charge is small. What you stop burning is large. Even at the Sonnet floor, a Moderate user comes out ~$60/mo ahead of DIY; a Heavy user is an order of magnitude ahead."
+      Caption: "Anchor numbers from TOKEN_SAVINGS_FRAMING.md. Source: Nate Jones, 'Your Claude Sessions Cost 10x What They Should.'"
+      Visual style: engineering document. Muted colors, log scale. Think "white paper chart," not "pricing page hero."
+
+  - id: roadmap_bulk_storage
+    file: assets/images/bulk_storage.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/bulk_storage.png
+    audience: [engineering]
+    topics: [storage, tiered-storage, active-vs-bulk, summaries, cost-management]
+    mechanism: none
+    when_to_show: |
+      When the user asks how Ariadne Core handles long-term storage growth
+      or whether old documents become expensive. Shows active + bulk + the
+      summarization bridge.
+    anchors_depicted: ["sub-50ms active search"]
+    short_description: "Three-layer architecture: Active (sub-50ms), Summarization via open LLM, Bulk archival. Old docs age into cheap bulk, summaries keep them searchable."
+    prompt: |
+      Horizontal three-layer architecture flowing left to right.
+      Top (blue, "Active Store — Low Latency"): Postgres elephant with lightning bolt. Recent Markdown chunks + smaller condensed "distilled" summary cards with beaker icon. Search magnifier "Sub-50ms search" hitting both.
+      Middle (amber, "Summarization"): arrow flowing up from bulk, with metadata tag → vector arrow → brain "Open LLM". Callout: "Metadata + stored vectors → open LLM → distilled summary. No need to re-read the original."
+      Bottom (gray, "Bulk Store — Archival"): warehouse. Full document Markdown files + vectors with clock icons. Dotted arrows both directions: "Documents age into bulk after configurable threshold" / "Full document on demand (seconds, not milliseconds)."
+      Callout between layers: "Active storage costs plateau. Old docs age into cheap bulk. Summaries keep them searchable at full speed."
+      Caption: "Recent data is fast. Old data is cheap. Summaries bridge the gap."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: infra_per_user_architecture
+    file: assets/images/per_user_arch.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/per_user_arch.png
+    audience: [engineering, business]
+    topics: [managed, architecture, multi-tenant, railway, weaviate, per-user-db]
+    mechanism: none
+    when_to_show: |
+      When engineering audience asks how Managed edition isolates users.
+      Shows three tiers: management layer, shared app tier, per-user DBs +
+      shared Weaviate.
+    anchors_depicted: ["$20/mo management fee + Railway at cost", "30x less RAM via PQ"]
+    short_description: "Three-tier architecture for Managed: management layer (OAuth, provisioning, billing), shared FastAPI app tier, per-user Postgres DBs + shared Weaviate."
+    prompt: |
+      Three horizontal tiers top to bottom.
+      Top "Management Layer" (blue-gray): shield "OAuth 2.1", person-plus "User Provisioning" (with Railway API tag), bar-chart "Usage Tracking", dollar-sign "Billing." Price tag: "$20/mo management fee + Railway at cost."
+      Middle "App Tier — Shared, Always-On" (amber): three FastAPI server boxes with load balancer. "Stateless, load-balanced." Arrows out to: cloud "Small Multimodal Model API (default — Gemma 4 class)" and cloud "User's BYO endpoint." Callout: "Embedding & Vision."
+      Bottom (split):
+        Left "Per-User Databases": five Postgres elephants labeled User A/B/C/D/..., each with storage meter (20%, 45%, 60%, 80%). Callout: "Storage alerts before overage."
+        Right "Shared Vector Search": large Weaviate (green) with four tenant bars. Badge: "Native Multi-Tenancy." Badge: "Product Quantization — 30x less RAM."
+      Caption: "Shared app tier. Isolated databases. One vector cluster."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: infra_what_20_gets_you
+    file: assets/images/diy_vs_plus.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/diy_vs_plus.png
+    audience: [business]
+    topics: [managed, value-prop, management-fee, operations, railway-at-cost]
+    mechanism: none
+    when_to_show: |
+      When the user asks what they actually get for the $20/mo managed fee.
+      Two-column card listing management services and Railway infrastructure
+      passed through at cost.
+    anchors_depicted: ["$20/mo management fee", "Railway at cost"]
+    short_description: "Single card split: left '$20/mo Management Fee' (security, backups, upgrades, provisioning, tracking), right 'Railway Infrastructure at Cost'."
+    prompt: |
+      Single large card "Managed — $20/mo + Railway at Cost" (cool blue), split into two sections.
+      Left "Your $20/mo Management Fee": shield "Security monitoring & patches", clock-arrow "Automated backups", arrow-up "Version upgrades — we handle them", wrench "Infrastructure provisioning via Railway API", chart "Usage tracking & alerts."
+      Right "Railway Infrastructure — Passed Through at Cost": Postgres elephant "Own Postgres Instance", Weaviate hexagon "Weaviate Vector Search", hard-drive with meter "Storage — pay for what you use", swap-arrows "BYO models or buy from us."
+      Comparison callout: "DIY means you handle hosting, backups, security, and upgrades yourself. $20/mo means we do it — you just use the system."
+      Footer: "Same code as Personal. We run it so you don't have to."
+      Caption: "One tier. $20/mo management fee. Infrastructure at cost."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: infra_storage_growth
+    file: assets/images/storage_growth.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/storage_growth.png
+    audience: [engineering, business]
+    topics: [managed, storage, growth, cost-transparency, alerts]
+    mechanism: none
+    when_to_show: |
+      When the user is worried about runaway storage costs under Managed.
+      Shows that storage grows over time with visible alerts — transparent,
+      not surprise billing.
+    anchors_depicted: []
+    short_description: "12-month timeline of storage growth with bell-alert, batch-spike flag, and receipt annotations."
+    prompt: |
+      Horizontal timeline Month 1 to Month 12. Database cylinder grows taller at each month, gradient from calm blue-green (bottom) to warm amber (top).
+      Growth with bursts: Month 1-2 slow, Month 3 jump ("Initial bulk ingest"), Month 4-6 steady, Month 7 jump ("Quarterly report batch"), Month 8-12 continued.
+      Annotations: Month 4 bell "Alert: storage growing — here's your current Railway cost." Month 7 flag "Batch ingest spike — cost increase visible in dashboard." Month 9 receipt "Railway storage cost: transparent, billed at cost."
+      Comparison box: "Managed user — Railway storage billed at cost. Most users see meaningful growth within 3-6 months. Storage alerts keep costs visible."
+      Caption: "Storage grows. Users need to see it coming, not get surprised."
+      Style: flat design editorial illustration, colorblind-friendly.
+
+  - id: roadmap_plus_vs_pro_orphan
+    file: assets/images/plus_vs_pro.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/plus_vs_pro.png
+    audience: [business]
+    topics: [orphan, legacy, plus-vs-pro]
+    mechanism: none
+    when_to_show: |
+      ORPHAN — this file exists in docs/assets/images/ but has no matching
+      ConceptViz prompt in either roadmap_prompts.md or infra_prompts.md.
+      Likely a leftover from a prior tier naming (Plus vs Pro) before the
+      current Managed/Team/Enterprise scheme. Presenter should NOT use this
+      image; kept in manifest for inventory completeness.
+    anchors_depicted: []
+    short_description: "ORPHAN: leftover comparison illustration from pre-Managed tier naming."
+    prompt: |
+      (No source prompt — file predates current tier naming. Do not show.)
