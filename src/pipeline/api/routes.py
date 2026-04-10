@@ -253,19 +253,17 @@ async def get_document(
 async def list_documents(
     collection: Optional[str] = Query(None),
     file_type: Optional[str] = Query(None),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(50, ge=1, le=200),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     api_key: APIKey | None = Depends(check_api_key),
 ):
     """List all documents, optionally filtered by collection or file type."""
     from pipeline.dedup import PgDedupStore
 
-    start = (page - 1) * per_page
-
     if isinstance(_mcp._dedup_store, PgDedupStore):
         page_docs, total = _mcp._dedup_store.list_documents(
             collection=collection, file_type=file_type,
-            limit=per_page, offset=start,
+            limit=limit, offset=offset,
         )
     else:
         docs = list(_mcp._dedup_store._documents.values())
@@ -275,7 +273,7 @@ async def list_documents(
             ft = file_type.lstrip(".")
             docs = [d for d in docs if d.file_type == ft]
         total = len(docs)
-        page_docs = docs[start:start + per_page]
+        page_docs = docs[offset:offset + limit]
 
     return {
         "documents": [
@@ -295,8 +293,8 @@ async def list_documents(
             for d in page_docs
         ],
         "total_count": total,
-        "page": page,
-        "per_page": per_page,
+        "limit": limit,
+        "offset": offset,
     }
 
 
@@ -438,12 +436,9 @@ async def ingest_directory(
                     files.append(item)
 
     files_found = len(files)
-    files_processed = 0
-    files_skipped = 0
-    files_errored = 0
-    results_list = []
 
-    for fp in files:
+    def _process_file_safe(fp: _Path) -> dict:
+        """Process a single file, catching exceptions."""
         try:
             doc_result = _process_single_document(
                 uri=str(fp),
@@ -461,44 +456,55 @@ async def ingest_directory(
             )
 
             if doc_result.get("error"):
-                files_errored += 1
-                results_list.append({
+                return {
                     "source_file": fp.name,
                     "document_id": doc_result.get("document_id"),
                     "was_dedup_skip": False,
                     "error": doc_result.get("message"),
-                })
+                }
             elif doc_result.get("was_dedup_skip"):
-                files_skipped += 1
-                results_list.append({
+                return {
                     "source_file": fp.name,
                     "document_id": doc_result["document_id"],
                     "was_dedup_skip": True,
                     "error": None,
-                })
+                }
             else:
-                files_processed += 1
-                results_list.append({
+                return {
                     "source_file": fp.name,
                     "document_id": doc_result["document_id"],
                     "was_dedup_skip": False,
                     "error": None,
-                })
+                }
         except Exception as e:
-            files_errored += 1
-            results_list.append({
+            return {
                 "source_file": fp.name,
                 "document_id": None,
                 "was_dedup_skip": False,
                 "error": str(e),
-            })
+            }
+
+    # Process files concurrently (up to 4 at a time), matching MCP ingest
+    import asyncio as _asyncio
+    semaphore = _asyncio.Semaphore(4)
+    loop = _asyncio.get_event_loop()
+
+    async def _run_one(fp: _Path) -> dict:
+        async with semaphore:
+            return await loop.run_in_executor(None, _process_file_safe, fp)
+
+    results_list = await _asyncio.gather(*[_run_one(fp) for fp in files])
+
+    files_processed = sum(1 for r in results_list if not r.get("error") and not r.get("was_dedup_skip"))
+    files_skipped = sum(1 for r in results_list if r.get("was_dedup_skip"))
+    files_errored = sum(1 for r in results_list if r.get("error"))
 
     return {
         "files_found": files_found,
         "files_processed": files_processed,
         "files_skipped": files_skipped,
         "files_errored": files_errored,
-        "results": results_list,
+        "results": list(results_list),
     }
 
 

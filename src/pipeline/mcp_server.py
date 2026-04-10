@@ -177,6 +177,7 @@ async def convert_document(
         agent_notes=agent_notes,
         agent_metadata=agent_metadata,
         chunking_config=chunking_config,
+        action="convert",
     )
     return json.dumps(response, indent=2)
 
@@ -420,7 +421,7 @@ async def list_documents(
     call get_document with a document_id to retrieve the full content.
 
     Args:
-        collection: Filter to a specific collection. If null, list all collections.
+        collection: Filter to a specific collection. If null, returns documents from all collections.
         file_type: Filter by file extension (e.g., ".pdf", ".docx").
         limit: Number of documents to return (default 20, max 100).
         offset: Pagination offset (default 0).
@@ -668,6 +669,7 @@ def _process_single_document(
     agent_notes: Optional[str],
     agent_metadata: Optional[dict],
     chunking_config: Optional[dict],
+    action: str = "ingest",
 ) -> dict[str, Any]:
     """Shared pipeline logic for convert_document and ingest.
 
@@ -698,7 +700,7 @@ def _process_single_document(
                     initiated_by=initiated_by,
                     agent_notes=agent_notes,
                     agent_metadata=agent_metadata,
-                    action="ingest",
+                    action=action,
                     was_dedup_skip=True,
                 )
             )
@@ -762,6 +764,15 @@ def _process_single_document(
             warnings.extend(enrich_result.errors)
         except Exception as e:
             warnings.append(f"Image enrichment failed: {e}")
+    else:
+        # Count image references and warn if vision key is missing
+        import re as _re
+        image_count = len(_re.findall(r"!\[[^\]]*\]\([^)]+\)", markdown))
+        if image_count > 0:
+            warnings.append(
+                f"Document contains {image_count} image(s) but no VISION_API_KEY "
+                "is configured — image descriptions were not generated"
+            )
 
     stored_doc = StoredDocument(
         document_id=result.document_id,
