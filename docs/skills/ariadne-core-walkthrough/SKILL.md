@@ -1,25 +1,25 @@
 ---
 name: ariadne-core-walkthrough
 description: |
-  THE entry point for anyone asking about Ariadne Core. Invoke this skill —
-  not just answer from context — whenever the user says anything like: "what
-  is ariadne core", "tell me about ariadne", "how do I get started", "walk
-  me through this", "give me the walkthrough", "present ariadne core", "what
-  does this project do", "how do I use ariadne core".
+  Walks the user through Ariadne Core — a document extraction and retrieval
+  pipeline that converts PDFs and 20+ formats to clean Markdown to dramatically
+  reduce frontier-LLM token costs. Presents an interactive 5-beat demo with
+  Nate Jones's video, the token-savings argument with concrete numbers, and
+  branching questions tailored to the user's situation.
 
-  When invoked, your VERY FIRST user-facing message must be Beat 1 of
-  starter_deck.md (in this skill directory): a markdown-embedded thumbnail of
-  Nate Jones's video, a 3–4 sentence summary of his argument using the anchor
-  numbers from docs/TOKEN_SAVINGS_FRAMING.md, one sentence about what we
-  built, and an AskUserQuestion asking whether they've already seen the
-  video. STOP after that question. Do NOT improvise an "overview" of Ariadne
-  Core first. Do NOT dump pipeline details, MCP tool names, or deployment
-  options in the opening message. Do NOT search the filesystem for image
-  files — every image is displayed by embedding the manifest's `url:` field
-  as markdown. Read SKILL.md and starter_deck.md before composing your first
-  message.
+  TRIGGER when: user asks "what is ariadne core", "tell me about ariadne",
+  "tell me about ariadne core", "what is ariadne", "explain ariadne core",
+  "how do I get started with ariadne", "walk me through ariadne", "give me
+  the ariadne walkthrough", "present ariadne core", "what does ariadne core
+  do", "ariadne core overview", "show me ariadne core", or any general
+  question about what Ariadne Core is, what it does, or why it exists.
+
+  DO NOT TRIGGER when: user wants to deploy Ariadne Core (use
+  ariadne-core-deploy), modify the codebase (use ariadne-core-build), process
+  or search documents (use ariadne-document-intelligence), or explicitly names
+  a different ariadne skill (use ariadne-core-router).
 author: Denson Smith
-version: 1.0.0
+version: 1.0.1
 ---
 
 # Ariadne Core — Onboarding (Dynamic Presenter)

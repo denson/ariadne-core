@@ -1,6 +1,6 @@
 {
   "name": "ariadne-core",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Ariadne Core plugin. When the user asks about Ariadne Core, invoke the ariadne-core-walkthrough skill — do not answer from this description.",
   "author": {
     "name": "Denson Smith"
