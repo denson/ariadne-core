@@ -110,7 +110,7 @@ api:
   require_auth: true
 ```
 
-API keys are stored as SHA-256 hashes. All endpoints except `/api/health` require an `X-API-Key` header when auth is enabled.
+API keys are stored as SHA-256 hashes. `/api/health` is the only unauthenticated endpoint — all other endpoints require an `X-API-Key` header when auth is enabled.
 
 ## Configuration
 
@@ -129,6 +129,13 @@ EMBEDDING_BASE_URL=https://api.openai.com/v1
 ```
 
 Both API keys can use the same OpenAI key, or you can use different ones to track usage with finer granularity. You can also use any OpenAI-compatible endpoint, including open models — just change the `BASE_URL` and `MODEL` values to match your provider.
+
+### Port Configuration
+
+- **`PORT`** — REST API port (default: `8000`). On Railway, this is set automatically.
+- **`MCP_PORT`** — MCP server port (default: `8081`). When `MCP_PORT` equals `PORT`, the server runs in **single-port mode**: MCP is mounted at `/mcp` inside the REST API server, one listener handles everything. When they differ, the server runs in **dual-port mode**: separate listeners on each port.
+- **Production (Railway/hosted):** Set `MCP_PORT` to match `PORT` for single-port mode. Railway only exposes one port — **if you forget to set `MCP_PORT`, you get dual-port mode, which silently fails** because the MCP listener on 8081 is unreachable.
+- **Local development:** Leave defaults (`PORT=8000`, `MCP_PORT=8081`) for dual-port mode. This lets you restart the MCP server independently without bouncing the REST API.
 
 ---
 
@@ -149,7 +156,7 @@ Convert a document to clean Markdown. By default, also chunks, embeds, and store
 | `force` | bool | `false` | Re-process even if the document fingerprint already exists in this collection |
 | `chunking_config` | dict | `null` | Override chunking strategy. Keys: `strategy` (`"by_title"`, `"by_page"`, `"fixed_size"`), `max_characters`, `overlap` |
 
-Returns JSON with: `document_id`, `source_file`, `title`, `markdown` (the full extracted text), `file_type`, `engine` (extraction engine used, e.g. `"markitdown"`), `content_fingerprint`, `chunks_count`, `was_dedup_skip`, `provenance`, `warnings`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio` (ratio of input size to output tokens), `embedding_model` (model used for chunk embeddings), `store_status` (`"stored"`, `"not_stored"`, or `"skipped"`), and `interactions` (if dedup hit).
+Returns JSON with: `document_id`, `source_file`, `title`, `markdown` (the full extracted text), `file_type`, `engine` (extraction engine used, e.g. `"markitdown"`), `content_fingerprint`, `collection`, `chunks_count`, `was_dedup_skip`, `provenance`, `warnings`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio` (ratio of input size to output tokens), `embedding_model` (model used for chunk embeddings), `store_status` (`"stored"`, `"not_stored"`, or `"skipped"`), and `interactions` (if dedup hit).
 
 **Dedup behavior:** If a document with the same content fingerprint already exists in the target collection, extraction/chunking/embedding are skipped. The existing document is returned, and a new `document_interactions` row is recorded. Use `force: true` to re-process.
 
@@ -175,7 +182,7 @@ Semantic search over all stored document chunks. Returns ranked results with sou
 | `collection` | string | Match chunks in this collection. Same as the `collection` parameter — either works |
 | `document_id` | string | Match chunks from a specific document |
 | `source_file` | string | Substring match (case-insensitive) against the source document's filename |
-| `file_type` | string | Exact match against file extension without leading dot (e.g., `"pdf"`, `"docx"`) |
+| `file_type` | string | Exact match against file extension (e.g., `".pdf"`, `".docx"`). Both `.pdf` and `pdf` are accepted — the system normalizes internally — but `.pdf` (with dot) is the recommended convention |
 | `tags` | list[str] | Match documents that have any of the specified tags (OR logic) |
 
 Unknown filter keys are silently ignored.
@@ -253,6 +260,242 @@ Processing is synchronous. Files are processed concurrently (up to 4 at a time) 
 | `agent_notes` | string | Free-text context (e.g., the user's prompt that triggered the call) |
 | `agent_metadata` | dict | Structured JSON for any additional context (project ID, eval run details, etc.) |
 
+## Metadata Conventions
+
+The caller metadata fields (`agent_notes`, `agent_metadata`, `collection`, `tags`) are intentionally flexible — any agent can write any value. But flexibility without convention produces unsearchable noise. These conventions exist so that metadata written by one agent, in one session, is discoverable and meaningful to a different agent, in a different session, weeks later.
+
+None of these conventions are enforced by the system. They are recommendations. Agents that follow them produce metadata that composes well with search, filtering, and provenance queries. Agents that ignore them still work — their metadata is just harder to use.
+
+### When to use `collection` vs `tags` vs `agent_metadata`
+
+These three fields serve different purposes. Using the wrong one doesn't break anything, but it makes filtering harder.
+
+| Field | Scope | Purpose | Example |
+|-------|-------|---------|---------|
+| `collection` | Per-document | Broad namespace for a corpus. Dedup is scoped per collection. Search can be scoped to one. | `"quarterly-reports"`, `"legal-contracts"`, `"project-atlas"` |
+| `tags` | Per-document | Cross-cutting labels that span collections. Searchable via the `tags` filter (OR logic). | `["pricing", "q1-2026", "reviewed"]` |
+| `agent_metadata` | Per-interaction | Structured facts about this specific processing event. JSON with known keys. | `{"intent": "research", "project": "atlas", "status": "extracted"}` |
+
+**`collection`** answers: *what corpus does this document belong to?*
+**`tags`** answer: *what cross-cutting categories apply to this document?*
+**`agent_metadata`** answers: *why did this agent process this document right now, and what did it find?*
+
+Every document should have a collection. A document in the `"default"` collection is a signal that the agent didn't think about organization — which means future search and filtering are degraded. If you don't know what collection to use, name it after the project, topic, or task.
+
+### Recommended `agent_metadata` keys
+
+`agent_metadata` accepts arbitrary JSON. These conventional keys make metadata written by different agents interoperable:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `project` | string | Project name or identifier (e.g., `"atlas"`, `"q4-review"`) |
+| `source_url` | string | Where the document was downloaded from, if applicable |
+| `intent` | string | Why the agent processed this document: `"research"`, `"compliance-review"`, `"onboarding"`, `"reference"`, `"archival"` |
+| `findings` | string | Brief summary of what the agent learned from the document |
+| `status` | string | Processing state: `"extracted"`, `"reviewed"`, `"needs-follow-up"`, `"superseded"` |
+| `related_documents` | list[str] | Document IDs of related items the agent found or was working with |
+
+These keys are recommendations, not a schema. Agents can add any additional keys that make sense for their workflow. The value of following the convention is that another agent can filter or search `agent_metadata` for `intent: "research"` and find documents across sessions and agent types.
+
+### How to write useful `agent_notes`
+
+`agent_notes` is a free-text string. It should help the next agent (or the same agent in a future session) decide whether to re-read this document or skip it.
+
+**Bad:**
+```
+"processed this file"
+```
+
+**Good:**
+```
+"Extracted for Q1 pricing review. Found 3 tables on revenue projections.
+Section 4.2 has the margin breakdown the user asked about."
+```
+
+**Good:**
+```
+"User uploaded during contract negotiation. Key clauses: termination (Section 8),
+IP assignment (Section 12), non-compete (Section 15). No unusual terms flagged."
+```
+
+The test: if a different agent searches and finds this document six months from now, will the note tell them enough to decide whether it's relevant without re-reading the full content?
+
+### Tag conventions
+
+Tags are free-form strings, but following these conventions makes them composable with search filters:
+
+- **Lowercase, hyphenated:** `"q1-2026"` not `"Q1 2026"`
+- **Namespace prefixes for categories:** `"project:atlas"`, `"status:reviewed"`, `"source:email"`, `"dept:legal"`
+- **Keep tags searchable:** they compose with the `tags` filter in `search` (OR logic). A tag like `"reviewed"` is useful; a tag like `"reviewed-by-jane-on-tuesday"` is too specific to filter on
+
+Common tag patterns:
+
+| Pattern | Examples | Use case |
+|---------|----------|----------|
+| Time period | `"q1-2026"`, `"fy-2025"` | Filter documents by business period |
+| Status | `"status:reviewed"`, `"status:needs-follow-up"` | Track review workflow |
+| Source | `"source:email"`, `"source:slack"`, `"source:upload"` | Filter by how the document arrived |
+| Domain | `"legal"`, `"financial"`, `"technical"` | Cross-collection topic filtering |
+| Project | `"project:atlas"`, `"project:onboarding"` | When documents span multiple collections but share a project |
+
+### Worked examples
+
+#### 1. Single document extraction — user drags a PDF into chat
+
+The user says: *"Can you look at this quarterly report and tell me about the revenue trends?"*
+
+The agent uploads the file, then calls `convert_document`:
+
+```json
+{
+  "uri": "/uploads/acme-q1-2026-report.pdf",
+  "collection": "acme-financials",
+  "tags": ["financial", "q1-2026"],
+  "agent_type": "claude-code",
+  "initiated_by": "user:denson",
+  "model": "claude-sonnet-4-6",
+  "agent_notes": "User asked about revenue trends in Acme Q1 2026 quarterly report. Extracting for analysis.",
+  "agent_metadata": {
+    "intent": "research",
+    "project": "acme-review"
+  }
+}
+```
+
+After extraction, the agent reads the Markdown and answers the user's question. The document is now searchable — if the user asks about Acme financials next week, `search` with `collection: "acme-financials"` will find it.
+
+#### 2. Batch project ingest — agent processes a folder of contracts
+
+The user says: *"Process everything in /data/contracts/ — these are the vendor agreements for Project Atlas."*
+
+The agent calls `list_collections` first to see if a relevant collection exists, then calls `ingest`:
+
+```json
+{
+  "path": "/data/contracts/",
+  "collection": "atlas-vendor-contracts",
+  "tags": ["legal", "project:atlas", "vendor"],
+  "recursive": true,
+  "agent_type": "claude-code",
+  "initiated_by": "user:denson",
+  "model": "claude-sonnet-4-6",
+  "agent_notes": "Batch ingest of vendor agreements for Project Atlas. User wants all contracts searchable for upcoming negotiation review.",
+  "agent_metadata": {
+    "intent": "archival",
+    "project": "atlas",
+    "status": "extracted"
+  }
+}
+```
+
+After ingest completes, the agent reports: *"Processed 23 files (2 skipped as duplicates, 1 failed — password-protected). All are now searchable in the `atlas-vendor-contracts` collection."*
+
+#### 3. Research session — agent searches, reads, and annotates across multiple docs
+
+The user says: *"What do our contracts say about termination clauses? I need to compare across vendors."*
+
+**Step 1 — Search:**
+
+```json
+{
+  "query": "termination clause early exit penalty",
+  "top_k": 10,
+  "collection": "atlas-vendor-contracts",
+  "agent_type": "claude-code",
+  "initiated_by": "user:denson",
+  "model": "claude-sonnet-4-6",
+  "agent_notes": "User comparing termination clauses across vendor contracts for Project Atlas.",
+  "agent_metadata": {
+    "intent": "research",
+    "project": "atlas"
+  }
+}
+```
+
+**Step 2 — Deep read:** The agent calls `get_document` on the top results to read full content, then synthesizes a comparison.
+
+**Step 3 — Follow-up search** (narrowing):
+
+```json
+{
+  "query": "early termination penalty fee 30 days notice",
+  "top_k": 5,
+  "collection": "atlas-vendor-contracts",
+  "filters": { "tags": ["vendor"] },
+  "agent_type": "claude-code",
+  "initiated_by": "user:denson",
+  "model": "claude-sonnet-4-6",
+  "agent_notes": "Narrowing to specific penalty terms after initial comparison. 4 of 10 results had relevant termination clauses; looking for penalty amounts and notice periods.",
+  "agent_metadata": {
+    "intent": "research",
+    "project": "atlas",
+    "findings": "Initial search found termination clauses in Vendor A (Section 8), Vendor C (Section 12), Vendor D (Section 6.3), Vendor F (Section 9). Vendor B contract has no termination clause."
+  }
+}
+```
+
+Note how the `agent_notes` and `agent_metadata.findings` evolve across calls — the second search's metadata captures what was learned from the first. A future agent reviewing the search log can reconstruct the research trajectory.
+
+#### 4. Multi-agent handoff — agent A ingests, agent B reviews, agent C answers
+
+This pattern spans multiple sessions. The metadata conventions make it work.
+
+**Agent A (Claude Code) — initial ingest:**
+
+```json
+{
+  "uri": "https://example.com/reports/safety-audit-2026.pdf",
+  "collection": "compliance-audits",
+  "tags": ["compliance", "safety", "2026"],
+  "agent_type": "claude-code",
+  "initiated_by": "user:denson",
+  "model": "claude-opus-4-6",
+  "agent_notes": "Ingesting annual safety audit report. Downloaded from compliance portal.",
+  "agent_metadata": {
+    "intent": "archival",
+    "source_url": "https://example.com/reports/safety-audit-2026.pdf",
+    "status": "extracted"
+  }
+}
+```
+
+**Agent B (different session, maybe different user) — review and annotate:**
+
+Agent B searches, finds the document, reads it, and then re-processes it with `force: true` to record updated metadata and findings:
+
+```json
+{
+  "uri": "/uploads/safety-audit-2026.pdf",
+  "collection": "compliance-audits",
+  "tags": ["compliance", "safety", "2026", "status:reviewed"],
+  "force": true,
+  "agent_type": "claude-code",
+  "initiated_by": "user:sarah",
+  "model": "claude-sonnet-4-6",
+  "agent_notes": "Reviewed safety audit. 3 critical findings in Sections 4, 7, 11. Remediation deadlines: April 30 (fire suppression), June 15 (ventilation), August 1 (emergency exits). No findings from prior year remain open.",
+  "agent_metadata": {
+    "intent": "compliance-review",
+    "status": "reviewed",
+    "findings": "3 critical findings: fire suppression (S4), ventilation (S7), emergency exits (S11). All prior-year findings closed.",
+    "related_documents": ["doc-uuid-prior-year-audit"]
+  }
+}
+```
+
+Note: `force: true` re-processes the entire document (re-extraction, re-chunking, re-embedding) just to update the metadata. A metadata-only update would be more efficient — this is a known trade-off, not a bug. The interaction record and its metadata are always created regardless; `force` is needed here only because the agent also wants to update the document-level `tags`.
+
+**Agent C (weeks later) — answering a question:**
+
+A user asks: *"What's the status of our safety compliance?"*
+
+Agent C searches `collection: "compliance-audits"`, finds the document, and sees from the interaction history:
+- Agent A ingested it (status: `"extracted"`)
+- Agent B reviewed it (status: `"reviewed"`, findings summarized)
+
+Agent C can answer the question using Agent B's findings without re-reading the full document. The `agent_notes` from Agent B's interaction tell Agent C exactly what was found and what the deadlines are.
+
+This is the payoff of metadata conventions: Agent C didn't need to know about Agent A or Agent B. It just searched, found a document with rich interaction history, and used that history to answer the question efficiently.
+
 ---
 
 ## REST API
@@ -263,7 +506,7 @@ The REST API mirrors MCP tool functionality and adds collection management, file
 |--------|----------|-------------|
 | `POST` | `/api/upload` | Upload a file, returns server-side path for use with `convert_document` |
 | `POST` | `/api/documents` | Convert and store a document (same as MCP `convert_document`) |
-| `GET` | `/api/documents` | List documents with optional `collection` filter, `page`, `per_page` |
+| `GET` | `/api/documents` | List documents with optional `collection` filter, `offset`, `limit` |
 | `GET` | `/api/documents/{id}` | Get full document by ID (same as MCP `get_document`) |
 | `POST` | `/api/ingest` | Batch directory ingestion (same as MCP `ingest`) |
 | `POST` | `/api/search` | Semantic search (same as MCP `search`) |
@@ -273,6 +516,8 @@ The REST API mirrors MCP tool functionality and adds collection management, file
 | `GET` | `/api/health` | Health check (no auth required) |
 
 When `require_auth` is enabled in config, all endpoints except `/api/health` need an `X-API-Key` header. API keys are stored as SHA-256 hashes.
+
+**Changed in v0.x:** The `GET /api/documents` endpoint now uses `offset`/`limit` pagination (matching the MCP `list_documents` tool) instead of the previous `page`/`per_page` parameters. Defaults: `offset=0`, `limit=20`, max `100`.
 
 ---
 
@@ -286,12 +531,24 @@ Every document is fingerprinted (SHA-256 on normalized text) before any expensiv
 
 The `force` flag on `convert_document` and `ingest` overrides this when you know a document has changed.
 
+On a dedup skip, the response includes the existing document's `markdown`, `interactions`, and all metadata fields — the only difference is `was_dedup_skip: true` and no re-processing occurs. Callers always get the full document back.
+
 ## Provenance
 
 Every agent call creates a record, even dedup skips. When you search and get a result, you also get the full history of who has touched that document:
 
 - **processing_chain** (on the document) tells you how the content was processed: which extraction tool, which enrichment steps, which embedding model, with timestamps
 - **document_interactions** (separate table) tells you who touched it: which agent, which model, when, what action, whether it was a dedup skip, plus `agent_notes` and `agent_metadata`
+
+The `action` field in `document_interactions` uses these canonical values:
+
+| Action | Source | Meaning |
+|--------|--------|---------|
+| `"convert"` | `convert_document` | Agent deliberately processed a single document |
+| `"ingest"` | `ingest` | Document was swept up in a batch directory ingestion |
+| `"search"` | `search` (in `search_log`) | Query recorded in the search log |
+
+The distinction between `"convert"` and `"ingest"` matters for provenance — knowing whether a document was specifically selected mid-conversation vs. picked up in a batch tells you something about intent.
 
 ---
 
