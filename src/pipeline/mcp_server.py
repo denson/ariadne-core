@@ -867,7 +867,7 @@ def _process_single_document(
             initiated_by=initiated_by,
             agent_notes=agent_notes,
             agent_metadata=agent_metadata,
-            action="ingest",
+            action=action,
             was_dedup_skip=False,
         )
     )
