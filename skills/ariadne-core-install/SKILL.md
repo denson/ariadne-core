@@ -101,7 +101,7 @@ railway variables set VISION_API_KEY=<provider-api-key>
 railway variables set ARIADNE_API_KEY=<generate-a-strong-secret>
 railway variables set EMBEDDING_MODEL=text-embedding-3-small
 railway variables set VISION_MODEL=gpt-4o-mini
-railway variables set MCP_PORT=8000
+railway variables set MCP_PORT='${{PORT}}'
 
 # 6. Deploy
 railway up
@@ -140,7 +140,7 @@ curl -s -o /dev/null -w "%{http_code}" \
 | `ARIADNE_API_KEY` | Strong secret | Clients authenticate with this |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Or any compatible model |
 | `VISION_MODEL` | `gpt-4o-mini` | Or any compatible model |
-| `MCP_PORT` | `8000` | Must equal PORT for single-port mode |
+| `MCP_PORT` | `${{PORT}}` | Must equal PORT for single-port mode — Railway only exposes one port, so MCP and REST must share it |
 | `DATABASE_URL` | Auto | Provided by Railway Postgres plugin |
 | `PORT` | Auto | Provided by Railway |
 

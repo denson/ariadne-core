@@ -184,6 +184,22 @@ initiated_by: null
 agent_notes: null
 ```
 
+### Metadata conventions
+
+Follow the conventions in SPEC.md "Metadata Conventions" for how to populate
+`collection`, `tags`, `agent_notes`, and `agent_metadata`. Key points:
+
+- **`collection`**: name it after the project, topic, or task — not `"default"`
+- **`tags`**: lowercase, hyphenated, use namespace prefixes (`"project:atlas"`,
+  `"status:reviewed"`, `"source:email"`)
+- **`agent_notes`**: write notes that help a future agent decide whether to re-read
+  the document. Bad: `"processed this file"`. Good: `"Extracted for Q1 pricing review.
+  Found 3 tables on revenue projections."`
+- **`agent_metadata`**: use the recommended keys (`project`, `source_url`, `intent`,
+  `findings`, `status`, `related_documents`) so metadata from different agents is
+  interoperable
+- Omit keys you don't have values for — don't pass `null`
+
 ## Process: Ingesting a document
 
 1. **Get the file URL** from the user's message or context.
@@ -338,7 +354,7 @@ The `filters` parameter on `search` accepts these keys:
 | `collection` | string | Match chunks in this collection. Same as the top-level `collection` parameter — either works |
 | `document_id` | string | Match chunks from a specific document |
 | `source_file` | string | Substring match (case-insensitive) against the source document's filename |
-| `file_type` | string | Exact match against file extension without leading dot (e.g., `"pdf"`, `"docx"`) |
+| `file_type` | string | Exact match against file extension (e.g., `".pdf"`, `".docx"`). Both `.pdf` and `pdf` are accepted |
 | `tags` | list[str] | Match documents that have any of the specified tags (OR logic) |
 
 Unknown filter keys are silently ignored.

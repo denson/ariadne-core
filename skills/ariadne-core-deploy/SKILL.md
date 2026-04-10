@@ -165,8 +165,11 @@ both the app and Postgres.
 1. **Database URL:** Railway and Fly.io set `DATABASE_URL` automatically. On a VPS,
    set it in `.env` or pass it as an environment variable.
 
-2. **Port binding:** Railway and Fly.io set `PORT`. On a VPS, the app defaults to
-   port 8000 for REST API and 8081 for MCP, or reads from config.
+2. **Port binding:** Railway and Fly.io set `PORT`. On a VPS, set `PORT` and
+   `MCP_PORT` to the same value for single-port mode (recommended), or leave
+   defaults (`PORT=8000`, `MCP_PORT=8081`) for dual-port mode if you want to
+   restart MCP independently during development. See SPEC.md "Port Configuration"
+   for details.
 
 3. **HTTPS:** Railway and Fly.io provide HTTPS automatically. On a VPS, use a
    reverse proxy (Caddy is simplest — automatic Let's Encrypt).
