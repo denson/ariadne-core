@@ -16,6 +16,10 @@ Beyond extraction, Ariadne chunks the Markdown, computes semantic embeddings, an
 
 ## Connecting
 
+**Don't have an instance yet?** Deploy one:
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/ariadne-core)
+
 ### MCP (preferred)
 
 Any MCP-compatible client can connect over Streamable HTTP. One command (syntax varies by client):

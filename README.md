@@ -140,7 +140,13 @@ All endpoints require API key authentication via `X-API-Key` header (except `/ap
 
 ## Manual setup (if you prefer doing it yourself)
 
-### Prerequisites
+### One-click deploy
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/ariadne-core)
+
+Click the button, fill in your API keys, done. Everything else has sensible defaults. After deploy, copy your `ARIADNE_API_KEY` from the Variables tab to connect clients.
+
+### Prerequisites (for manual CLI setup)
 
 - A Railway account — [railway.com](https://railway.com). Free tier works for personal use.
 - An API key from any OpenAI-compatible provider — for embeddings and image descriptions. OpenAI, Google Gemini, Groq, DeepSeek, Together AI, Mistral, or any local model server (Ollama, LM Studio) all work. See [Compatible providers](#compatible-providers) below.
@@ -151,7 +157,7 @@ All endpoints require API key authentication via `X-API-Key` header (except `/ap
 railway login
 cd ariadne-core
 railway init
-railway add --plugin postgresql
+railway add --database postgres
 railway up
 ```
 
