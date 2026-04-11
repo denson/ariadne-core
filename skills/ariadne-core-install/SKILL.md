@@ -88,128 +88,17 @@ copy your `ARIADNE_API_KEY` from the Variables tab to connect MCP clients.
 
 ### AI path — deploy via CLI (alternative)
 
-Use this if the one-click deploy doesn't fit the user's situation (no browser,
-custom configuration, etc.).
-
-**CRITICAL: Never read, cat, copy, or display the contents of `.env` files.
-You do not handle API keys. Tell the user to open `.env` in their editor and
-fill in their own keys.**
-
-Deployment has two phases. The first requires the user's interaction (browser login,
-interactive CLI prompts). The second is automated.
-
-**Phase 1 — User does these (interactive, agent cannot run them):**
-
-Walk the user through each step. Wait for confirmation before moving to the next.
-
-1. **Create a Railway account** at railway.com if they don't have one
-   (free tier available, ~$5/mo hobby plan).
-2. **Install Railway CLI:** `npm install -g @railway/cli` (or `brew install railway` on Mac).
-3. **Log in:** Run `railway login` in their terminal — opens browser to authenticate.
-4. **Create project:** Run `railway init` in their terminal — picks workspace and creates project.
-5. **Add Postgres:** Run `railway add --database postgres` — adds the database.
-   Railway automatically injects `DATABASE_URL_PRIVATE` (internal network) into the environment.
-
-**Phase 2 — Agent does these:**
-
-```bash
-# 1. Set up configuration
-cd ariadne-core
-cp .env.example .env
-
-# 2. Tell the user to open .env and fill in their API keys
-#    DO NOT read or display .env contents — you don't handle keys
-
-# 3. Deploy
-railway up
-
-# 4. Get public URL
-railway domain
-
-# 5. Verify — health check (expect {"status": "healthy"})
-curl -s https://<URL>/api/health
-
-# 6. Verify — auth check (expect 200 with JSON response)
-curl -s -o /dev/null -w "%{http_code}" \
-  -H "X-API-Key: <ARIADNE_API_KEY>" \
-  https://<URL>/api/collections
-```
-
-**What the user fills in `.env`:**
-- `EMBEDDING_API_KEY` and `VISION_API_KEY` — their provider API key
-- `EMBEDDING_MODEL` and `VISION_MODEL` — model names for their provider
-- `EMBEDDING_BASE_URL` and `VISION_BASE_URL` — their provider's endpoint
-  (keep `https://api.openai.com/v1` for OpenAI; change for other providers)
-- `ARIADNE_API_KEY` — a strong secret for client authentication
-
-**What you do NOT need to set:**
-- `DATABASE_URL` / `DATABASE_URL_PRIVATE` — injected automatically by Railway's Postgres plugin
-- `PORT` — set automatically by Railway
-- `MCP_PORT` — the app defaults to `PORT` automatically (single-port mode)
+If the one-click deploy doesn't fit (no browser, custom config, etc.), follow the
+**Manual setup** section in `README.md` — it covers Railway CLI login, project
+creation, Postgres, environment variables, and deploy commands. After deploy,
+return here for the connection and verification steps below. **Never read, cat,
+copy, or display `.env` files — you don't handle API keys.**
 
 ### Human path — deploy to Railway
 
-If the person wants the full visual walkthrough with illustrations, hand off to the
-**ariadne-core-walkthrough** skill.
-
-Otherwise, point them at the one-click deploy first:
-
-> **Fastest path:** Click the deploy button at the top of this section. Fill in your
-> API keys, click Deploy, done. The rest of these steps are for manual setup.
-
-If they prefer manual setup, walk them through it conversationally:
-
-**Step 1 — Create accounts (if needed):**
-- Railway account at railway.com — free tier works
-- An API key from any OpenAI-compatible provider (OpenAI, Google Gemini, Groq,
-  DeepSeek, Together AI, Mistral, or a local model server like Ollama)
-
-**Step 2 — Install the Railway CLI:**
-```bash
-npm install -g @railway/cli    # or: brew install railway (on Mac)
-```
-
-**Step 3 — Set up Railway:**
-Tell them to run these commands one at a time. Explain what each does.
-```bash
-railway login                    # opens browser to authenticate
-cd ariadne-core                  # go to the project directory
-railway init                     # creates a Railway project (picks workspace interactively)
-railway add --database postgres  # adds a Postgres database
-```
-
-**Step 4 — Configure:**
-Tell them to copy `.env.example` to `.env` and fill in their values:
-```bash
-cp .env.example .env
-```
-
-Explain each variable in `.env`:
-- `EMBEDDING_API_KEY` — their API key from any OpenAI-compatible provider, for
-  turning document chunks into searchable vectors
-- `VISION_API_KEY` — same key (or a different provider's key), for describing
-  images found in documents
-- `EMBEDDING_BASE_URL` / `VISION_BASE_URL` — their provider's API endpoint
-  (default is OpenAI; change for other providers)
-- `EMBEDDING_MODEL` / `VISION_MODEL` — model names for their provider
-- `ARIADNE_API_KEY` — a strong secret, the password clients use to connect
-
-Variables they do NOT need to touch:
-- `DATABASE_URL` / `DATABASE_URL_PRIVATE` — Railway injects these automatically from the Postgres plugin
-- `PORT` — Railway sets this automatically
-- `MCP_PORT` — the app defaults to Railway's PORT, no config needed
-
-**Step 5 — Deploy and get URL:**
-```bash
-railway up             # builds and deploys (takes 2-3 minutes first time)
-railway domain         # gives you the public HTTPS URL
-```
-
-**Step 6 — Verify:**
-```bash
-curl https://their-url.up.railway.app/api/health
-```
-Should return `{"status": "healthy"}`.
+Point them at the one-click deploy button above first. If they want the full visual
+walkthrough, hand off to the **ariadne-core-walkthrough** skill. If they prefer
+manual CLI setup, walk them through the **Manual setup** section in `README.md`.
 
 ### Other platforms
 
