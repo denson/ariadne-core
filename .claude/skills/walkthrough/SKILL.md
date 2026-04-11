@@ -45,7 +45,11 @@ Image: `video_thumbnail.png` — Nate Jones's video thumbnail.
 
 Chat text: Nate Jones made a compelling argument — frontier rates for junk
 bytes, 20x reduction per document. We built the pipeline that does this
-automatically. Mention YouTube + Substack links.
+automatically. Mention YouTube + Substack links. Also mention that Ariadne Core
+is a deployed service, not a local library — trying it requires a Railway account
+(~$5/mo, free tier available) or any Docker host, and takes about 5 minutes.
+This sets expectations before the user gets excited and tries to use tools that
+don't exist yet.
 
 AskUserQuestion: "Have you seen Nate's video, or would you rather jump
 straight to how the pipeline works?"
@@ -105,7 +109,10 @@ dynamic beat:
 
 ### Path A — Self-host on Railway (subscription or agentic users who want to deploy)
 
-Dynamic beat: One Dockerfile, `railway up`, ~5 minutes. Show deployment illustration.
+Dynamic beat: If the user doesn't have a Railway account yet, tell them to create
+one at railway.com (free tier to try, ~$5/mo hobby plan). One Dockerfile,
+`railway up`, ~5 minutes. The install skill will check prerequisites. Show
+deployment illustration.
 Ask: "Ready to deploy? I can walk you through it right now."
 If yes → hand off to `ariadne-core-install` skill.
 
@@ -119,9 +126,11 @@ Interest-capture moment. Can pivot to self-host.
 ### Path C — Local MarkItDown only
 
 Dynamic beat: MarkItDown is the open-source extraction layer we build on. Runs
-locally, converts 20+ formats, $0 tokens. Show format coverage illustration.
-Walk through: `pip install markitdown`, basic usage, what you get (extraction
-only, no search/embedding/storage).
+locally, converts 20+ formats, $0 tokens — no deployment, no hosted service,
+no Railway account needed. Just `pip install markitdown` and go. Show format
+coverage illustration. Walk through basic usage. Contrast with the full pipeline:
+what you get (extraction only, no search/embedding/storage/provenance/dedup) vs.
+what Ariadne adds on top (but that requires deploying).
 Ask: "Want me to help you set up MarkItDown locally right now?"
 
 ## Dynamic HTML template

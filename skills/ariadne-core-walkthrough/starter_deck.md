@@ -18,6 +18,9 @@ Chat text — hit the high points of Nate's argument in 2-3 sentences:
 - 4,500-word doc: ~100,000 tokens raw PDF → ~5,000 clean Markdown = 20x reduction
 - Wasteful 30-turn Opus session: $8-$10 → ~$1 done cleanly = the 10x
 - We built the pipeline that does this automatically
+- **Mention deployment early:** Ariadne Core runs as a hosted service — you deploy
+  it once on Railway or similar, then connect your tools to it. Railway has a free
+  tier to try. The install skill walks you through it in about 5 minutes.
 
 Include video links:
 - YouTube: https://youtu.be/5ztI_dbj6ek (deep-dive at https://youtu.be/5ztI_dbj6ek?t=260)
@@ -99,9 +102,13 @@ Based on the user's answer, generate dynamic beats. Each dynamic beat:
 For users who want to deploy (subscription or agentic).
 
 Dynamic beat content:
+- If you don't have a Railway account yet, you'll need to create one at
+  railway.com. Free tier works to try it out; hobby plan is ~$5/mo.
 - One Dockerfile, `railway up`, ~5 minutes
 - Show deployment illustration (use `architecture.png` or similar from assets)
 - Mention: open source, self-installable, Claude Code connects with an API key
+- The install skill will check whether you have Railway CLI installed and walk
+  you through the full setup
 
 AskUserQuestion: "Ready to deploy? I can walk you through it right now."
 Options:
@@ -131,9 +138,12 @@ For users who just want extraction without the full pipeline.
 
 Dynamic beat content:
 - MarkItDown is the open-source extraction layer Ariadne builds on
-- Runs locally, converts 20+ formats, $0 tokens
-- What you get: extraction only — no search, no embedding, no storage
-- What Ariadne adds on top: semantic embeddings, metadata, vector search
+- Runs locally, converts 20+ formats, $0 tokens — no deployment, no hosted
+  service, no Railway account needed. Just `pip install markitdown` and go.
+- What you get: extraction only — no search, no embedding, no storage, no
+  provenance, no dedup
+- What Ariadne adds on top: semantic embeddings, metadata, vector search,
+  provenance tracking, dedup — but that requires deploying the full pipeline
 
 AskUserQuestion: "Want me to help you set up MarkItDown locally right now?"
 Options:

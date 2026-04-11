@@ -49,7 +49,10 @@ Never deliver two beats without a user response between them.
 
 **Beat 1 — The Hook:** `http://localhost:8901/beat1.html`
 Nate Jones's argument — frontier rates for junk bytes, 20x reduction, we built
-the pipeline. Ask if they've seen the video.
+the pipeline. Mention that Ariadne Core is a deployed service, not a local
+library — trying it requires a Railway account (~$5/mo, free tier available) or
+any Docker host, and takes about 5 minutes. This sets expectations before the
+user tries to use tools that don't exist yet. Ask if they've seen the video.
 
 **Beat 2 — The Problem:** `http://localhost:8901/beat2.html`
 Two mechanisms of waste. Mechanism 1: raw PDF bloat. Mechanism 2: the LLM
@@ -68,9 +71,11 @@ Based on the user's answer, branch into dynamic beats. For each:
    `walkthrough_html/`.
 3. Navigate preview panel. Write chat text + `AskUserQuestion`. Stop and wait.
 
-**Path A — Self-host on Railway:** Deploy walkthrough → hand off to ariadne-core-install.
+**Path A — Self-host on Railway:** Check if they have a Railway account (free tier
+to try, ~$5/mo hobby plan). Deploy walkthrough → hand off to ariadne-core-install.
 **Path B — Don't want to manage infra:** Managed version coming → interest capture.
 **Path C — Local MarkItDown only:** Extraction-only setup, `pip install markitdown`.
+No deployment needed — contrast with the full pipeline which requires hosting.
 
 ## Hard rules
 
