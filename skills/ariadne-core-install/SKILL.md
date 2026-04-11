@@ -78,7 +78,20 @@ Runs as a hosted service. All endpoints except `/api/health` require `X-API-Key`
 
 ## Path 1: Deploy a new instance
 
-### One-click deploy (recommended)
+### Setup script (recommended)
+
+Run the setup script for a guided terminal experience. It handles provider
+selection, API keys, model discovery, .env configuration, and Railway deployment
+via API — no Railway CLI needed:
+
+```bash
+python scripts/setup.py
+```
+
+The script deploys using Railway's GraphQL API with a Railway API token. Users
+create a token at `https://railway.com/account/tokens`.
+
+### One-click deploy (alternative)
 
 Copy this URL and paste it into your browser:
 
@@ -87,11 +100,8 @@ Copy this URL and paste it into your browser:
 Fill in your `EMBEDDING_API_KEY` and `VISION_API_KEY` (same key if using one
 provider). Everything else has defaults.
 
-Or run the setup script for a guided terminal experience:
-
-```bash
-python scripts/setup.py
-```
+Don't have a Railway account? Sign up at:
+`https://railway.com?referralCode=RxMpbX` ($20 in free credits, no commitment).
 
 ### After deploy
 
@@ -118,16 +128,16 @@ claude mcp add ariadne-core https://THE-URL/mcp \
 ```
 
 Tell them: *"Your `ARIADNE_API_KEY` was auto-generated during deploy. Find it in
-the Railway dashboard under your ariadne-core service → Variables tab. Copy it
-and paste it in place of `PASTE-YOUR-ARIADNE-API-KEY-HERE`."*
+the Railway dashboard under your ariadne-core service → Variables tab (or in
+`.env` if they used the setup script). Copy it and paste it in place of
+`PASTE-YOUR-ARIADNE-API-KEY-HERE`."*
 
-### AI path — deploy via CLI (alternative)
+### AI path — deploy via API
 
-If the one-click deploy doesn't fit (no browser, custom config, etc.), follow the
-**Manual setup** section in `README.md` — it covers Railway CLI login, project
-creation, Postgres, environment variables, and deploy commands. After deploy,
-return here for the connection and verification steps below. **Never read, cat,
-copy, or display `.env` files — you don't handle API keys.**
+The setup script uses Railway's GraphQL API (`https://backboard.railway.com/graphql/v2`)
+to deploy the published `ariadne-core` template. No Railway CLI is needed. The
+script needs a Railway API token — users create one at
+`https://railway.com/account/tokens`.
 
 Before running the setup script, do a quick model freshness check — read defaults
 from `python scripts/setup.py --help`, check the provider's model page for newer
@@ -139,11 +149,14 @@ Model documentation pages:
 - OpenAI: `https://developers.openai.com/api/docs/models`
 - Together: `https://docs.together.ai/docs/inference-models`
 
+**Never read, cat, copy, or display `.env` files — you don't handle API keys.**
+
 ### Human path — deploy to Railway
 
-Point them at the one-click deploy button above first. If they want the full visual
-walkthrough, hand off to the **ariadne-core-walkthrough** skill. If they prefer
-manual CLI setup, walk them through the **Manual setup** section in `README.md`.
+Point them at the setup script (`python scripts/setup.py`) first — it handles
+everything interactively. If they want the full visual walkthrough, hand off to
+the **ariadne-core-walkthrough** skill. If they prefer the one-click deploy
+button, point them at the alternative above.
 
 ### Other platforms
 
