@@ -96,7 +96,19 @@ expensive work and returns the existing record. Use force=true only if the user 
 says the document content has changed.
 
 - Search results include interaction history — which agents have previously \
-touched each document.
+touched each document. Check previous agents' notes before re-reading a document.
+
+METADATA CONVENTIONS:
+
+- Follow the Metadata Conventions in SPEC.md — use named collections (not \
+'default'), write agent_notes that help future agents, use recommended \
+agent_metadata keys (project, source_url, intent, findings, status, \
+related_documents).
+
+- Call list_collections before choosing a collection — don't create duplicates.
+
+- Search results include an interactions array for each document. Use previous \
+agents' agent_notes and agent_metadata to answer questions without re-reading.
 """,
 )
 
@@ -150,15 +162,15 @@ async def convert_document(
     Args:
         uri: file://, http://, https://, or local file path
         store: If true, also chunk, embed, and store in vector DB
-        collection: Collection to store in (default: "default")
-        tags: Tags to apply to the document
+        collection: Collection name — use a project or topic name, not 'default'. See SPEC Metadata Conventions.
+        tags: Lowercase, hyphenated labels with namespace prefixes (e.g. 'project:atlas', 'status:reviewed'). See SPEC Metadata Conventions.
         force: If true, re-process even if fingerprint matches existing document
         agent_id: Caller's identity (e.g., "cowork-session-abc", "ob1-agent-daily")
         agent_type: Client type: "claude-cowork", "claude-code", "ob1", "api", etc.
         model: The LLM model the caller is running (e.g., "claude-sonnet-4-6")
         initiated_by: Human or system identity (e.g., "user:denson")
-        agent_notes: Free-text description of context (e.g., "Eval run: testing PDF extraction")
-        agent_metadata: Structured JSON metadata from the caller (e.g., eval run details)
+        agent_notes: Why this action is being taken — helps future agents decide whether to re-read this document. See SPEC Metadata Conventions.
+        agent_metadata: Structured JSON — recommended keys: project, source_url, intent, findings, status, related_documents. See SPEC Metadata Conventions.
         chunking_config: Optional override for chunking parameters (strategy, max_characters, etc.)
 
     Returns:
@@ -206,8 +218,8 @@ async def search(
         agent_type: Client type.
         model: The LLM model the caller is running.
         initiated_by: Human or system identity.
-        agent_notes: Free-text description of context.
-        agent_metadata: Structured JSON metadata from the caller.
+        agent_notes: Why this search is being performed — helps with search log analysis. See SPEC Metadata Conventions.
+        agent_metadata: Structured JSON — recommended keys: project, source_url, intent, findings, status, related_documents. See SPEC Metadata Conventions.
 
     Returns:
         JSON with top-level keys: query, top_k, collection, results_count, results.
@@ -222,9 +234,11 @@ async def search(
         - token_count: Token count of the chunk
         - relevance_score: Cosine similarity score (0-1, 4 decimal places)
         - embedding_model: Model used to generate the embedding
-        - interactions: Array of all agent interactions with the source document,
-          each containing agent_id, agent_type, model, initiated_by, agent_notes,
-          agent_metadata, action, was_dedup_skip, created_at
+        - interactions: Full history of every agent that has touched the source
+          document, including their agent_notes (why they processed it),
+          agent_metadata (structured findings), and action (convert vs ingest).
+          Use this to answer questions from previous agents' findings without
+          re-reading the document.
     """
     top_k = min(top_k, 20)
 
@@ -344,7 +358,11 @@ async def get_document(
         include_interactions: If true, return all interaction records (who touched it).
 
     Returns:
-        JSON string with the full document content and metadata.
+        JSON string with the full document content, all chunks, and interaction
+        history. The interactions array contains every agent that has touched this
+        document — their agent_notes (why they processed it), agent_metadata
+        (structured findings), and action. Use this to build on previous agents'
+        work without re-extracting.
     """
     # Find document — use get_document_by_id for Pg, fallback to scan for in-memory
     doc = _find_document_by_id(document_id)
@@ -528,17 +546,17 @@ async def ingest(
 
     Args:
         path: Directory path to scan for documents.
-        collection: Collection to store all documents in (default: "default").
+        collection: Collection name — use a project or topic name, not 'default'. See SPEC Metadata Conventions.
         recursive: Recurse into subdirectories (default: true).
         file_types: Filter to specific extensions (e.g., ["pdf", "docx"]). If null, process all supported types.
         force: Re-process documents even if they already exist (dedup override).
-        tags: Tags to apply to all documents.
+        tags: Lowercase, hyphenated labels with namespace prefixes (e.g. 'project:atlas', 'status:reviewed'). See SPEC Metadata Conventions.
         agent_id: Caller's identity.
         agent_type: Client type.
         model: The LLM model the caller is running.
         initiated_by: Human or system identity.
-        agent_notes: Free-text description of context.
-        agent_metadata: Structured JSON metadata from the caller.
+        agent_notes: Why this action is being taken — helps future agents decide whether to re-read these documents. See SPEC Metadata Conventions.
+        agent_metadata: Structured JSON — recommended keys: project, source_url, intent, findings, status, related_documents. See SPEC Metadata Conventions.
 
     Returns:
         JSON string with ingestion summary and per-file results.
@@ -792,6 +810,18 @@ def _process_single_document(
     )
     _dedup_store.store_document(stored_doc)
     doc_id = stored_doc.document_id
+
+    # Warn when key metadata conventions aren't followed
+    if collection == "default":
+        warnings.append(
+            "Document stored in 'default' collection. Consider using a named "
+            "collection (project, topic, or task) for better searchability."
+        )
+    if not agent_notes:
+        warnings.append(
+            "No agent_notes provided. Future agents won't know why this "
+            "document was processed."
+        )
 
     response: dict[str, Any] = {
         "document_id": doc_id,
