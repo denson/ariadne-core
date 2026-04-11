@@ -1,0 +1,24 @@
+# Only src/, config/, and migrations/ are COPYd in the Dockerfile.
+# Everything else is excluded to keep the Railway upload small.
+
+# Skills, docs, walkthrough assets (~100MB of images)
+skills/
+docs/
+walkthrough_html/
+benchmarks/
+tests/
+
+# Claude Code / IDE config
+.claude/
+.claude-plugin/
+.git/
+.github/
+
+# Files not needed in the image
+*.md
+LICENSE
+.env
+.env.example
+docker-compose.yml
+eval_harness.py
+skill.md
