@@ -27,3 +27,8 @@ htmlcov/
 
 # Data volumes (runtime only)
 /data/
+
+# Walkthrough runtime/test artifacts
+walkthrough_html/dynamic_*.html
+walkthrough_html/many_clients.png
+walkthrough_html/two_token_economies.png
