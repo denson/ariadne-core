@@ -48,7 +48,7 @@ The five steps on Railway:
 
 1. `railway login` — authenticate
 2. `railway init` — create a project
-3. `railway add --plugin postgresql` — add Postgres with pgvector
+3. `railway add --database postgres` — add Postgres with pgvector
 4. Set three env vars: `EMBEDDING_API_KEY`, `VISION_API_KEY`, `ARIADNE_API_KEY`
 5. `railway up` — deploy
 

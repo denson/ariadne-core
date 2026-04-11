@@ -27,7 +27,7 @@ Or if you already have it, just `cd` into the directory.
 ```bash
 railway login
 railway init
-railway add --plugin postgresql
+railway add --database postgres
 railway up
 ```
 

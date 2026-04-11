@@ -91,7 +91,7 @@ Bottom section, labeled "Your Agent (3 minutes)":
 A vertical timeline flowing top to bottom with five numbered steps, each with a small icon to the left and a one-line command to the right.
 Step 1: Key icon. Command: "railway login". Annotation: "Authenticate."
 Step 2: Folder icon. Command: "railway init". Annotation: "Create project."
-Step 3: Database cylinder icon with a small "pgvector" badge. Command: "railway add --plugin postgresql". Annotation: "Add database."
+Step 3: Database cylinder icon with a small "pgvector" badge. Command: "railway add --database postgres". Annotation: "Add database."
 Step 4: Lock icon with three small tags (EMBEDDING_API_KEY, VISION_API_KEY, ARIADNE_API_KEY). Command: "railway variables set ...". Annotation: "Set keys."
 Step 5: Rocket icon. Command: "railway up". Annotation: "Deploy."
 

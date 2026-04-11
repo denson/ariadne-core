@@ -131,7 +131,7 @@ images:
       Bottom section "Your Agent (3 minutes)": vertical timeline with 5 numbered steps, each with icon and one-line command.
       Step 1: key — "railway login" — "Authenticate."
       Step 2: folder — "railway init" — "Create project."
-      Step 3: database cylinder with pgvector badge — "railway add --plugin postgresql" — "Add database."
+      Step 3: database cylinder with pgvector badge — "railway add --database postgres" — "Add database."
       Step 4: lock with tags (EMBEDDING_API_KEY, VISION_API_KEY, ARIADNE_API_KEY) — "railway variables set ..." — "Set keys."
       Step 5: rocket — "railway up" — "Deploy."
       Finish line with checkmark, sample URL, clock icon "~5 minutes total."

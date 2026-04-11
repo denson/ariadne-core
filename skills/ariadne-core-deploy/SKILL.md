@@ -60,7 +60,7 @@ The deployment exposes two endpoints from one process:
 
 4. **Add a Postgres database:**
    ```bash
-   railway add --plugin postgresql
+   railway add --database postgres
    ```
    Railway provisions Postgres with pgvector automatically. It sets `DATABASE_URL`
    as an environment variable on the service.

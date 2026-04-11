@@ -298,7 +298,7 @@ concepts:
       The simplest way to run Ariadne Core is Railway. The user creates a
       Railway account and installs the Railway CLI — the only two manual
       steps, about 2 minutes. Their agent does the rest: `railway login`,
-      `railway init`, `railway add --plugin postgresql`, `railway variables
+      `railway init`, `railway add --database postgres`, `railway variables
       set` for the three keys (EMBEDDING_API_KEY, VISION_API_KEY,
       ARIADNE_API_KEY), then `railway up`. Total time: ~5 minutes. Railway has
       a free tier to try and a ~$5/mo hobby plan; Postgres with pgvector is
