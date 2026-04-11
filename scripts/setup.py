@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import secrets
+import shutil
 import sys
 import time
 import urllib.error
@@ -179,15 +180,34 @@ def railway_gql(token, query, variables=None):
 
 def railway_verify_token(token):
     """Check that a Railway API token is valid. Returns the user's name or None."""
-    result = railway_gql(token, "query { me { name email } }")
-    if not result:
+    body = json.dumps({"query": "query { me { name email } }"}).encode()
+    req = urllib.request.Request(
+        RAILWAY_GQL_ENDPOINT,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "ariadne-core-setup/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()[:300] if e.fp else ""
+        print(f"  Token validation failed (HTTP {e.code}): {error_body}")
         return None
+    except Exception as e:
+        print(f"  Token validation failed: {e}")
+        return None
+
     errors = result.get("errors")
     if errors:
         print(f"  Token error: {errors[0].get('message', 'unknown')}")
         return None
     me = (result.get("data") or {}).get("me")
     if not me:
+        print(f"  Token validation: unexpected response (no 'me' field): {json.dumps(result)[:200]}")
         return None
     return me.get("name") or me.get("email") or "authenticated"
 
@@ -492,13 +512,25 @@ def read_env_value(env_path, key):
     return None
 
 
-def append_env_value(env_path, key, value):
-    """Append a key=value to .env if not already present."""
-    existing = read_env_value(env_path, key)
-    if existing:
-        return  # already there
-    with open(env_path, "a") as f:
-        f.write(f"\n{key}={value}\n")
+def upsert_env_value(env_path, key, value):
+    """Set key=value in .env, replacing an existing value or appending if new."""
+    if not env_path.exists():
+        with open(env_path, "a") as f:
+            f.write(f"{key}={value}\n")
+        return
+    lines = env_path.read_text().splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k, _, _ = stripped.partition("=")
+            if k.strip() == key:
+                lines[i] = f"{key}={value}"
+                found = True
+                break
+    if not found:
+        lines.append(f"{key}={value}")
+    env_path.write_text("\n".join(lines) + "\n")
 
 
 def write_env(
@@ -579,13 +611,13 @@ ARIADNE_API_KEY={ariadne_key}
 # ─────────────────────────────────────────────────────────────────
 
 def get_railway_token(env_path):
-    """Get Railway API token — from .env if saved, otherwise prompt."""
-    existing = read_env_value(env_path, "RAILWAY_TOKEN")
-    if existing and existing not in ("", "your-railway-api-token"):
-        print(f"  Found saved Railway token: {mask_key(existing)}\n")
+    """Get Railway API token — check .env first, otherwise prompt."""
+    existing = read_env_value(env_path, "RAILWAY_API_TOKEN") or read_env_value(env_path, "RAILWAY_TOKEN")
+    if existing:
+        print("  Found Railway API token in .env.\n")
         options = [
-            "Use this token",
-            "Enter a different token",
+            "Use saved token",
+            "Enter a new token",
         ]
         choice = prompt_choice(options, default=1)
         if choice == 0:
@@ -623,7 +655,7 @@ def deploy_railway(env_path, env_vars):
         env_vars: dict of environment variables to set on the service
 
     Returns:
-        (url, ariadne_key) tuple on success, (None, None) on failure
+        (url, token) tuple on success, (None, None) on failure
     """
     step_header(5, 6, "Deploy to Railway")
 
@@ -673,7 +705,12 @@ def deploy_railway(env_path, env_vars):
 
     template = result["data"]["template"]
     template_id = template["id"]
-    serialized_config = template["serializedConfig"]
+    # serializedConfig is a JSON-encoded string from the API — parse it
+    raw_config = template["serializedConfig"]
+    if isinstance(raw_config, str):
+        serialized_config = json.loads(raw_config)
+    else:
+        serialized_config = raw_config  # already parsed (some GraphQL clients do this)
     success("Template fetched")
 
     # --- Inject environment variables into serializedConfig ---
@@ -706,7 +743,7 @@ def deploy_railway(env_path, env_vars):
         {
             "input": {
                 "templateId": template_id,
-                "serializedConfig": serialized_config,
+                "serializedConfig": json.dumps(serialized_config),
             }
         },
     )
@@ -873,18 +910,19 @@ def deploy_railway(env_path, env_vars):
                     if data.get("status") == "healthy":
                         success("Health check passed!")
                         # Save token and URL to .env
-                        append_env_value(env_path, "RAILWAY_TOKEN", token)
-                        append_env_value(env_path, "RAILWAY_DEPLOY_URL", url)
+                        upsert_env_value(env_path, "RAILWAY_API_TOKEN", token)
+                        upsert_env_value(env_path, "RAILWAY_DEPLOY_URL", url)
                         return url, token
-            except Exception:
-                pass
+            except Exception as e:
+                if attempt == 11:  # last attempt
+                    print(f"  Health check error: {e}")
             # Deployed but not healthy yet — keep trying
             print(f"    Attempt {attempt + 1}/12 -- deployed, waiting for health check...")
         elif status == "FAILED" or status == "CRASHED":
             print(f"  Deployment {status.lower()}.")
             print("  Check the Railway dashboard for error logs.")
             # Still save what we have
-            append_env_value(env_path, "RAILWAY_TOKEN", token)
+            upsert_env_value(env_path, "RAILWAY_API_TOKEN", token)
             return url, token
         else:
             status_label = status.lower().replace("_", " ")
@@ -895,8 +933,8 @@ def deploy_railway(env_path, env_vars):
     print("  Health check did not pass after 3 minutes.")
     print("  The deployment may still be starting. Check the Railway dashboard.")
     # Save token and URL even if health check failed
-    append_env_value(env_path, "RAILWAY_TOKEN", token)
-    append_env_value(env_path, "RAILWAY_DEPLOY_URL", url)
+    upsert_env_value(env_path, "RAILWAY_API_TOKEN", token)
+    upsert_env_value(env_path, "RAILWAY_DEPLOY_URL", url)
     return url, token
 
 
@@ -1009,7 +1047,6 @@ Document extraction + vector search for AI agents
         # User chose to skip provider setup
         print("\n  Skipping provider setup. Edit .env manually.\n")
         if not env_path.exists():
-            import shutil
             shutil.copy(env_example, env_path)
             print(f"  Copied .env.example to .env -- edit it with your values.\n")
 
@@ -1022,7 +1059,7 @@ Document extraction + vector search for AI agents
                     k, _, v = line.partition("=")
                     k = k.strip()
                     v = v.strip()
-                    if k and v and k not in ("DB_PASSWORD", "RAILWAY_TOKEN", "RAILWAY_DEPLOY_URL"):
+                    if k and v and k not in ("DB_PASSWORD", "RAILWAY_API_TOKEN", "RAILWAY_DEPLOY_URL"):
                         env_vars[k] = v
             url, _ = deploy_railway(env_path, env_vars)
             if url:
