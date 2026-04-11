@@ -80,11 +80,40 @@ Runs as a hosted service. All endpoints except `/api/health` require `X-API-Key`
 
 ### One-click deploy (recommended)
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/ariadne-core)
+Copy this URL and paste it into your browser:
 
-Click the button above. Fill in your `EMBEDDING_API_KEY` and `VISION_API_KEY`
-(same key if using one provider). Everything else has defaults. After deploy,
-copy your `ARIADNE_API_KEY` from the Variables tab to connect MCP clients.
+`https://railway.com/deploy/ariadne-core`
+
+Fill in your `EMBEDDING_API_KEY` and `VISION_API_KEY` (same key if using one
+provider). Everything else has defaults.
+
+### After deploy
+
+After the user says the deploy is done, ask them:
+
+*"What's the public URL Railway gave you? It looks like
+`something.up.railway.app`. You can find it in the Railway dashboard — click on
+the ariadne-core service, go to Settings, scroll to Networking, and copy the
+Public Domain URL."*
+
+Once you have the URL, verify it's healthy:
+```bash
+curl -s https://THE-URL/api/health
+# Expected: {"status": "healthy"}
+```
+
+To connect MCP, tell the user to run this in their terminal (they need to paste
+their own `ARIADNE_API_KEY` — you do NOT handle it):
+
+```bash
+claude mcp add ariadne-core https://THE-URL/mcp \
+  --transport http --scope user \
+  --header "X-API-Key:PASTE-YOUR-ARIADNE-API-KEY-HERE"
+```
+
+Tell them: *"Your `ARIADNE_API_KEY` was auto-generated during deploy. Find it in
+the Railway dashboard under your ariadne-core service → Variables tab. Copy it
+and paste it in place of `PASTE-YOUR-ARIADNE-API-KEY-HERE`."*
 
 ### AI path — deploy via CLI (alternative)
 
