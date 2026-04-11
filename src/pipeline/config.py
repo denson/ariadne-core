@@ -307,8 +307,10 @@ def load_config(
     # Railway sets PORT directly; DATABASE_URL is standard for hosted Postgres
     if "PORT" in env:
         config.api.port = int(env["PORT"])
-    if "MCP_PORT" in env:
+    if env.get("MCP_PORT"):
         config.api.mcp_port = int(env["MCP_PORT"])
+    elif env.get("PORT"):
+        config.api.mcp_port = int(env["PORT"])
     if "DATABASE_URL" in env and not env.get("ARIADNE_DATABASE_URL"):
         config.database.url = env["DATABASE_URL"]
 
