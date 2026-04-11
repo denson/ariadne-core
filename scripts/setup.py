@@ -90,6 +90,176 @@ Provider defaults:
 # Display helpers
 # ─────────────────────────────────────────────────────────────────
 
+RAILWAY_INSTALL_MSG = """\
+  Railway CLI not found. Install it:
+    Windows:  npm install -g @railway/cli
+    Mac:      brew install railway
+    Linux:    npm install -g @railway/cli
+
+  Then run this script again. Your .env is saved -- you won't lose your configuration."""
+
+# Resolved path to the railway binary — set by find_railway_cli()
+_railway_bin = None
+
+
+def find_railway_cli():
+    """Find the Railway CLI binary. Checks PATH, then common install locations."""
+    global _railway_bin
+
+    # Already resolved in a previous call
+    if _railway_bin is not None:
+        return _railway_bin
+
+    # 1. Check PATH via shutil.which
+    found = shutil.which("railway")
+    if found:
+        _railway_bin = found
+        return _railway_bin
+
+    # 2. Probe common npm install locations not always on PATH
+    candidates = []
+    if sys.platform == "win32":
+        candidates.append(os.path.expanduser("~/AppData/Roaming/npm/railway.cmd"))
+    else:
+        candidates.extend([
+            "/usr/local/bin/railway",
+            os.path.expanduser("~/.npm-global/bin/railway"),
+        ])
+
+    for path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            _railway_bin = path
+            print(f"  Found Railway CLI at {path} (not on PATH)")
+            return _railway_bin
+
+    # Not found anywhere
+    _railway_bin = ""  # empty string = not found, avoids re-probing
+    return ""
+
+
+def offer_railway_install():
+    """If Railway CLI isn't found, offer to install it. Returns True if installed."""
+    npm_bin = shutil.which("npm")
+    if not npm_bin:
+        print(RAILWAY_INSTALL_MSG)
+        print()
+        print("  npm is also not installed. Get Node.js + npm from:")
+        print("    https://nodejs.org")
+        return False
+
+    print("  Railway CLI not found, but npm is available.\n")
+    options = [
+        "Install Railway CLI now (npm install -g @railway/cli)",
+        "Skip -- I'll install it myself",
+    ]
+    choice = prompt_choice(options, default=1)
+
+    if choice == 1:
+        print("\n  Skipped. Install Railway CLI and run this script again.")
+        print("  Your .env is saved -- you won't lose your configuration.")
+        return False
+
+    print("\n  Installing Railway CLI...")
+    try:
+        result = subprocess.run(
+            [npm_bin, "install", "-g", "@railway/cli"],
+            timeout=120,
+        )
+    except FileNotFoundError:
+        print("  npm not found during install. Install manually.")
+        return False
+    except subprocess.TimeoutExpired:
+        print("  Install timed out. Try running manually:")
+        print("    npm install -g @railway/cli")
+        return False
+
+    if result.returncode != 0:
+        print("  Install failed. Try running manually:")
+        print("    npm install -g @railway/cli")
+        return False
+
+    # Re-probe after install
+    global _railway_bin
+    _railway_bin = None  # reset cache
+    found = find_railway_cli()
+    if found:
+        success(f"Railway CLI installed: {found}")
+        return True
+    else:
+        print("  Install appeared to succeed but 'railway' still not found.")
+        print("  You may need to restart your terminal for PATH changes.")
+        return False
+
+
+def check_railway_update():
+    """Check if a Railway CLI update is available. Prompts user if so."""
+    railway = find_railway_cli()
+    if not railway:
+        return
+
+    # Get current version
+    try:
+        result = subprocess.run(
+            [railway, "--version"], capture_output=True, text=True, timeout=10,
+        )
+        current = result.stdout.strip() if result.returncode == 0 else None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+
+    if current:
+        print(f"  Railway CLI version: {current}")
+
+    # Check for updates via npm
+    npm_bin = shutil.which("npm")
+    if not npm_bin:
+        return
+
+    try:
+        result = subprocess.run(
+            [npm_bin, "outdated", "-g", "@railway/cli"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+
+    # npm outdated returns exit code 1 when packages are outdated, 0 when up to date
+    # Output contains the package line only when outdated
+    if result.returncode == 1 and "@railway/cli" in result.stdout:
+        print(f"  Update available: {result.stdout.strip()}\n")
+        options = [
+            "Update now (npm update -g @railway/cli)",
+            "Skip -- continue with current version",
+        ]
+        choice = prompt_choice(options, default=1)
+        if choice == 0:
+            print("\n  Updating Railway CLI...")
+            try:
+                subprocess.run(
+                    [npm_bin, "update", "-g", "@railway/cli"], timeout=120,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                print("  Update failed. Continuing with current version.")
+            else:
+                success("Railway CLI updated")
+    else:
+        success("Railway CLI is up to date")
+
+
+def run_railway(args, **kwargs):
+    """Wrapper for subprocess.run using the resolved railway binary path."""
+    railway = find_railway_cli()
+    if not railway:
+        print()
+        print(RAILWAY_INSTALL_MSG)
+        return None
+    try:
+        return subprocess.run([railway] + args, **kwargs)
+    except FileNotFoundError:
+        print()
+        print(RAILWAY_INSTALL_MSG)
+        return None
+
+
 def banner(text):
     width = 60
     print()
@@ -511,16 +681,18 @@ ARIADNE_API_KEY={ariadne_key}
 def railway_login():
     step_header(5, 7, "Railway Login")
 
-    if not shutil.which("railway"):
-        print("  Railway CLI not found. Install it first:")
-        print("    npm install -g @railway/cli")
-        print("  or: brew install railway (Mac)")
-        print()
-        action_needed("Install Railway CLI and run this script again.")
-        return False
+    # Find or install Railway CLI
+    if not find_railway_cli():
+        if not offer_railway_install():
+            return False
+
+    # CLI exists -- check for updates
+    check_railway_update()
 
     # Check if already logged in
-    result = subprocess.run(["railway", "whoami"], capture_output=True, text=True)
+    result = run_railway(["whoami"], capture_output=True, text=True)
+    if result is None:
+        return False
     if result.returncode == 0 and result.stdout.strip():
         success(f"Already logged in: {result.stdout.strip()}")
         return True
@@ -528,14 +700,14 @@ def railway_login():
     print("  Opening your browser to authenticate with Railway...\n")
     action_needed("Authorize in your browser, then come back here.")
 
-    result = subprocess.run(["railway", "login"])
-    if result.returncode != 0:
+    result = run_railway(["login"])
+    if result is None or result.returncode != 0:
         print("  Railway login failed. Try running 'railway login' manually.")
         return False
 
     # Verify
-    result = subprocess.run(["railway", "whoami"], capture_output=True, text=True)
-    if result.returncode == 0 and result.stdout.strip():
+    result = run_railway(["whoami"], capture_output=True, text=True)
+    if result is not None and result.returncode == 0 and result.stdout.strip():
         success(result.stdout.strip())
         return True
     else:
@@ -551,7 +723,9 @@ def deploy_railway(env_path):
     step_header(6, 7, "Deploy to Railway")
 
     # Check if already linked to a project
-    result = subprocess.run(["railway", "status"], capture_output=True, text=True)
+    result = run_railway(["status"], capture_output=True, text=True)
+    if result is None:
+        return None
     already_linked = result.returncode == 0 and "Project:" in result.stdout
 
     if already_linked:
@@ -559,26 +733,26 @@ def deploy_railway(env_path):
         options = ["Use existing project", "Create a new project"]
         choice = prompt_choice(options, default=1)
         if choice == 1:
-            subprocess.run(["railway", "unlink"], capture_output=True)
+            run_railway(["unlink"], capture_output=True)
             already_linked = False
 
     if not already_linked:
         print("  Creating Railway project...\n")
         action_needed("Select your workspace and enter a project name when prompted.")
-        result = subprocess.run(["railway", "init"])
-        if result.returncode != 0:
+        result = run_railway(["init"])
+        if result is None or result.returncode != 0:
             print("  Project creation failed.")
             return None
         success("Project created")
 
     # Add Postgres if not already present
     print("\n  Adding PostgreSQL with pgvector...")
-    result = subprocess.run(
-        ["railway", "add", "--database", "postgres"],
+    result = run_railway(
+        ["add", "--database", "postgres"],
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
+    if result is None or result.returncode != 0:
         print("  Note: Could not add database (it may already exist).")
     else:
         success("Database added")
@@ -601,29 +775,31 @@ def deploy_railway(env_path):
         set_args.extend(["--set", f"{k}={v}"])
 
     if set_args:
-        result = subprocess.run(
-            ["railway", "variables"] + set_args,
+        result = run_railway(
+            ["variables"] + set_args,
             capture_output=True,
             text=True,
         )
-        if result.returncode == 0:
+        if result is not None and result.returncode == 0:
             success(f"Set {len(env_vars)} variables")
         else:
-            print(f"  Warning: Could not set variables: {result.stderr}")
+            stderr = result.stderr if result else "Railway CLI not found"
+            print(f"  Warning: Could not set variables: {stderr}")
 
     # Deploy
     print("\n  Deploying (this takes 2-3 minutes)...")
-    result = subprocess.run(["railway", "up", "-d"], capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"  Deploy failed: {result.stderr}")
+    result = run_railway(["up", "-d"], capture_output=True, text=True)
+    if result is None or result.returncode != 0:
+        stderr = result.stderr if result else "Railway CLI not found"
+        print(f"  Deploy failed: {stderr}")
         print("  Try running 'railway up' manually.")
         return None
     success("Deploy started")
 
     # Get domain
     print("\n  Generating public URL...")
-    result = subprocess.run(["railway", "domain"], capture_output=True, text=True)
-    if result.returncode == 0 and result.stdout.strip():
+    result = run_railway(["domain"], capture_output=True, text=True)
+    if result is not None and result.returncode == 0 and result.stdout.strip():
         url = result.stdout.strip()
         if not url.startswith("https://"):
             url = f"https://{url}"
