@@ -533,6 +533,22 @@ def upsert_env_value(env_path, key, value):
     env_path.write_text("\n".join(lines) + "\n")
 
 
+def remove_env_key(env_path, key):
+    """Remove a key from .env if present."""
+    if not env_path.exists():
+        return
+    lines = env_path.read_text().splitlines()
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k, _, _ = stripped.partition("=")
+            if k.strip() == key:
+                continue
+        filtered.append(line)
+    env_path.write_text("\n".join(filtered) + "\n")
+
+
 def write_env(
     env_path,
     repo_root,
@@ -612,7 +628,11 @@ ARIADNE_API_KEY={ariadne_key}
 
 def get_railway_token(env_path):
     """Get Railway API token — check .env first, otherwise prompt."""
-    existing = read_env_value(env_path, "RAILWAY_API_TOKEN") or read_env_value(env_path, "RAILWAY_TOKEN")
+    existing = read_env_value(env_path, "RAILWAY_API_TOKEN")
+    from_old_key = False
+    if not existing:
+        existing = read_env_value(env_path, "RAILWAY_TOKEN")
+        from_old_key = bool(existing)
     if existing:
         print("  Found Railway API token in .env.\n")
         options = [
@@ -624,6 +644,10 @@ def get_railway_token(env_path):
             name = railway_verify_token(existing)
             if name:
                 success(f"Authenticated as: {name}")
+                # Migrate old key name to new one
+                if from_old_key:
+                    upsert_env_value(env_path, "RAILWAY_API_TOKEN", existing)
+                    remove_env_key(env_path, "RAILWAY_TOKEN")
                 return existing
             else:
                 print("  Saved token is invalid or expired.\n")
