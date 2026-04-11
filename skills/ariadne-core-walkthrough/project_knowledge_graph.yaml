@@ -279,7 +279,7 @@ concepts:
       defines recommended keys and tag conventions so that metadata written
       by one agent is discoverable and useful to another — without conventions,
       flexible metadata becomes unsearchable noise.
-    see_also: [the_extraction_pipeline, search_dont_send, roadmap_personal_edition, two_audiences_framing]
+    see_also: [the_extraction_pipeline, search_dont_send, roadmap_personal_edition, two_audiences_framing, metadata_conventions]
     sources:
       - file: docs/TOKEN_SAVINGS_FRAMING.md
         section: "Beyond extraction"
@@ -540,7 +540,11 @@ concepts:
       authenticate. API keys are stored as SHA-256 hashes; all endpoints
       except `/api/health` require authentication. **Open Brain** connects
       via MCP with an API key, same as Claude Code — the REST API is also
-      available for any HTTP client or custom integration.
+      available for any HTTP client or custom integration. On Railway and
+      hosted platforms, set `MCP_PORT` to match `PORT` for single-port
+      mode — if you forget, the MCP listener starts on a port Railway
+      doesn't expose, and the deployment looks healthy but MCP silently
+      fails.
     see_also: [connect_claude_code, roadmap_personal_edition, managed_value_prop, mcp_tools_overview]
     sources:
       - file: SPEC.md
@@ -566,7 +570,7 @@ concepts:
       knew. (4) **Cross-document recall** — ask "what did I learn about
       pricing across all the contracts I reviewed last quarter?" and get
       results across hundreds of documents with source citations intact.
-    see_also: [beyond_extraction_metadata_layer, two_audiences_framing, search_dont_send]
+    see_also: [beyond_extraction_metadata_layer, two_audiences_framing, search_dont_send, metadata_conventions]
     sources:
       - file: docs/TOKEN_SAVINGS_FRAMING.md
         section: "What both audiences also get: persistent 'memory' across documents"
@@ -614,8 +618,13 @@ concepts:
       record, even dedup skips.** This means provenance is complete: you can
       always trace who touched a document and what they did. The `force` flag
       on `convert_document` and `ingest` overrides dedup when you know a
-      document has changed. Return fields include `content_fingerprint`,
-      `was_dedup_skip`, and `store_status`. Dedup scope is per-collection —
+      document has changed. The `action` field in interaction records uses
+      canonical values: `"convert"` when an agent deliberately processes a
+      single document, `"ingest"` when swept up in a batch — the distinction
+      matters because it tells future agents whether this document was
+      specifically selected or incidentally processed. Return fields include
+      `content_fingerprint`, `was_dedup_skip`, and `store_status`. Dedup
+      scope is per-collection —
       the same document can exist in multiple collections if needed. In Team
       edition, dedup becomes coordination: when a user's agent encounters a
       document already ingested by the team agent, the hash match returns
@@ -653,12 +662,39 @@ concepts:
       `tags`, and `document_id` — use tags to scope search by project,
       agent, or any custom dimension. The REST API is available at the
       same deployment URL for scripts and systems that don't speak MCP.
-    see_also: [connect_claude_code, search_dont_send, dedup_and_provenance, auth_and_client_compatibility]
+    see_also: [connect_claude_code, search_dont_send, dedup_and_provenance, auth_and_client_compatibility, metadata_conventions]
     sources:
       - file: SPEC.md
         section: "MCP Tools"
         github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
     images: [onboarding_connect_claude_code]
+
+  - id: metadata_conventions
+    name: "Metadata conventions for agents"
+    one_line: "Recommended keys, tag conventions, and worked examples so metadata from one agent is findable by another — conventions turn flexible fields into structured knowledge."
+    body: |
+      The SPEC defines **Metadata Conventions** — recommendations (not
+      enforced) for how agents populate `collection`, `tags`, `agent_notes`,
+      and `agent_metadata`. Without conventions, flexible metadata becomes
+      unsearchable noise. **`collection`** is a broad namespace for a corpus
+      (name it after the project or topic, never leave it as "default").
+      **`tags`** are cross-cutting labels — lowercase, hyphenated, with
+      namespace prefixes like `"project:atlas"` or `"status:reviewed"`.
+      **`agent_metadata`** uses conventional keys (`project`, `source_url`,
+      `intent`, `findings`, `status`, `related_documents`) so metadata from
+      different agents is interoperable. **`agent_notes`** should answer:
+      "would a different agent six months from now know if this document is
+      relevant without re-reading it?" The SPEC includes worked examples for
+      four workflows: single-document extraction, batch project ingest,
+      multi-step research sessions, and multi-agent handoff where Agent C
+      answers questions using Agent B's findings without re-reading the
+      source.
+    see_also: [beyond_extraction_metadata_layer, mcp_tools_overview, dedup_and_provenance, persistent_memory_across_sessions]
+    sources:
+      - file: SPEC.md
+        section: "Metadata Conventions"
+        github_url: https://github.com/denson/ariadne-core/blob/main/SPEC.md
+    images: [onboarding_search_dont_send]
 
   - id: chunking_strategies
     name: "Chunking strategies"
