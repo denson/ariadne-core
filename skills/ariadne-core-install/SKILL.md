@@ -87,6 +87,12 @@ Copy this URL and paste it into your browser:
 Fill in your `EMBEDDING_API_KEY` and `VISION_API_KEY` (same key if using one
 provider). Everything else has defaults.
 
+Or run the setup script for a guided terminal experience:
+
+```bash
+python scripts/setup.py
+```
+
 ### After deploy
 
 After the user says the deploy is done, ask them:
@@ -122,6 +128,16 @@ If the one-click deploy doesn't fit (no browser, custom config, etc.), follow th
 creation, Postgres, environment variables, and deploy commands. After deploy,
 return here for the connection and verification steps below. **Never read, cat,
 copy, or display `.env` files — you don't handle API keys.**
+
+Before running the setup script, do a quick model freshness check — read defaults
+from `python scripts/setup.py --help`, check the provider's model page for newer
+models in the same class, suggest updates. Pass overrides via `--embedding-model`
+and `--vision-model`.
+
+Model documentation pages:
+- Google: `https://ai.google.dev/gemini-api/docs/models`
+- OpenAI: `https://developers.openai.com/api/docs/models`
+- Together: `https://docs.together.ai/docs/inference-models`
 
 ### Human path — deploy to Railway
 
