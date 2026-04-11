@@ -134,7 +134,7 @@ Both API keys can use the same OpenAI key, or you can use different ones to trac
 
 - **`PORT`** — REST API port (default: `8000`). On Railway, this is set automatically.
 - **`MCP_PORT`** — MCP server port (default: `8081`). When `MCP_PORT` equals `PORT`, the server runs in **single-port mode**: MCP is mounted at `/mcp` inside the REST API server, one listener handles everything. When they differ, the server runs in **dual-port mode**: separate listeners on each port.
-- **Production (Railway/hosted):** Set `MCP_PORT` to match `PORT` for single-port mode. Railway only exposes one port — **if you forget to set `MCP_PORT`, you get dual-port mode, which silently fails** because the MCP listener on 8081 is unreachable.
+- **Production (Railway/hosted):** `MCP_PORT` defaults to `PORT` automatically — single-port mode works out of the box. Do not set `MCP_PORT` unless you need dual-port mode. Railway injects `DATABASE_URL_PRIVATE` (internal network, no egress fees) and `DATABASE_URL` (public); the app prefers `DATABASE_URL_PRIVATE` when available.
 - **Local development:** Leave defaults (`PORT=8000`, `MCP_PORT=8081`) for dual-port mode. This lets you restart the MCP server independently without bouncing the REST API.
 
 ---

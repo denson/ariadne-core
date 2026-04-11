@@ -93,7 +93,7 @@ Walk the user through each step. Wait for confirmation before moving to the next
 3. **Log in:** Run `railway login` in their terminal — opens browser to authenticate.
 4. **Create project:** Run `railway init` in their terminal — picks workspace and creates project.
 5. **Add Postgres:** Run `railway add --plugin postgresql` — adds the database.
-   Railway automatically injects `DATABASE_URL` into the environment.
+   Railway automatically injects `DATABASE_URL_PRIVATE` (internal network) into the environment.
 
 **Phase 2 — Agent does these:**
 
@@ -132,7 +132,7 @@ curl -s -o /dev/null -w "%{http_code}" \
      the agent must add it
 
 **What you do NOT need to set:**
-- `DATABASE_URL` — injected automatically by Railway's Postgres plugin
+- `DATABASE_URL` / `DATABASE_URL_PRIVATE` — injected automatically by Railway's Postgres plugin
 - `PORT` — set automatically by Railway
 - `MCP_PORT` — the app defaults to `PORT` automatically (single-port mode)
 
@@ -180,7 +180,7 @@ Explain each variable in `.env`:
   is the password clients use to connect
 
 Variables they do NOT need to touch:
-- `DATABASE_URL` — Railway injects this automatically from the Postgres plugin
+- `DATABASE_URL` / `DATABASE_URL_PRIVATE` — Railway injects these automatically from the Postgres plugin
 - `PORT` — Railway sets this automatically
 - `MCP_PORT` — the app defaults to Railway's PORT, no config needed
 
@@ -325,7 +325,7 @@ curl -s -o /dev/null -w "HTTP %{http_code}" -H "X-API-Key: <key>" https://<URL>/
 | Tools don't appear in Claude Code | Config not loaded | Run `claude mcp list`, restart Claude Code |
 | MCP URL wrong | Missing `/mcp` suffix | URL must end in `/mcp` for MCP clients |
 | Embedding errors | Bad API key or wrong base URL | Verify key works against your provider's endpoint directly |
-| DATABASE_URL errors | Set manually in `.env` | Remove `DATABASE_URL` from `.env` — Railway injects it automatically from the Postgres plugin |
+| DATABASE_URL errors | Set manually in `.env` | Remove `DATABASE_URL` from `.env` — Railway injects `DATABASE_URL_PRIVATE` (internal) and `DATABASE_URL` (public) automatically; the app prefers the private one |
 
 ---
 

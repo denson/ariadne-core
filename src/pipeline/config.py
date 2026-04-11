@@ -304,14 +304,17 @@ def load_config(
         setattr(config, section_name, section_obj)
 
     # Step 5: Handle common env vars that aren't in the ARIADNE_ namespace
-    # Railway sets PORT directly; DATABASE_URL is standard for hosted Postgres
+    # Railway sets PORT directly; DATABASE_URL_PRIVATE is Railway's internal
+    # Postgres URL (no egress fees), DATABASE_URL is the public fallback.
     if "PORT" in env:
         config.api.port = int(env["PORT"])
     if env.get("MCP_PORT"):
         config.api.mcp_port = int(env["MCP_PORT"])
     elif env.get("PORT"):
         config.api.mcp_port = int(env["PORT"])
-    if "DATABASE_URL" in env and not env.get("ARIADNE_DATABASE_URL"):
+    if "DATABASE_URL_PRIVATE" in env and not env.get("ARIADNE_DATABASE_URL"):
+        config.database.url = env["DATABASE_URL_PRIVATE"]
+    elif "DATABASE_URL" in env and not env.get("ARIADNE_DATABASE_URL"):
         config.database.url = env["DATABASE_URL"]
 
     return config
