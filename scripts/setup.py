@@ -549,6 +549,24 @@ def remove_env_key(env_path, key):
     env_path.write_text("\n".join(filtered) + "\n")
 
 
+_ENV_VARS_DEFAULT_EXCLUDE = {"DB_PASSWORD", "RAILWAY_API_TOKEN", "RAILWAY_TOKEN", "RAILWAY_DEPLOY_URL"}
+
+
+def read_env_as_vars(env_path, exclude=None):
+    """Read .env into a dict of key=value pairs, skipping comments and excluded keys."""
+    skip = _ENV_VARS_DEFAULT_EXCLUDE | (exclude or set())
+    env_vars = {}
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            k = k.strip()
+            v = v.strip()
+            if k and v and k not in skip:
+                env_vars[k] = v
+    return env_vars
+
+
 def write_env(
     env_path,
     repo_root,
@@ -1064,6 +1082,47 @@ Document extraction + vector search for AI agents
         print(f"  Expected at: {env_example}")
         sys.exit(1)
 
+    # --- Early .env check: skip Steps 1-4 if already configured ---
+    if env_path.exists() and read_env_value(env_path, "EMBEDDING_API_KEY"):
+        print("  Existing .env found:\n")
+        for line in env_path.read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip()
+                if not key or not val:
+                    continue
+                if "KEY" in key.upper() or "PASSWORD" in key.upper() or "TOKEN" in key.upper():
+                    print(f"    {key:<24} = {mask_key(val)}")
+                else:
+                    print(f"    {key:<24} = {val}")
+        print("    (keys masked)\n")
+        options = [
+            "Use this configuration -- skip to deploy",
+            "Reconfigure from scratch",
+        ]
+        choice = prompt_choice(options, default=1)
+        if choice == 0:
+            # Skip Steps 1-4, jump to deploy
+            ariadne_key = read_env_value(env_path, "ARIADNE_API_KEY") or secrets.token_urlsafe(32)
+            env_vars = read_env_as_vars(env_path)
+
+            if args.skip_deploy:
+                banner("""
+.env already configured! To deploy, run:
+  python scripts/setup.py
+(without --skip-deploy)
+                """)
+                return
+
+            url, _ = deploy_railway(env_path, env_vars)
+            if url:
+                show_connection(url, ariadne_key)
+                banner("Setup complete!")
+            else:
+                show_connection_template(ariadne_key)
+            return
+
     # Step 1: Choose provider
     provider_key, provider_config = choose_provider()
 
@@ -1076,15 +1135,7 @@ Document extraction + vector search for AI agents
 
         if not args.skip_deploy:
             ariadne_key = read_env_value(env_path, "ARIADNE_API_KEY") or secrets.token_urlsafe(32)
-            env_vars = {}
-            for line in env_path.read_text().splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    k = k.strip()
-                    v = v.strip()
-                    if k and v and k not in ("DB_PASSWORD", "RAILWAY_API_TOKEN", "RAILWAY_DEPLOY_URL"):
-                        env_vars[k] = v
+            env_vars = read_env_as_vars(env_path)
             url, _ = deploy_railway(env_path, env_vars)
             if url:
                 show_connection(url, ariadne_key)
