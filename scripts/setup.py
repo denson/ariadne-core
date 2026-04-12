@@ -813,9 +813,11 @@ def deploy_railway(env_path, env_vars):
         team_id, team_name = workspaces[idx]
         success(f"Using workspace: {team_name}")
 
-    # --- Inject environment variables into serializedConfig ---
-    # The template's serializedConfig has a 'services' dict. Find the main
-    # service (not pgvector) and override its variable defaultValues.
+    # --- Inspect serializedConfig (no longer modified) ---
+    # Earlier versions tried to inject env var values into serializedConfig before
+    # deploying, but templateDeployV2 silently rejects modified configs and creates
+    # an empty project. We now deploy with the ORIGINAL config and set env vars
+    # afterwards via variableCollectionUpsert once the services are provisioned.
     _debug(">>> serializedConfig top-level keys:", list(serialized_config.keys()))
     services_dict = serialized_config.get("services", {})
     _debug(f">>> serializedConfig.services count: {len(services_dict)}")
@@ -823,29 +825,6 @@ def deploy_railway(env_path, env_vars):
         svc_name = svc.get("name", "<no name>") if isinstance(svc, dict) else "<not a dict>"
         svc_keys = list(svc.keys()) if isinstance(svc, dict) else type(svc).__name__
         _debug(f">>> service id={svc_id!r} name={svc_name!r} keys={svc_keys}")
-
-    main_service_id = None
-    for svc_id, svc in serialized_config.get("services", {}).items():
-        if svc.get("name", "").lower() != "pgvector":
-            main_service_id = svc_id
-            break
-
-    _debug(f">>> selected main_service_id: {main_service_id!r}")
-
-    if main_service_id and "variables" in serialized_config["services"][main_service_id]:
-        svc_vars = serialized_config["services"][main_service_id]["variables"]
-        _debug(f">>> main service has {len(svc_vars)} variables; incoming env_vars: {len(env_vars)}")
-        injected = []
-        for var_name, var_value in env_vars.items():
-            if var_name in svc_vars and isinstance(svc_vars[var_name], dict):
-                svc_vars[var_name]["defaultValue"] = var_value
-                injected.append(var_name)
-            elif var_name in svc_vars:
-                svc_vars[var_name] = var_value
-                injected.append(var_name)
-        _debug(f">>> injected {len(injected)} vars: {injected}")
-    else:
-        _debug(">>> WARNING: no main service variables found — nothing injected")
 
     # --- Deploy via templateDeployV2 ---
     print("\n  Deploying (this takes 2-3 minutes)...")
