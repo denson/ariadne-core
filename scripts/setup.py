@@ -169,25 +169,248 @@ def _provider_name_from_base_url(base_url):
     return "Custom (OpenAI-compatible)"
 
 
-def print_env_summary(env_path):
-    """Print a human-readable summary of an existing .env — no raw var names."""
+def _read_env_dict(env_path):
     values = {}
     for line in env_path.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
             values[k.strip()] = v.strip()
+    return values
 
-    provider = _provider_name_from_base_url(values.get("EMBEDDING_BASE_URL"))
+
+def print_env_summary(env_path):
+    """Print a human-readable summary of an existing .env — path, provider, masked keys."""
+    values = _read_env_dict(env_path)
+
+    emb_base = values.get("EMBEDDING_BASE_URL", "")
+    provider = _provider_name_from_base_url(emb_base)
+    if provider.startswith("Custom") and emb_base:
+        provider = emb_base
+
+    emb_key = values.get("EMBEDDING_API_KEY", "")
+    vis_key = values.get("VISION_API_KEY", "")
     emb_model = values.get("EMBEDDING_MODEL", "?")
     vis_model = values.get("VISION_MODEL", "?")
     dimensions = values.get("ARIADNE_EMBEDDING_DIMENSIONS", "?")
+    ariadne_key = values.get("ARIADNE_API_KEY", "")
 
     print()
-    print(f"    Provider:   {provider}")
-    print(f"    Models:     {emb_model} + {vis_model}")
-    print(f"    Dimensions: {dimensions}")
+    print("  Existing configuration found at:")
+    print(f"    {env_path}")
     print()
+    print(f"    Provider:      {provider}")
+    print(f"    Embedding key: {mask_key(emb_key) if emb_key else '(not set)'}")
+    print(f"    Embedding:     {emb_model}")
+    if vis_key and emb_key and vis_key == emb_key:
+        print(f"    Vision key:    {mask_key(vis_key)} (same key)")
+    else:
+        print(f"    Vision key:    {mask_key(vis_key) if vis_key else '(not set)'}")
+    print(f"    Vision:        {vis_model}")
+    print(f"    Dimensions:    {dimensions}")
+    print(f"    Ariadne key:   {mask_key(ariadne_key) if ariadne_key else '(not set)'}")
+    print()
+
+
+def backup_env(env_path):
+    """Copy .env to .env.backup, or .env.backup.N if the first is taken. Returns the backup path."""
+    backup_path = env_path.parent / ".env.backup"
+    if not backup_path.exists():
+        shutil.copy(env_path, backup_path)
+        return backup_path
+    n = 1
+    while True:
+        numbered = env_path.parent / f".env.backup.{n}"
+        if not numbered.exists():
+            shutil.copy(env_path, numbered)
+            return numbered
+        n += 1
+
+
+def _keep_or_change(label, current_display):
+    print(f"\n  {label}: {current_display}")
+    return prompt_choice(["Keep", "Change"], default=1) == 1
+
+
+def _provider_key_from_base_url(base_url):
+    if not base_url:
+        return None
+    url = base_url.lower()
+    if "generativelanguage.googleapis.com" in url:
+        return "google"
+    if "api.openai.com" in url:
+        return "openai"
+    if "api.together.xyz" in url:
+        return "together"
+    return None
+
+
+def _pick_model_from_list(kind, current, model_list):
+    """Offer a numbered picker over model_list with current marked. Returns the chosen model."""
+    print(f"\n  {kind} models:")
+    display = []
+    if current and current not in model_list:
+        model_list = [current] + list(model_list)
+    for m in model_list[:6]:
+        label = f"{m} (current)" if m == current else m
+        display.append(label)
+    display.append("Enter a model name manually")
+    # Default to the current model's slot (always first after the prepend).
+    default_idx = 1
+    idx = prompt_choice(display, default=default_idx)
+    if idx == len(display) - 1:
+        entered = input("  Model name: ").strip()
+        return entered or current
+    return model_list[idx]
+
+
+def edit_env(env_path, repo_root):
+    """Walk through .env values, letting the user keep or change each one.
+    Backs up the previous file and rewrites with the chosen values.
+    """
+    values = _read_env_dict(env_path)
+
+    emb_key = values.get("EMBEDDING_API_KEY", "")
+    vis_key = values.get("VISION_API_KEY", "")
+    emb_model = values.get("EMBEDDING_MODEL", "")
+    vis_model = values.get("VISION_MODEL", "")
+    emb_base = values.get("EMBEDDING_BASE_URL", "")
+    vis_base = values.get("VISION_BASE_URL", "") or emb_base
+    dimensions_raw = values.get("ARIADNE_EMBEDDING_DIMENSIONS", "")
+    try:
+        dimensions = int(dimensions_raw)
+    except (TypeError, ValueError):
+        dimensions = None
+    ariadne_key = values.get("ARIADNE_API_KEY", "")
+
+    provider_key = _provider_key_from_base_url(emb_base)
+
+    print()
+    print("  Edit mode: keep or change each value. Press Enter to keep.\n")
+
+    emb_key_changed = False
+    if _keep_or_change("Embedding API key", mask_key(emb_key) if emb_key else "(not set)"):
+        while True:
+            new_key = getpass("  New API key (won't be displayed): ").strip()
+            if new_key:
+                emb_key = new_key
+                emb_key_changed = True
+                success("Updated")
+                break
+            print("  Key cannot be empty. Try again.")
+
+    if _keep_or_change("Embedding model", emb_model or "(not set)"):
+        emb_list = None
+        if provider_key == "google":
+            emb_list, _ = query_google_models(emb_key)
+        elif provider_key == "openai":
+            emb_list, _ = query_openai_models(emb_key)
+        elif provider_key == "together":
+            emb_list, _ = query_together_models(emb_key)
+        if emb_list:
+            emb_model = _pick_model_from_list("Embedding", emb_model, emb_list)
+        else:
+            entered = input(f"  Model name [{emb_model}]: ").strip()
+            if entered:
+                emb_model = entered
+        success(f"Embedding: {emb_model}")
+
+    vis_key_same_as_emb_before = (vis_key == values.get("EMBEDDING_API_KEY", "")) and bool(vis_key)
+    if emb_key_changed and vis_key_same_as_emb_before:
+        print()
+        print("  You changed the embedding key.")
+        options = ["Use same key for vision", "Use a different vision key"]
+        if prompt_choice(options, default=1) == 0:
+            vis_key = emb_key
+            success("Vision key: same as embedding")
+        else:
+            while True:
+                new_key = getpass("  New vision API key (won't be displayed): ").strip()
+                if new_key:
+                    vis_key = new_key
+                    success("Updated")
+                    break
+                print("  Key cannot be empty. Try again.")
+    else:
+        vis_display = mask_key(vis_key) + " (same key)" if vis_key == emb_key and vis_key else (mask_key(vis_key) if vis_key else "(not set)")
+        if _keep_or_change("Vision API key", vis_display):
+            while True:
+                new_key = getpass("  New vision API key (won't be displayed): ").strip()
+                if new_key:
+                    vis_key = new_key
+                    success("Updated")
+                    break
+                print("  Key cannot be empty. Try again.")
+
+    if _keep_or_change("Vision model", vis_model or "(not set)"):
+        vis_list = None
+        if provider_key == "google":
+            _, vis_list = query_google_models(vis_key)
+        elif provider_key == "openai":
+            _, vis_list = query_openai_models(vis_key)
+        elif provider_key == "together":
+            _, vis_list = query_together_models(vis_key)
+        if vis_list:
+            vis_model = _pick_model_from_list("Vision", vis_model, vis_list)
+        else:
+            entered = input(f"  Model name [{vis_model}]: ").strip()
+            if entered:
+                vis_model = entered
+        success(f"Vision: {vis_model}")
+
+    if _keep_or_change("Embedding dimensions", str(dimensions) if dimensions else "(not set)"):
+        print()
+        print("  !! Changing dimensions after ingesting documents requires")
+        print("     re-embedding your entire corpus.\n")
+        dim_choices = [d for d, _, _ in DIMENSION_OPTIONS]
+        display = []
+        for d, label, desc in DIMENSION_OPTIONS:
+            marker = " (current)" if d == dimensions else ""
+            display.append(f"{d} ({label}){marker}")
+        idx = prompt_choice(display, default=1)
+        dimensions = dim_choices[idx]
+        success(f"Dimensions: {dimensions}")
+
+    print(f"\n  Client key (ARIADNE_API_KEY): {mask_key(ariadne_key) if ariadne_key else '(not set)'}")
+    options = ["Keep existing key", "Regenerate"]
+    if prompt_choice(options, default=1) == 1:
+        ariadne_key = secrets.token_urlsafe(32)
+        success(f"Regenerated: {mask_key(ariadne_key)}")
+
+    if dimensions is None:
+        dimensions = DIMENSION_OPTIONS[0][0]
+
+    backup_path = backup_env(env_path)
+    print(f"\n  Backed up previous .env to:")
+    print(f"    {backup_path}")
+
+    env_content = f"""# .env -- generated by setup.py
+# Do NOT commit this file (it's in .gitignore)
+
+# Database (local development only -- for docker compose)
+# Railway users: skip this. Railway injects DATABASE_URL automatically.
+DB_PASSWORD=local-dev-only
+
+# --- Embedding Provider ---
+EMBEDDING_API_KEY={emb_key}
+EMBEDDING_MODEL={emb_model}
+EMBEDDING_BASE_URL={emb_base}
+ARIADNE_EMBEDDING_DIMENSIONS={dimensions}
+
+# --- Vision Provider (for image descriptions in documents) ---
+VISION_API_KEY={vis_key}
+VISION_MODEL={vis_model}
+VISION_BASE_URL={vis_base}
+
+# --- Client Authentication ---
+# Auto-generated. Clients connect with this key via X-API-Key header.
+ARIADNE_API_KEY={ariadne_key}
+"""
+    env_path.write_text(env_content)
+    success(".env updated")
+    verify_gitignore(repo_root)
+
+    return ariadne_key, read_env_as_vars(env_path)
 
 
 def prompt_choice(options, default=1):
@@ -645,7 +868,6 @@ def write_env(
     verify_gitignore(repo_root)
 
     if env_path.exists():
-        print(f"  .env already exists at {env_path}")
         print_env_summary(env_path)
         options = ["Keep existing .env", "Overwrite with new values"]
         choice = prompt_choice(options, default=1)
@@ -1240,18 +1462,22 @@ Document extraction + vector search for AI agents
         print(f"  Expected at: {env_example}")
         sys.exit(1)
 
-    # --- Early .env check: skip Step 1 if already configured ---
+    # --- Early .env check: offer use / edit / start fresh ---
     if env_path.exists() and read_env_value(env_path, "EMBEDDING_API_KEY"):
-        print("  Existing configuration found:")
         print_env_summary(env_path)
         options = [
             "Use this and deploy",
-            "Reconfigure from scratch",
+            "Edit specific values",
+            "Start fresh (backs up current .env)",
         ]
         choice = prompt_choice(options, default=1)
-        if choice == 0:
-            ariadne_key = read_env_value(env_path, "ARIADNE_API_KEY") or secrets.token_urlsafe(32)
-            env_vars = read_env_as_vars(env_path)
+
+        if choice == 0 or choice == 1:
+            if choice == 1:
+                ariadne_key, env_vars = edit_env(env_path, repo_root)
+            else:
+                ariadne_key = read_env_value(env_path, "ARIADNE_API_KEY") or secrets.token_urlsafe(32)
+                env_vars = read_env_as_vars(env_path)
 
             if args.skip_deploy:
                 banner("""
@@ -1268,6 +1494,13 @@ Document extraction + vector search for AI agents
             else:
                 show_connection_template()
             return
+
+        # choice == 2: Start fresh — back up then fall through to Step 1
+        backup_path = backup_env(env_path)
+        print(f"\n  Backed up existing .env to:")
+        print(f"    {backup_path}")
+        print("\n  Starting fresh configuration...")
+        env_path.unlink()
 
     # Step 1: Choose provider
     provider_key, provider_config = choose_provider()
