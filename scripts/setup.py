@@ -128,34 +128,6 @@ def mask_key(key):
     return f"{key[:4]}...{key[-4:]}"
 
 
-_SECRET_KEY_MARKERS = ("KEY", "TOKEN", "PASSWORD", "SECRET")
-
-
-def _mask_secrets(obj, force_mask=False):
-    """Deep-copy obj, masking string values under secret-named keys."""
-    if isinstance(obj, dict):
-        out = {}
-        for k, v in obj.items():
-            ku = k.upper() if isinstance(k, str) else ""
-            is_secret = any(s in ku for s in _SECRET_KEY_MARKERS)
-            out[k] = _mask_secrets(v, force_mask=force_mask or is_secret)
-        return out
-    if isinstance(obj, list):
-        return [_mask_secrets(item, force_mask=force_mask) for item in obj]
-    if isinstance(obj, str) and force_mask and obj:
-        return mask_key(obj)
-    return obj
-
-
-def _debug(label, payload=None):
-    """Print a debug line that won't get lost in buffering."""
-    sys.stdout.write(f"  DEBUG {label}\n")
-    if payload is not None:
-        sys.stdout.write(payload if isinstance(payload, str) else json.dumps(payload, indent=2))
-        sys.stdout.write("\n")
-    sys.stdout.flush()
-
-
 def prompt_choice(options, default=1):
     """Present numbered options, return the selected index (0-based)."""
     for i, opt in enumerate(options, 1):
@@ -813,54 +785,27 @@ def deploy_railway(env_path, env_vars):
         team_id, team_name = workspaces[idx]
         success(f"Using workspace: {team_name}")
 
-    # --- Inspect serializedConfig (no longer modified) ---
-    # Earlier versions tried to inject env var values into serializedConfig before
-    # deploying, but templateDeployV2 silently rejects modified configs and creates
-    # an empty project. We now deploy with the ORIGINAL config and set env vars
-    # afterwards via variableCollectionUpsert once the services are provisioned.
-    _debug(">>> serializedConfig top-level keys:", list(serialized_config.keys()))
-    services_dict = serialized_config.get("services", {})
-    _debug(f">>> serializedConfig.services count: {len(services_dict)}")
-    for svc_id, svc in services_dict.items():
-        svc_name = svc.get("name", "<no name>") if isinstance(svc, dict) else "<not a dict>"
-        svc_keys = list(svc.keys()) if isinstance(svc, dict) else type(svc).__name__
-        _debug(f">>> service id={svc_id!r} name={svc_name!r} keys={svc_keys}")
-
     # --- Deploy via templateDeployV2 ---
+    # serializedConfig is a custom GraphQL scalar (SerializedTemplateConfig) that
+    # accepts a raw JSON object via variables — passing a json.dumps()'d STRING
+    # is silently accepted at the type level but doesn't deserialize, producing
+    # an empty project shell with no services. Pass the parsed dict directly.
     print("\n  Deploying (this takes 2-3 minutes)...")
-    sys.stdout.flush()
-
-    deploy_mutation = """mutation deploy($input: TemplateDeployV2Input!) {
+    result = railway_gql(
+        token,
+        """mutation deploy($input: TemplateDeployV2Input!) {
             templateDeployV2(input: $input) {
                 projectId
                 workflowId
             }
-        }"""
-    deploy_variables = {
-        "input": {
-            "templateId": template_id,
-            "serializedConfig": json.dumps(serialized_config),
-            "workspaceId": team_id,
-        }
-    }
-
-    _debug(">>> templateDeployV2 mutation:", deploy_mutation)
-    _debug(
-        ">>> templateDeployV2 variables (secrets masked):",
+        }""",
         {
             "input": {
                 "templateId": template_id,
+                "serializedConfig": serialized_config,
                 "workspaceId": team_id,
-                "serializedConfig": _mask_secrets(serialized_config),
             }
         },
-    )
-
-    result = railway_gql(token, deploy_mutation, deploy_variables)
-
-    _debug(
-        "<<< templateDeployV2 response (secrets masked):",
-        _mask_secrets(result) if result else "None",
     )
     if not result or not (result.get("data") or {}).get("templateDeployV2"):
         errors = (result or {}).get("errors", []) or []
@@ -875,7 +820,35 @@ def deploy_railway(env_path, env_vars):
 
     deploy_result = result["data"]["templateDeployV2"]
     project_id = deploy_result["projectId"]
+    workflow_id = deploy_result.get("workflowId")
     success(f"Deploy started (project: {project_id[:12]}...)")
+
+    # --- Poll workflowStatus ---
+    # The mutation can return a projectId before the workflow has actually
+    # provisioned anything. workflowStatus tells us whether the workflow is
+    # still RUNNING, COMPLETE, or has hit an ERROR.
+    if workflow_id:
+        print("\n  Waiting for deploy workflow to complete...")
+        for attempt in range(36):  # 36 × 5s = 3 minutes
+            ws_result = railway_gql(
+                token,
+                "query($id: String!) { workflowStatus(workflowId: $id) { status error } }",
+                {"id": workflow_id},
+            )
+            ws_data = (ws_result or {}).get("data", {}).get("workflowStatus") if ws_result else None
+            status = (ws_data or {}).get("status", "UNKNOWN")
+            if status == "COMPLETE":
+                success("Workflow complete")
+                break
+            if status == "ERROR":
+                err = (ws_data or {}).get("error") or "unknown workflow error"
+                print(f"  Deploy workflow failed: {err}")
+                return None, None
+            print(f"    Workflow status: {status} ({attempt + 1}/36)")
+            sys.stdout.flush()
+            time.sleep(5)
+        else:
+            print("  Workflow did not complete within 3 minutes — continuing anyway.")
 
     # --- Poll for environment and service IDs ---
     # Railway provisions services asynchronously after templateDeployV2 returns,
