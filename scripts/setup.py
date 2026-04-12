@@ -1066,6 +1066,13 @@ def deploy_railway(env_path, env_vars):
         team_id, team_name = workspaces[idx]
 
     print(f"  Workspace: {team_name}\n")
+
+    # --- Project name (optional) ---
+    print('  What would you like to name this project? (e.g. "my-ariadne", "ree-research")')
+    print("  Press Enter for Railway's default:")
+    project_name = input("\n  Name: ").strip()
+    print()
+
     print("  Deploying Ariadne Core...")
 
     # --- Phase 1: Creating project and database ---
@@ -1107,6 +1114,24 @@ def deploy_railway(env_path, env_vars):
     project_id = result["data"]["templateDeployV2"]["projectId"]
     workflow_id = result["data"]["templateDeployV2"].get("workflowId")
     print(f" OK")
+
+    # --- Rename the project if the user gave it a name ---
+    # TemplateDeployV2Input doesn't accept a name, so rename after creation.
+    if project_name:
+        rename_result = railway_gql(
+            token,
+            """mutation rename($id: String!, $input: ProjectUpdateInput!) {
+                projectUpdate(id: $id, input: $input) { id name }
+            }""",
+            {"id": project_id, "input": {"name": project_name}},
+        )
+        renamed = (rename_result or {}).get("data", {}).get("projectUpdate") if rename_result else None
+        if renamed and renamed.get("name"):
+            print(f"    Project name: {renamed['name']}")
+        else:
+            errs = (rename_result or {}).get("errors") or []
+            msg = errs[0].get("message") if errs else "unknown"
+            print(f"    Could not set project name ({msg}) -- using Railway default")
 
     # --- Phase 2: Configuring services (poll workflowStatus) ---
     phase_start = time.time()
