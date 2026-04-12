@@ -128,6 +128,34 @@ def mask_key(key):
     return f"{key[:4]}...{key[-4:]}"
 
 
+_SECRET_KEY_MARKERS = ("KEY", "TOKEN", "PASSWORD", "SECRET")
+
+
+def _mask_secrets(obj, force_mask=False):
+    """Deep-copy obj, masking string values under secret-named keys."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            ku = k.upper() if isinstance(k, str) else ""
+            is_secret = any(s in ku for s in _SECRET_KEY_MARKERS)
+            out[k] = _mask_secrets(v, force_mask=force_mask or is_secret)
+        return out
+    if isinstance(obj, list):
+        return [_mask_secrets(item, force_mask=force_mask) for item in obj]
+    if isinstance(obj, str) and force_mask and obj:
+        return mask_key(obj)
+    return obj
+
+
+def _debug(label, payload=None):
+    """Print a debug line that won't get lost in buffering."""
+    sys.stdout.write(f"  DEBUG {label}\n")
+    if payload is not None:
+        sys.stdout.write(payload if isinstance(payload, str) else json.dumps(payload, indent=2))
+        sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
 def prompt_choice(options, default=1):
     """Present numbered options, return the selected index (0-based)."""
     for i, opt in enumerate(options, 1):
@@ -784,37 +812,72 @@ def deploy_railway(env_path, env_vars):
     # --- Inject environment variables into serializedConfig ---
     # The template's serializedConfig has a 'services' dict. Find the main
     # service (not pgvector) and override its variable defaultValues.
+    _debug(">>> serializedConfig top-level keys:", list(serialized_config.keys()))
+    services_dict = serialized_config.get("services", {})
+    _debug(f">>> serializedConfig.services count: {len(services_dict)}")
+    for svc_id, svc in services_dict.items():
+        svc_name = svc.get("name", "<no name>") if isinstance(svc, dict) else "<not a dict>"
+        svc_keys = list(svc.keys()) if isinstance(svc, dict) else type(svc).__name__
+        _debug(f">>> service id={svc_id!r} name={svc_name!r} keys={svc_keys}")
+
     main_service_id = None
     for svc_id, svc in serialized_config.get("services", {}).items():
         if svc.get("name", "").lower() != "pgvector":
             main_service_id = svc_id
             break
 
+    _debug(f">>> selected main_service_id: {main_service_id!r}")
+
     if main_service_id and "variables" in serialized_config["services"][main_service_id]:
         svc_vars = serialized_config["services"][main_service_id]["variables"]
+        _debug(f">>> main service has {len(svc_vars)} variables; incoming env_vars: {len(env_vars)}")
+        injected = []
         for var_name, var_value in env_vars.items():
             if var_name in svc_vars and isinstance(svc_vars[var_name], dict):
                 svc_vars[var_name]["defaultValue"] = var_value
+                injected.append(var_name)
             elif var_name in svc_vars:
                 svc_vars[var_name] = var_value
+                injected.append(var_name)
+        _debug(f">>> injected {len(injected)} vars: {injected}")
+    else:
+        _debug(">>> WARNING: no main service variables found — nothing injected")
 
     # --- Deploy via templateDeployV2 ---
     print("\n  Deploying (this takes 2-3 minutes)...")
-    result = railway_gql(
-        token,
-        """mutation deploy($input: TemplateDeployV2Input!) {
+    sys.stdout.flush()
+
+    deploy_mutation = """mutation deploy($input: TemplateDeployV2Input!) {
             templateDeployV2(input: $input) {
                 projectId
                 workflowId
             }
-        }""",
+        }"""
+    deploy_variables = {
+        "input": {
+            "templateId": template_id,
+            "serializedConfig": json.dumps(serialized_config),
+            "workspaceId": team_id,
+        }
+    }
+
+    _debug(">>> templateDeployV2 mutation:", deploy_mutation)
+    _debug(
+        ">>> templateDeployV2 variables (secrets masked):",
         {
             "input": {
                 "templateId": template_id,
-                "serializedConfig": json.dumps(serialized_config),
                 "workspaceId": team_id,
+                "serializedConfig": _mask_secrets(serialized_config),
             }
         },
+    )
+
+    result = railway_gql(token, deploy_mutation, deploy_variables)
+
+    _debug(
+        "<<< templateDeployV2 response (secrets masked):",
+        _mask_secrets(result) if result else "None",
     )
     if not result or not (result.get("data") or {}).get("templateDeployV2"):
         errors = (result or {}).get("errors", []) or []
