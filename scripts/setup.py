@@ -898,50 +898,55 @@ def deploy_railway(env_path, env_vars):
     project_id = deploy_result["projectId"]
     success(f"Deploy started (project: {project_id[:12]}...)")
 
-    # --- Get environment and service IDs ---
-    print("\n  Waiting for project to initialize...")
-    time.sleep(5)
+    # --- Poll for environment and service IDs ---
+    # Railway provisions services asynchronously after templateDeployV2 returns,
+    # so we have to wait for them to appear. Poll for up to 4 minutes.
+    print("\n  Waiting for Railway to provision services...")
+    project_query = """query($id: String!) {
+        project(id: $id) {
+            environments(first: 5) { edges { node { id name } } }
+            services(first: 10) { edges { node { id name } } }
+        }
+    }"""
 
-    result = railway_gql(
-        token,
-        """query($id: String!) {
-            project(id: $id) {
-                environments(first: 5) { edges { node { id name } } }
-                services(first: 10) { edges { node { id name } } }
-            }
-        }""",
-        {"id": project_id},
-    )
-    if not result or not result.get("data", {}).get("project"):
-        print("  Could not query project details. Check the Railway dashboard.")
-        return None, None
-
-    project = result["data"]["project"]
-
-    # Find the production environment
     env_id = None
-    for edge in project.get("environments", {}).get("edges", []):
-        env = edge["node"]
-        if env["name"].lower() == "production":
-            env_id = env["id"]
-            break
-    if not env_id:
-        # Fall back to first environment
-        edges = project.get("environments", {}).get("edges", [])
-        if edges:
-            env_id = edges[0]["node"]["id"]
-
-    # Find the main service (not pgvector)
     service_id = None
-    for edge in project.get("services", {}).get("edges", []):
-        svc = edge["node"]
-        if "pgvector" not in svc["name"].lower() and "postgres" not in svc["name"].lower():
-            service_id = svc["id"]
-            break
+    for attempt in range(24):  # 24 × 10s = 4 minutes
+        result = railway_gql(token, project_query, {"id": project_id})
+        project = (result or {}).get("data", {}).get("project") if result else None
+
+        if project:
+            env_edges = (project.get("environments") or {}).get("edges", []) or []
+            svc_edges = (project.get("services") or {}).get("edges", []) or []
+
+            env_id = None
+            for edge in env_edges:
+                env = edge["node"]
+                if env["name"].lower() == "production":
+                    env_id = env["id"]
+                    break
+            if not env_id and env_edges:
+                env_id = env_edges[0]["node"]["id"]
+
+            service_id = None
+            for edge in svc_edges:
+                svc = edge["node"]
+                name = svc["name"].lower()
+                if "pgvector" not in name and "postgres" not in name:
+                    service_id = svc["id"]
+                    break
+
+            if env_id and service_id:
+                success(f"Services ready after {(attempt + 1) * 10}s")
+                break
+
+        print(f"    Waiting for services to provision... ({attempt + 1}/24)")
+        sys.stdout.flush()
+        time.sleep(10)
 
     if not env_id or not service_id:
-        print(f"  Could not find environment or service (env={env_id}, svc={service_id}).")
-        print("  Check the Railway dashboard.")
+        print(f"  Timed out waiting for services (env={env_id}, svc={service_id}).")
+        print("  The deploy may still complete — check the Railway dashboard.")
         return None, None
 
     # --- Upsert environment variables (overwrite template defaults with real values) ---
