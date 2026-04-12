@@ -179,8 +179,12 @@ def prompt_choice(options, default=1):
 # Railway GraphQL API helpers
 # ─────────────────────────────────────────────────────────────────
 
-def railway_gql(token, query, variables=None):
-    """Execute a GraphQL query against Railway's API. Returns parsed JSON or None on error."""
+def railway_gql(token, query, variables=None, timeout=120):
+    """Execute a GraphQL query against Railway's API. Returns parsed JSON or None on error.
+
+    Default timeout is 120s because templateDeployV2 provisions services synchronously
+    and routinely takes 60-90s to return.
+    """
     body = {"query": query}
     if variables:
         body["variables"] = variables
@@ -195,7 +199,7 @@ def railway_gql(token, query, variables=None):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()[:200] if e.fp else ""
