@@ -812,7 +812,7 @@ def deploy_railway(env_path, env_vars):
             "input": {
                 "templateId": template_id,
                 "serializedConfig": json.dumps(serialized_config),
-                "teamId": team_id,
+                "workspaceId": team_id,
             }
         },
     )
@@ -1071,18 +1071,17 @@ def show_connection(url, ariadne_key):
     print("  Restart Claude Code to connect.\n")
 
 
-def show_connection_template(ariadne_key):
+def show_connection_template():
     """Show connection command with placeholder URL (for non-Railway deploys)."""
     step_header(6, 6, "Connect Claude Code")
 
-    print("  After deploying, run this command (replace YOUR-URL):\n")
+    print("  After deploying, run this command (replace YOUR-URL and YOUR-API-KEY):\n")
     print("  claude mcp add ariadne-core \\")
     print("    https://YOUR-URL/mcp \\")
     print("    --transport http --scope user \\")
-    print(f'    --header "X-API-Key:{ariadne_key}"')
+    print('    --header "X-API-Key:YOUR-API-KEY"')
     print()
-    print(f"  Your ARIADNE_API_KEY: {ariadne_key}")
-    print("  (saved in .env)")
+    print("  Your ARIADNE_API_KEY is in your .env file.")
     print()
     print("  Then restart Claude Code.\n")
 
@@ -1189,7 +1188,7 @@ Document extraction + vector search for AI agents
                 show_connection(url, ariadne_key)
                 banner("Setup complete!")
             else:
-                show_connection_template(ariadne_key)
+                show_connection_template()
             return
 
     # Step 1: Choose provider
@@ -1210,7 +1209,7 @@ Document extraction + vector search for AI agents
                 show_connection(url, ariadne_key)
                 banner("Setup complete!")
             else:
-                show_connection_template(ariadne_key)
+                show_connection_template()
         return
 
     # Step 2: Get API key(s)
@@ -1281,7 +1280,7 @@ Document extraction + vector search for AI agents
     url, _ = deploy_railway(env_path, env_vars)
     if not url:
         # User chose non-Railway deploy or deploy failed
-        show_connection_template(ariadne_key)
+        show_connection_template()
         return
 
     # Step 6: Connection info
