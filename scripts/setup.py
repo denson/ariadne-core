@@ -19,6 +19,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 from getpass import getpass
 from pathlib import Path
 
@@ -103,12 +104,39 @@ def banner(text):
     print()
 
 
-def step_header(num, total, title):
+def step_header(num, title):
     width = 60
     print()
     print("=" * width)
-    print(f"  Step {num} of {total}: {title}")
+    print(f"  Step {num} of 4: {title}")
     print("=" * width)
+    print()
+
+
+def fmt_elapsed(seconds):
+    """Format seconds as '45s' or '1m 30s'."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    return f"{seconds // 60}m {seconds % 60}s"
+
+
+def final_banner(health_ok, url):
+    """Print the final setup banner. If the health check failed, surface
+    that clearly instead of claiming 'Setup complete!'.
+    """
+    if health_ok:
+        banner("Setup complete!")
+        return
+    print()
+    print("=" * 60)
+    print("  !! Server deployed but health check did not pass yet.")
+    print()
+    print("  It may still be starting up -- check again in a few minutes:")
+    print(f"    curl {url}/api/health")
+    print()
+    print("  If it keeps failing, check the Railway dashboard for logs.")
+    print("=" * 60)
     print()
 
 
@@ -126,6 +154,40 @@ def mask_key(key):
     if len(key) <= 12:
         return "****"
     return f"{key[:4]}...{key[-4:]}"
+
+
+def _provider_name_from_base_url(base_url):
+    if not base_url:
+        return "Custom"
+    url = base_url.lower()
+    if "generativelanguage.googleapis.com" in url:
+        return "Google Gemini"
+    if "api.openai.com" in url:
+        return "OpenAI"
+    if "api.together.xyz" in url:
+        return "Together AI"
+    return "Custom (OpenAI-compatible)"
+
+
+def print_env_summary(env_path):
+    """Print a human-readable summary of an existing .env — no raw var names."""
+    values = {}
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            values[k.strip()] = v.strip()
+
+    provider = _provider_name_from_base_url(values.get("EMBEDDING_BASE_URL"))
+    emb_model = values.get("EMBEDDING_MODEL", "?")
+    vis_model = values.get("VISION_MODEL", "?")
+    dimensions = values.get("ARIADNE_EMBEDDING_DIMENSIONS", "?")
+
+    print()
+    print(f"    Provider:   {provider}")
+    print(f"    Models:     {emb_model} + {vis_model}")
+    print(f"    Dimensions: {dimensions}")
+    print()
 
 
 def prompt_choice(options, default=1):
@@ -221,7 +283,7 @@ def railway_verify_token(token):
 # ─────────────────────────────────────────────────────────────────
 
 def choose_provider():
-    step_header(1, 6, "Choose your AI provider")
+    step_header(1, "Configure")
     print("  We need an API key for embedding and vision models.\n")
     print("  Providers:")
     options = [
@@ -263,12 +325,10 @@ def choose_provider():
 # ─────────────────────────────────────────────────────────────────
 
 def get_api_key(provider_config):
-    step_header(2, 6, "Get your API key")
-
     key_url = provider_config.get("key_url")
+    print()
     if key_url:
-        print(f"  Go to: {key_url}")
-        print("  Create a key (or use an existing one).\n")
+        print(f"  Get a key at: {key_url}\n")
     else:
         print("  Enter your API key for this provider.\n")
 
@@ -390,9 +450,7 @@ def query_together_models(api_key):
 
 
 def choose_models(provider_key, provider_config, api_key):
-    step_header(3, 6, "Choose models")
-
-    print("  Querying available models...\n")
+    print("\n  Querying available models...\n")
 
     embedding_models = None
     vision_models = None
@@ -583,23 +641,12 @@ def write_env(
     dimensions,
     ariadne_key,
 ):
-    step_header(4, 6, "Configure .env")
-
+    print()
     verify_gitignore(repo_root)
 
     if env_path.exists():
-        print(f"  .env already exists at {env_path}\n")
-        print("  Current values (keys masked):")
-        for line in env_path.read_text().splitlines():
-            if "=" in line and not line.strip().startswith("#"):
-                key, _, val = line.partition("=")
-                key = key.strip()
-                val = val.strip()
-                if "KEY" in key.upper() or "PASSWORD" in key.upper() or "TOKEN" in key.upper():
-                    print(f"    {key} = {mask_key(val)}")
-                else:
-                    print(f"    {key} = {val}")
-        print()
+        print(f"  .env already exists at {env_path}")
+        print_env_summary(env_path)
         options = ["Keep existing .env", "Overwrite with new values"]
         choice = prompt_choice(options, default=1)
         if choice == 0:
@@ -631,15 +678,6 @@ ARIADNE_API_KEY={ariadne_key}
 
     env_path.write_text(env_content)
 
-    print("  .env written:\n")
-    print(f"    EMBEDDING_API_KEY    = {mask_key(emb_key)}")
-    print(f"    EMBEDDING_MODEL      = {emb_model}")
-    print(f"    EMBEDDING_BASE_URL   = {emb_base_url}")
-    print(f"    EMBEDDING_DIMENSIONS = {dimensions}")
-    print(f"    VISION_API_KEY       = {mask_key(vis_key)}")
-    print(f"    VISION_MODEL         = {vis_model}")
-    print(f"    VISION_BASE_URL      = {vis_base_url}")
-    print(f"    ARIADNE_API_KEY      = {mask_key(ariadne_key)}")
     print()
     success(".env configured")
 
@@ -648,37 +686,36 @@ ARIADNE_API_KEY={ariadne_key}
 # Step 5: Deploy to Railway via GraphQL API
 # ─────────────────────────────────────────────────────────────────
 
-def get_railway_token(env_path):
-    """Get Railway API token — check .env first, otherwise prompt."""
-    existing = read_env_value(env_path, "RAILWAY_API_TOKEN")
-    from_old_key = False
-    if not existing:
-        existing = read_env_value(env_path, "RAILWAY_TOKEN")
-        from_old_key = bool(existing)
-    if existing:
-        print("  Found Railway API token in .env.\n")
-        options = [
-            "Use saved token",
-            "Enter a new token",
-        ]
-        choice = prompt_choice(options, default=1)
-        if choice == 0:
-            name = railway_verify_token(existing)
-            if name:
-                success(f"Authenticated as: {name}")
-                # Migrate old key name to new one
-                if from_old_key:
-                    upsert_env_value(env_path, "RAILWAY_API_TOKEN", existing)
-                    remove_env_key(env_path, "RAILWAY_TOKEN")
-                return existing
-            else:
-                print("  Saved token is invalid or expired.\n")
+def get_railway_token():
+    """Walk the user through creating a Railway API token. Returns the token
+    (verified) or None on cancel. Tokens live in memory only — never written
+    to .env or any other file.
+    """
+    step_header(2, "Connect to Railway")
 
-    print("  We need an API token so the script can deploy for you.\n")
-    print("  Copy this URL and paste it into your browser:\n")
-    print("    https://railway.com/account/tokens\n")
-    print("  Click \"Create Token\", give it a name (e.g. \"ariadne-setup\"),")
-    print("  and copy the token.\n")
+    print("  To deploy, we need a Railway API token (one-time setup).")
+    print()
+    print("  The token lets this script:")
+    print("    - Create a project in your Railway workspace")
+    print("    - Deploy services and a database")
+    print("    - Set environment variables and generate a public URL")
+    print()
+    print("  The token stays in memory for this run only — it is never written")
+    print("  to disk. You can revoke it from the Railway dashboard any time.")
+    print()
+    print("  If you're new to Railway, sign up through this link for $20 free credit:")
+    print("    https://railway.com?referralCode=RxMpbX")
+    print("  (We earn a small referral commission if you continue past the trial.)")
+    print()
+    print("  Opening the token creation page in your browser...")
+    token_url = "https://railway.com/account/tokens"
+    try:
+        webbrowser.open(token_url)
+    except Exception:
+        pass
+    print(f"  If it didn't open, go to: {token_url}")
+    print('  Click "Create Token", name it "ariadne-setup", and copy the token.')
+    print()
 
     while True:
         action_needed("Paste your Railway API token below (it won't be displayed)")
@@ -688,7 +725,7 @@ def get_railway_token(env_path):
             continue
         name = railway_verify_token(token)
         if name:
-            success(f"Authenticated as: {name}")
+            success(f"Connected as: {name}")
             return token
         print("  Token not valid. Check that you copied the full token.\n")
 
@@ -697,46 +734,31 @@ def deploy_railway(env_path, env_vars):
     """Deploy Ariadne Core to Railway via the GraphQL API.
 
     Args:
-        env_path: Path to .env file
+        env_path: Path to .env file (kept for signature compatibility; no longer written to)
         env_vars: dict of environment variables to set on the service
 
     Returns:
-        (url, token) tuple on success, (None, None) on failure
+        (url, health_ok) tuple. url is None if the user opted out or deploy failed.
+        health_ok is True only if the final /api/health check returned healthy.
     """
-    step_header(5, 6, "Deploy to Railway")
-
     # --- Choose deployment target ---
-    print("  We recommend Railway for hosting (simple, ~$5/mo).\n")
+    print("\n  We recommend Railway for hosting (simple, ~$5/mo).\n")
     options = [
         "Deploy to Railway (recommended)",
         "I'll deploy somewhere else -- just give me the .env",
     ]
     choice = prompt_choice(options, default=1)
     if choice == 1:
-        return None, None
+        return None, False
 
-    # --- Railway account ---
-    print()
-    print("  Do you have a Railway account?\n")
-    options = [
-        "Yes",
-        "No -- create one",
-    ]
-    choice = prompt_choice(options, default=1)
-    if choice == 1:
-        print()
-        print("  Copy this URL and paste it into your browser to sign up:\n")
-        print("    https://railway.com?referralCode=RxMpbX\n")
-        print("  You'll get $20 in free credits to try it out. No commitment --")
-        print("  cancel anytime. (We get a small referral commission if you stay.)\n")
-        input("  Press Enter when you've created your account.")
-        print()
+    # --- Step 2: Connect to Railway (get token) ---
+    token = get_railway_token()
 
-    # --- Get token ---
-    token = get_railway_token(env_path)
+    # --- Step 3: Deploy ---
+    step_header(3, "Deploy")
+    deploy_start = time.time()
 
-    # --- Fetch template ---
-    print("\n  Fetching template configuration...")
+    # --- Fetch template (silent unless it fails) ---
     result = railway_gql(
         token,
         "query($code: String!) { template(code: $code) { id serializedConfig } }",
@@ -746,25 +768,15 @@ def deploy_railway(env_path, env_vars):
         errors = (result or {}).get("errors", [])
         msg = errors[0].get("message", "unknown error") if errors else "template not found"
         print(f"  Could not fetch template: {msg}")
-        print("  Try deploying manually from the Railway dashboard.")
-        return None, None
+        return None, False
 
     template = result["data"]["template"]
     template_id = template["id"]
-    # serializedConfig is a JSON-encoded string from the API — parse it
     raw_config = template["serializedConfig"]
-    if isinstance(raw_config, str):
-        serialized_config = json.loads(raw_config)
-    else:
-        serialized_config = raw_config  # already parsed (some GraphQL clients do this)
-    success("Template fetched")
+    serialized_config = json.loads(raw_config) if isinstance(raw_config, str) else raw_config
 
-    # --- Pick a Railway workspace ---
-    print("\n  Fetching your Railway workspaces...")
-    ws_result = railway_gql(
-        token,
-        "{ me { workspaces { id name } } }",
-    )
+    # --- Pick a workspace ---
+    ws_result = railway_gql(token, "{ me { workspaces { id name } } }")
     workspaces = []
     if ws_result and (ws_result.get("data") or {}).get("me"):
         for ws in ws_result["data"]["me"].get("workspaces") or []:
@@ -772,32 +784,30 @@ def deploy_railway(env_path, env_vars):
                 workspaces.append((ws["id"], ws.get("name") or ws["id"]))
 
     if len(workspaces) == 0:
-        print("  No workspaces found on this account.")
+        print("  No Railway workspaces found on this account.")
         print("  Create one in the Railway dashboard and try again.")
-        return None, None
-    elif len(workspaces) == 1:
+        return None, False
+    if len(workspaces) == 1:
         team_id, team_name = workspaces[0]
-        success(f"Using workspace: {team_name}")
     else:
         print("\n  Multiple workspaces found. Pick one:\n")
         display = [name for _, name in workspaces]
         idx = prompt_choice(display, default=1)
         team_id, team_name = workspaces[idx]
-        success(f"Using workspace: {team_name}")
 
-    # --- Deploy via templateDeployV2 ---
-    # serializedConfig is a custom GraphQL scalar (SerializedTemplateConfig) that
-    # accepts a raw JSON object via variables — passing a json.dumps()'d STRING
-    # is silently accepted at the type level but doesn't deserialize, producing
-    # an empty project shell with no services. Pass the parsed dict directly.
-    print("\n  Deploying (this takes 2-3 minutes)...")
+    print(f"  Workspace: {team_name}\n")
+    print("  Deploying Ariadne Core...")
+
+    # --- Phase 1: Creating project and database ---
+    phase_start = time.time()
+    print("    Creating project and database...", end="", flush=True)
+    # serializedConfig is a custom GraphQL scalar (SerializedTemplateConfig) —
+    # pass the parsed dict, not a json.dumps()'d string, or the project
+    # deploys empty with no services.
     result = railway_gql(
         token,
         """mutation deploy($input: TemplateDeployV2Input!) {
-            templateDeployV2(input: $input) {
-                projectId
-                workflowId
-            }
+            templateDeployV2(input: $input) { projectId workflowId }
         }""",
         {
             "input": {
@@ -808,101 +818,91 @@ def deploy_railway(env_path, env_vars):
         },
     )
     if not result or not (result.get("data") or {}).get("templateDeployV2"):
+        print(" failed")
         errors = (result or {}).get("errors", []) or []
         if errors:
             msg = errors[0].get("message", "unknown error")
-            print(f"  Deploy failed: {msg}")
-            for err in errors[1:]:
-                print(f"    - {err.get('message', 'unknown')}")
+            if "verif" in msg.lower() or "trial" in msg.lower() or "billing" in msg.lower():
+                print("\n  Railway requires account verification before deploying.")
+                print("  Go to https://railway.com/account to verify, then run this script again.")
+                print("  Your .env is saved -- you won't lose your configuration.")
+            else:
+                print(f"\n  Railway error: {msg}")
+                for err in errors[1:]:
+                    print(f"    - {err.get('message', 'unknown')}")
         else:
-            print("  Deploy failed: no data returned from Railway")
-        return None, None
+            print("\n  Deploy failed: no data returned from Railway")
+        return None, False
 
-    deploy_result = result["data"]["templateDeployV2"]
-    project_id = deploy_result["projectId"]
-    workflow_id = deploy_result.get("workflowId")
-    success(f"Deploy started (project: {project_id[:12]}...)")
+    project_id = result["data"]["templateDeployV2"]["projectId"]
+    workflow_id = result["data"]["templateDeployV2"].get("workflowId")
+    print(f" OK")
 
-    # --- Poll workflowStatus ---
-    # The mutation can return a projectId before the workflow has actually
-    # provisioned anything. workflowStatus tells us whether the workflow is
-    # still RUNNING, COMPLETE, or has hit an ERROR.
+    # --- Phase 2: Configuring services (poll workflowStatus) ---
+    phase_start = time.time()
+    print("    Configuring services...", end="", flush=True)
     if workflow_id:
-        print("\n  Waiting for deploy workflow to complete...")
-        for attempt in range(36):  # 36 × 5s = 3 minutes
+        last_status = None
+        for _ in range(36):  # 36 x 5s = 3 minutes
             ws_result = railway_gql(
                 token,
                 "query($id: String!) { workflowStatus(workflowId: $id) { status error } }",
                 {"id": workflow_id},
             )
             ws_data = (ws_result or {}).get("data", {}).get("workflowStatus") if ws_result else None
-            status = (ws_data or {}).get("status", "UNKNOWN")
+            status = ((ws_data or {}).get("status") or "unknown").upper()
             if status == "COMPLETE":
-                success("Workflow complete")
+                print(f" OK  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
                 break
             if status == "ERROR":
                 err = (ws_data or {}).get("error") or "unknown workflow error"
-                print(f"  Deploy workflow failed: {err}")
-                return None, None
-            print(f"    Workflow status: {status} ({attempt + 1}/36)")
-            sys.stdout.flush()
+                print(f" failed\n  Railway workflow error: {err}")
+                return None, False
+            if status != last_status:
+                last_status = status
             time.sleep(5)
         else:
-            print("  Workflow did not complete within 3 minutes — continuing anyway.")
+            print(f" timeout after {fmt_elapsed(time.time() - phase_start)}")
+            print("  Workflow did not complete within 3 minutes -- continuing anyway.")
 
-    # --- Poll for environment and service IDs ---
-    # Railway provisions services asynchronously after templateDeployV2 returns,
-    # so we have to wait for them to appear. Poll for up to 4 minutes.
-    print("\n  Waiting for Railway to provision services...")
+    # --- Wait for services + environment IDs to appear ---
     project_query = """query($id: String!) {
         project(id: $id) {
             environments(first: 5) { edges { node { id name } } }
             services(first: 10) { edges { node { id name } } }
         }
     }"""
-
     env_id = None
     service_id = None
-    for attempt in range(24):  # 24 × 10s = 4 minutes
+    for _ in range(24):  # 24 x 10s = 4 minutes
         result = railway_gql(token, project_query, {"id": project_id})
         project = (result or {}).get("data", {}).get("project") if result else None
-
         if project:
             env_edges = (project.get("environments") or {}).get("edges", []) or []
             svc_edges = (project.get("services") or {}).get("edges", []) or []
-
             env_id = None
             for edge in env_edges:
-                env = edge["node"]
-                if env["name"].lower() == "production":
-                    env_id = env["id"]
+                if edge["node"]["name"].lower() == "production":
+                    env_id = edge["node"]["id"]
                     break
             if not env_id and env_edges:
                 env_id = env_edges[0]["node"]["id"]
-
             service_id = None
             for edge in svc_edges:
-                svc = edge["node"]
-                name = svc["name"].lower()
+                name = edge["node"]["name"].lower()
                 if "pgvector" not in name and "postgres" not in name:
-                    service_id = svc["id"]
+                    service_id = edge["node"]["id"]
                     break
-
             if env_id and service_id:
-                success(f"Services ready after {(attempt + 1) * 10}s")
                 break
-
-        print(f"    Waiting for services to provision... ({attempt + 1}/24)")
-        sys.stdout.flush()
         time.sleep(10)
 
     if not env_id or not service_id:
-        print(f"  Timed out waiting for services (env={env_id}, svc={service_id}).")
-        print("  The deploy may still complete — check the Railway dashboard.")
-        return None, None
+        print("    Services did not appear within 4 minutes.")
+        print("    Check the Railway dashboard -- the deploy may still complete.")
+        return None, False
 
-    # --- Upsert environment variables (overwrite template defaults with real values) ---
-    print("\n  Setting environment variables...")
+    # --- Upsert environment variables (silent on success) ---
     result = railway_gql(
         token,
         """mutation upsertVars($input: VariableCollectionUpsertInput!) {
@@ -917,123 +917,126 @@ def deploy_railway(env_path, env_vars):
             }
         },
     )
-    if result and not result.get("errors"):
-        success(f"Set {len(env_vars)} variables")
-    else:
-        errors = (result or {}).get("errors", [])
+    if result and result.get("errors"):
+        errors = result.get("errors") or []
         msg = errors[0].get("message", "unknown") if errors else "unknown"
-        print(f"  Warning: Could not set variables: {msg}")
-        print("  You may need to set them manually in the Railway dashboard.")
+        print(f"    Warning: could not set env vars: {msg}")
+        print("    You may need to set them manually in the Railway dashboard.")
 
-    # --- Generate public domain ---
-    print("\n  Generating public URL...")
+    # --- Domain: check for existing first, only create if none ---
+    domain = None
     result = railway_gql(
         token,
-        """mutation createDomain($input: ServiceDomainCreateInput!) {
-            serviceDomainCreate(input: $input) { domain }
-        }""",
-        {
-            "input": {
-                "environmentId": env_id,
-                "serviceId": service_id,
+        """query($projectId: String!, $environmentId: String!, $serviceId: String!) {
+            domains(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) {
+                serviceDomains { domain }
             }
-        },
+        }""",
+        {"projectId": project_id, "environmentId": env_id, "serviceId": service_id},
     )
-    domain = None
-    if result and result.get("data", {}).get("serviceDomainCreate"):
-        domain = result["data"]["serviceDomainCreate"]["domain"]
-    else:
-        # Domain may already exist — query for it
+    if result and (result.get("data") or {}).get("domains"):
+        svc_domains = result["data"]["domains"].get("serviceDomains", []) or []
+        if svc_domains:
+            domain = svc_domains[0]["domain"]
+
+    if not domain:
         result = railway_gql(
             token,
-            """query($projectId: String!, $environmentId: String!, $serviceId: String!) {
-                domains(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) {
-                    serviceDomains { domain }
-                }
+            """mutation createDomain($input: ServiceDomainCreateInput!) {
+                serviceDomainCreate(input: $input) { domain }
             }""",
-            {
-                "projectId": project_id,
-                "environmentId": env_id,
-                "serviceId": service_id,
-            },
+            {"input": {"environmentId": env_id, "serviceId": service_id}},
         )
-        if result and result.get("data", {}).get("domains"):
-            svc_domains = result["data"]["domains"].get("serviceDomains", [])
-            if svc_domains:
-                domain = svc_domains[0]["domain"]
+        if result and (result.get("data") or {}).get("serviceDomainCreate"):
+            domain = result["data"]["serviceDomainCreate"]["domain"]
 
     if domain:
         url = f"https://{domain}"
-        success(f"URL: {url}")
     else:
-        print("  Could not generate domain automatically.")
-        print("  Go to Railway dashboard -> service -> Settings -> Networking -> Generate Domain")
-        url = input("  Paste your URL here: ").strip()
+        print("    Could not generate a public domain automatically.")
+        print("    Go to Railway dashboard -> service -> Settings -> Networking -> Generate Domain")
+        url = input("    Paste your URL here: ").strip()
         if not url.startswith("https://"):
             url = f"https://{url}"
 
-    # --- Poll for deployment to be healthy ---
-    print("\n  Waiting for deployment to be healthy...")
-    for attempt in range(12):
-        # Check deployment status via API
+    # --- Phase 3: Building container (watch deployment status) ---
+    phase_start = time.time()
+    print("    Building container...", end="", flush=True)
+    build_seen = False
+    deploy_seen = False
+    last_status = None
+    deployment_ok = False
+    for _ in range(40):  # 40 x 15s = 10 minutes max for the build+deploy cycle
         result = railway_gql(
             token,
             """query($input: DeploymentListInput!) {
-                deployments(first: 1, input: $input) {
-                    edges { node { id status } }
-                }
+                deployments(first: 1, input: $input) { edges { node { id status } } }
             }""",
-            {
-                "input": {
-                    "projectId": project_id,
-                    "environmentId": env_id,
-                    "serviceId": service_id,
-                }
-            },
+            {"input": {"projectId": project_id, "environmentId": env_id, "serviceId": service_id}},
         )
         status = "unknown"
-        if result and result.get("data", {}).get("deployments", {}).get("edges"):
-            node = result["data"]["deployments"]["edges"][0]["node"]
-            status = node.get("status", "unknown")
+        if result and ((result.get("data") or {}).get("deployments") or {}).get("edges"):
+            status = (result["data"]["deployments"]["edges"][0]["node"].get("status") or "unknown").upper()
 
         if status == "SUCCESS":
-            # Verify with health check
-            try:
-                req = urllib.request.Request(
-                    f"{url}/api/health",
-                    headers={"User-Agent": "ariadne-core-setup/1.0"},
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = json.loads(resp.read())
-                    if data.get("status") == "healthy":
-                        success("Health check passed!")
-                        # Save token and URL to .env
-                        upsert_env_value(env_path, "RAILWAY_API_TOKEN", token)
-                        upsert_env_value(env_path, "RAILWAY_DEPLOY_URL", url)
-                        return url, token
-            except Exception as e:
-                if attempt == 11:  # last attempt
-                    print(f"  Health check error: {e}")
-            # Deployed but not healthy yet — keep trying
-            print(f"    Attempt {attempt + 1}/12 -- deployed, waiting for health check...")
-        elif status == "FAILED" or status == "CRASHED":
-            print(f"  Deployment {status.lower()}.")
-            print("  Check the Railway dashboard for error logs.")
-            # Still save what we have
-            upsert_env_value(env_path, "RAILWAY_API_TOKEN", token)
-            return url, token
-        else:
-            status_label = status.lower().replace("_", " ")
-            print(f"    Attempt {attempt + 1}/12 -- {status_label}...")
+            if not build_seen:
+                print(f" OK  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
+                build_seen = True
+            if not deploy_seen:
+                print("    Deploying...                         OK")
+                deploy_seen = True
+            deployment_ok = True
+            break
 
+        if status in ("FAILED", "CRASHED"):
+            print(f" {status.lower()}")
+            print("    Check the Railway dashboard for error logs.")
+            return url, False
+
+        if status == "DEPLOYING" and not build_seen:
+            print(f" OK  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
+            print("    Deploying...", end="", flush=True)
+            build_seen = True
+            phase_start = time.time()
+
+        last_status = status
         time.sleep(15)
 
-    print("  Health check did not pass after 3 minutes.")
-    print("  The deployment may still be starting. Check the Railway dashboard.")
-    # Save token and URL even if health check failed
-    upsert_env_value(env_path, "RAILWAY_API_TOKEN", token)
-    upsert_env_value(env_path, "RAILWAY_DEPLOY_URL", url)
-    return url, token
+    if not deployment_ok:
+        if not build_seen:
+            print(f" timeout after {fmt_elapsed(time.time() - phase_start)}")
+        else:
+            print(f" timeout after {fmt_elapsed(time.time() - phase_start)}")
+        print("    Deployment did not finish within 10 minutes.")
+        return url, False
+
+    # --- Health check ---
+    phase_start = time.time()
+    print("    Health check passed...", end="", flush=True)
+    health_ok = False
+    for _ in range(12):  # 12 x 10s = 2 minutes
+        try:
+            req = urllib.request.Request(
+                f"{url}/api/health",
+                headers={"User-Agent": "ariadne-core-setup/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                if data.get("status") == "healthy":
+                    health_ok = True
+                    break
+        except Exception:
+            pass
+        time.sleep(10)
+
+    if health_ok:
+        print(" OK")
+    else:
+        print(f" not yet  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
+
+    print()
+    print(f"  OK Live at: {url}")
+    return url, health_ok
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -1041,7 +1044,7 @@ def deploy_railway(env_path, env_vars):
 # ─────────────────────────────────────────────────────────────────
 
 def show_connection(url, ariadne_key):
-    step_header(6, 6, "Connect Claude Code")
+    step_header(4, "Done")
 
     config_path = Path.home() / ".claude.json"
 
@@ -1097,7 +1100,7 @@ def show_connection(url, ariadne_key):
 
 def show_connection_template():
     """Show connection command with placeholder URL (for non-Railway deploys)."""
-    step_header(6, 6, "Connect Claude Code")
+    step_header(4, "Done")
 
     print("  After deploying, run this command (replace YOUR-URL and YOUR-API-KEY):\n")
     print("  claude mcp add ariadne-core \\")
@@ -1174,28 +1177,16 @@ Document extraction + vector search for AI agents
         print(f"  Expected at: {env_example}")
         sys.exit(1)
 
-    # --- Early .env check: skip Steps 1-4 if already configured ---
+    # --- Early .env check: skip Step 1 if already configured ---
     if env_path.exists() and read_env_value(env_path, "EMBEDDING_API_KEY"):
-        print("  Existing .env found:\n")
-        for line in env_path.read_text().splitlines():
-            if "=" in line and not line.strip().startswith("#"):
-                key, _, val = line.partition("=")
-                key = key.strip()
-                val = val.strip()
-                if not key or not val:
-                    continue
-                if "KEY" in key.upper() or "PASSWORD" in key.upper() or "TOKEN" in key.upper():
-                    print(f"    {key:<24} = {mask_key(val)}")
-                else:
-                    print(f"    {key:<24} = {val}")
-        print("    (keys masked)\n")
+        print("  Existing configuration found:")
+        print_env_summary(env_path)
         options = [
-            "Use this configuration -- skip to deploy",
+            "Use this and deploy",
             "Reconfigure from scratch",
         ]
         choice = prompt_choice(options, default=1)
         if choice == 0:
-            # Skip Steps 1-4, jump to deploy
             ariadne_key = read_env_value(env_path, "ARIADNE_API_KEY") or secrets.token_urlsafe(32)
             env_vars = read_env_as_vars(env_path)
 
@@ -1207,10 +1198,10 @@ Document extraction + vector search for AI agents
                 """)
                 return
 
-            url, _ = deploy_railway(env_path, env_vars)
+            url, health_ok = deploy_railway(env_path, env_vars)
             if url:
                 show_connection(url, ariadne_key)
-                banner("Setup complete!")
+                final_banner(health_ok, url)
             else:
                 show_connection_template()
             return
@@ -1228,10 +1219,10 @@ Document extraction + vector search for AI agents
         if not args.skip_deploy:
             ariadne_key = read_env_value(env_path, "ARIADNE_API_KEY") or secrets.token_urlsafe(32)
             env_vars = read_env_as_vars(env_path)
-            url, _ = deploy_railway(env_path, env_vars)
+            url, health_ok = deploy_railway(env_path, env_vars)
             if url:
                 show_connection(url, ariadne_key)
-                banner("Setup complete!")
+                final_banner(health_ok, url)
             else:
                 show_connection_template()
         return
@@ -1300,17 +1291,17 @@ Document extraction + vector search for AI agents
         "ARIADNE_API_KEY": ariadne_key,
     }
 
-    # Step 5: Deploy
-    url, _ = deploy_railway(env_path, env_vars)
+    # Steps 2-3: Deploy (includes Connect)
+    url, health_ok = deploy_railway(env_path, env_vars)
     if not url:
         # User chose non-Railway deploy or deploy failed
         show_connection_template()
         return
 
-    # Step 6: Connection info
+    # Step 4: Connection info
     show_connection(url, ariadne_key)
 
-    banner("Setup complete!")
+    final_banner(health_ok, url)
 
 
 if __name__ == "__main__":
