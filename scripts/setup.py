@@ -61,9 +61,12 @@ PROVIDERS = {
     },
 }
 
+# pgvector HNSW indexes support max 2000 dimensions.
+# gemini-embedding-2-preview supports up to 3072 but we cap at 1536
+# to stay within pgvector's HNSW limit. Weaviate (Managed edition)
+# will support the full 3072.
 DIMENSION_OPTIONS = [
-    (3072, "highest quality", "best for research, graph construction, precision search"),
-    (1536, "balanced", "good quality, moderate storage"),
+    (1536, "highest quality within pgvector limits", "best for research, graph construction, precision search"),
     (768, "compact", "fastest search, lowest storage, good for large corpora 100K+ docs"),
 ]
 
@@ -755,11 +758,13 @@ def choose_models(provider_key, provider_config, api_key):
 
 def choose_dimensions():
     print("\n  Embedding dimensions:\n")
-    options = [f"{d} ({label} -- {desc})" for d, label, desc in DIMENSION_OPTIONS]
-    print("  Higher dimensions = more semantic nuance, more storage per document.")
-    print("  Most users should pick 3072 unless storage cost is a concern.\n")
+    print("  Your embedding model supports up to 3072 dimensions, but pgvector's")
+    print("  HNSW index is limited to 2000. Higher dimensions will be available")
+    print("  when we add Weaviate support (coming in the Managed edition).\n")
     print("  !! Changing dimensions after ingesting documents requires")
     print("     re-embedding your entire corpus.\n")
+    print("  For now:")
+    options = [f"{d} ({label})" for d, label, _desc in DIMENSION_OPTIONS]
     idx = prompt_choice(options, default=1)
     dim = DIMENSION_OPTIONS[idx][0]
     success(f"Dimensions: {dim}")
@@ -1257,9 +1262,8 @@ def deploy_railway(env_path, env_vars):
     # --- Phase 3: Building container (watch deployment status) ---
     phase_start = time.time()
     print("    Building container...", end="", flush=True)
-    build_seen = False
-    deploy_seen = False
-    last_status = None
+    building_open = True   # "Building container..." is on screen without newline
+    deploying_open = False # "Deploying..." is on screen without newline
     deployment_ok = False
     for _ in range(40):  # 40 x 15s = 10 minutes max for the build+deploy cycle
         result = railway_gql(
@@ -1274,12 +1278,14 @@ def deploy_railway(env_path, env_vars):
             status = (result["data"]["deployments"]["edges"][0]["node"].get("status") or "unknown").upper()
 
         if status == "SUCCESS":
-            if not build_seen:
+            if building_open:
+                # Jumped straight from BUILDING to SUCCESS without seeing DEPLOYING.
                 print(f" OK  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
-                build_seen = True
-            if not deploy_seen:
-                print("    Deploying...                         OK")
-                deploy_seen = True
+                building_open = False
+                print("    Deploying... OK")
+            elif deploying_open:
+                print(f" OK  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
+                deploying_open = False
             deployment_ok = True
             break
 
@@ -1288,28 +1294,27 @@ def deploy_railway(env_path, env_vars):
             print("    Check the Railway dashboard for error logs.")
             return url, False
 
-        if status == "DEPLOYING" and not build_seen:
+        if status == "DEPLOYING" and building_open:
             print(f" OK  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
+            building_open = False
             print("    Deploying...", end="", flush=True)
-            build_seen = True
+            deploying_open = True
             phase_start = time.time()
 
-        last_status = status
         time.sleep(15)
 
     if not deployment_ok:
-        if not build_seen:
-            print(f" timeout after {fmt_elapsed(time.time() - phase_start)}")
-        else:
-            print(f" timeout after {fmt_elapsed(time.time() - phase_start)}")
+        print(f" timeout after {fmt_elapsed(time.time() - phase_start)}")
         print("    Deployment did not finish within 10 minutes.")
         return url, False
 
     # --- Health check ---
     phase_start = time.time()
-    print("    Health check passed...", end="", flush=True)
     health_ok = False
-    for _ in range(12):  # 12 x 10s = 2 minutes
+    interval = 15
+    iterations = 8  # 8 x 15s = 2 minutes
+    print("    Health check... (elapsed: 0s)", end="", flush=True)
+    for _ in range(iterations):
         try:
             req = urllib.request.Request(
                 f"{url}/api/health",
@@ -1322,12 +1327,16 @@ def deploy_railway(env_path, env_vars):
                     break
         except Exception:
             pass
-        time.sleep(10)
+        time.sleep(interval)
+        elapsed = fmt_elapsed(time.time() - phase_start)
+        # \r overwrites the previous line. Trailing spaces clear leftover chars.
+        print(f"\r    Health check... (elapsed: {elapsed})            ", end="", flush=True)
 
     if health_ok:
-        print(" OK")
+        print(f"\r    Health check... OK                                    ")
     else:
-        print(f" not yet  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
+        elapsed = fmt_elapsed(time.time() - phase_start)
+        print(f"\r    Health check... not yet  (elapsed: {elapsed})          ")
 
     return url, health_ok
 
@@ -1448,7 +1457,7 @@ Examples:
     parser.add_argument(
         "--dimensions",
         type=int,
-        choices=[768, 1536, 3072],
+        choices=[768, 1536],
         help="Embedding dimensions",
     )
     parser.add_argument(

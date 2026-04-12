@@ -593,7 +593,12 @@ concepts:
       workloads, bge-large-en-v1.5 (1024 dim) is a strong starting point;
       for multilingual corpora, bge-m3 (1024 dim). Text-embedding-3-small
       from OpenAI (~$0.02/M) is the default because it's cheap and good
-      enough for most use cases. **Fully local is possible:** with Ollama
+      enough for most use cases. **Dimension cap:** pgvector's HNSW index
+      supports a maximum of 2000 dimensions, so Ariadne Core (pgvector
+      edition) caps embeddings at 1536. Models that produce more (e.g.
+      gemini-embedding-2-preview at 3072) still work, but the output is
+      truncated to 1536. The Managed edition will use Weaviate and lift
+      the cap to the model's native dimension. **Fully local is possible:** with Ollama
       for embeddings and a local vision model, the entire pipeline runs
       with zero external API calls — extraction is already pure Python.
     see_also: [the_extraction_pipeline, per_doc_pipeline_cost, model_class_routing, vision_and_image_handling]
