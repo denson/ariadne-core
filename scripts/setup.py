@@ -686,35 +686,90 @@ ARIADNE_API_KEY={ariadne_key}
 # Step 5: Deploy to Railway via GraphQL API
 # ─────────────────────────────────────────────────────────────────
 
+def _open_browser(url):
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
 def get_railway_token():
-    """Walk the user through creating a Railway API token. Returns the token
-    (verified) or None on cancel. Tokens live in memory only — never written
-    to .env or any other file.
+    """Walk the user through connecting to Railway in three stages:
+
+    Stage 1 — do you have an account? (existing / new / deploy elsewhere)
+    Stage 2 — new users: warn, open signup, wait for account creation
+    Stage 3 — everyone: warn, open token page, paste + validate
+
+    Returns the verified token, or None if the user opted to deploy elsewhere.
+    The token lives in memory only — never written to disk.
     """
     step_header(2, "Connect to Railway")
 
-    print("  To deploy, we need a Railway API token (one-time setup).")
+    print("  To deploy your server, we need to connect to Railway")
+    print("  (a cloud hosting platform).")
     print()
-    print("  The token lets this script:")
+    print("  Do you have a Railway account?\n")
+    options = [
+        "Yes, I have an account",
+        "No, I need to create one",
+        "I want to deploy somewhere else",
+    ]
+    choice = prompt_choice(options, default=1)
+
+    if choice == 2:
+        return None
+
+    # --- Stage 2a: new user signup ---
+    if choice == 1:
+        print()
+        print("  We'll open Railway's signup page in your browser.")
+        print("  You'll get $20 free credit to try it out.")
+        print("  (We earn a small referral commission if you continue past the trial.)")
+        print()
+        print("  !! IMPORTANT: After you create your account, come back to THIS window.")
+        print()
+        print('  Look for "PowerShell" or "Terminal" in your taskbar at the bottom')
+        print("  of your screen to get back here.")
+        print()
+        input("  Press Enter to open the signup page...")
+        _open_browser("https://railway.com?referralCode=RxMpbX")
+        print()
+        input("  Press Enter when you have a Railway account...")
+
+    # --- Stage 3: token explanation + creation (existing + new users) ---
+    print()
+    print("  Now we need a Railway API token. This is a one-time setup step.")
+    print()
+    print("  What the token allows this script to do:")
     print("    - Create a project in your Railway workspace")
     print("    - Deploy services and a database")
     print("    - Set environment variables and generate a public URL")
     print()
-    print("  The token stays in memory for this run only — it is never written")
-    print("  to disk. You can revoke it from the Railway dashboard any time.")
+    print("  What the token does NOT allow:")
+    print("    - Access your billing or payment information")
+    print("    - Modify other projects you have on Railway")
+    print("    - Do anything after this script finishes")
     print()
-    print("  If you're new to Railway, sign up through this link for $20 free credit:")
-    print("    https://railway.com?referralCode=RxMpbX")
-    print("  (We earn a small referral commission if you continue past the trial.)")
+    print("  Safety:")
+    print("    - The token stays in memory only -- never written to disk")
+    print("    - You can revoke it anytime at railway.com/account/tokens")
+    print("    - We recommend deleting it after setup is complete")
     print()
-    print("  Opening the token creation page in your browser...")
+    print("  We're about to open the Railway token page in your browser.")
+    print()
+    print("  Here's what to do over there:")
+    print('    1. Click "Create Token"')
+    print('    2. Name it "ariadne-setup"')
+    print("    3. Copy the token")
+    print("    4. Come back to THIS window and paste it")
+    print()
+    print('  Look for "PowerShell" or "Terminal" in your taskbar to get back here.')
+    print()
+    input("  Press Enter to open the token page...")
     token_url = "https://railway.com/account/tokens"
-    try:
-        webbrowser.open(token_url)
-    except Exception:
-        pass
-    print(f"  If it didn't open, go to: {token_url}")
-    print('  Click "Create Token", name it "ariadne-setup", and copy the token.')
+    _open_browser(token_url)
+    print()
+    print(f"  If the page didn't open, go to: {token_url}")
     print()
 
     while True:
@@ -741,18 +796,11 @@ def deploy_railway(env_path, env_vars):
         (url, health_ok) tuple. url is None if the user opted out or deploy failed.
         health_ok is True only if the final /api/health check returned healthy.
     """
-    # --- Choose deployment target ---
-    print("\n  We recommend Railway for hosting (simple, ~$5/mo).\n")
-    options = [
-        "Deploy to Railway (recommended)",
-        "I'll deploy somewhere else -- just give me the .env",
-    ]
-    choice = prompt_choice(options, default=1)
-    if choice == 1:
-        return None, False
-
-    # --- Step 2: Connect to Railway (get token) ---
+    # --- Step 2: Connect to Railway (get token; user may opt out) ---
     token = get_railway_token()
+    if token is None:
+        # User chose "deploy somewhere else"
+        return None, False
 
     # --- Step 3: Deploy ---
     step_header(3, "Deploy")
