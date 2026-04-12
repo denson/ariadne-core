@@ -755,6 +755,32 @@ def deploy_railway(env_path, env_vars):
         serialized_config = raw_config  # already parsed (some GraphQL clients do this)
     success("Template fetched")
 
+    # --- Pick a Railway workspace ---
+    print("\n  Fetching your Railway workspaces...")
+    ws_result = railway_gql(
+        token,
+        "{ me { workspaces { id name } } }",
+    )
+    workspaces = []
+    if ws_result and (ws_result.get("data") or {}).get("me"):
+        for ws in ws_result["data"]["me"].get("workspaces") or []:
+            if ws.get("id"):
+                workspaces.append((ws["id"], ws.get("name") or ws["id"]))
+
+    if len(workspaces) == 0:
+        print("  No workspaces found on this account.")
+        print("  Create one in the Railway dashboard and try again.")
+        return None, None
+    elif len(workspaces) == 1:
+        team_id, team_name = workspaces[0]
+        success(f"Using workspace: {team_name}")
+    else:
+        print("\n  Multiple workspaces found. Pick one:\n")
+        display = [name for _, name in workspaces]
+        idx = prompt_choice(display, default=1)
+        team_id, team_name = workspaces[idx]
+        success(f"Using workspace: {team_name}")
+
     # --- Inject environment variables into serializedConfig ---
     # The template's serializedConfig has a 'services' dict. Find the main
     # service (not pgvector) and override its variable defaultValues.
@@ -786,13 +812,19 @@ def deploy_railway(env_path, env_vars):
             "input": {
                 "templateId": template_id,
                 "serializedConfig": json.dumps(serialized_config),
+                "teamId": team_id,
             }
         },
     )
-    if not result or not result.get("data", {}).get("templateDeployV2"):
-        errors = (result or {}).get("errors", [])
-        msg = errors[0].get("message", "unknown error") if errors else "deploy failed"
-        print(f"  Deploy failed: {msg}")
+    if not result or not (result.get("data") or {}).get("templateDeployV2"):
+        errors = (result or {}).get("errors", []) or []
+        if errors:
+            msg = errors[0].get("message", "unknown error")
+            print(f"  Deploy failed: {msg}")
+            for err in errors[1:]:
+                print(f"    - {err.get('message', 'unknown')}")
+        else:
+            print("  Deploy failed: no data returned from Railway")
         return None, None
 
     deploy_result = result["data"]["templateDeployV2"]
@@ -987,19 +1019,56 @@ def deploy_railway(env_path, env_vars):
 def show_connection(url, ariadne_key):
     step_header(6, 6, "Connect Claude Code")
 
-    print("  Your ARIADNE_API_KEY was auto-generated. It's in your .env file:")
-    print(f"    ARIADNE_API_KEY = {mask_key(ariadne_key)}\n")
+    config_path = Path.home() / ".claude.json"
 
-    print("  Run this command in Claude Code or a terminal:\n")
-    print(f"  claude mcp add ariadne-core \\")
-    print(f"    {url}/mcp \\")
-    print(f"    --transport http --scope user \\")
-    print(f'    --header "X-API-Key:{ariadne_key}"')
-    print()
-    print(f"  Your ARIADNE_API_KEY: {ariadne_key}")
-    print("  (also saved in .env and set on Railway)")
-    print()
-    print("  Then restart Claude Code.\n")
+    # Read existing config (or start empty)
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            print(f"  Could not parse {config_path}: {e}")
+            print("  Fix the file manually, then re-run this script.")
+            return
+    else:
+        config = {}
+
+    mcp_servers = config.setdefault("mcpServers", {})
+
+    # Offer to preserve existing entry
+    if "ariadne-core" in mcp_servers:
+        print("  MCP server \"ariadne-core\" already configured in Claude Code.\n")
+        options = [
+            "Update with new URL and key",
+            "Keep existing configuration",
+        ]
+        choice = prompt_choice(options, default=1)
+        if choice == 1:
+            print("  Keeping existing configuration.")
+            print("  Restart Claude Code if you haven't already.\n")
+            return
+
+    mcp_servers["ariadne-core"] = {
+        "type": "http",
+        "url": f"{url}/mcp",
+        "headers": {
+            "X-API-Key": ariadne_key,
+        },
+    }
+
+    # One-time backup of the original config before our first modification
+    backup_path = config_path.with_suffix(".json.bak")
+    if config_path.exists() and not backup_path.exists():
+        shutil.copy(config_path, backup_path)
+
+    # Atomic write: write to temp, then rename into place
+    tmp_path = config_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    tmp_path.replace(config_path)
+
+    success(f"MCP server configured in {config_path}")
+    print(f"  URL:     {url}/mcp")
+    print(f"  API key: {mask_key(ariadne_key)} (stored in .env and ~/.claude.json)")
+    print("  Restart Claude Code to connect.\n")
 
 
 def show_connection_template(ariadne_key):
