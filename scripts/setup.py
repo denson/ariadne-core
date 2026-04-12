@@ -129,7 +129,20 @@ def final_banner(health_ok, url):
     that clearly instead of claiming 'Setup complete!'.
     """
     if health_ok:
-        banner("Setup complete!")
+        print()
+        print("=" * 60)
+        print("  Setup complete!")
+        print("=" * 60)
+        print()
+        print("  What to do now:")
+        print("    1. Restart Claude Code (close and reopen)")
+        print('    2. Type: "what is ariadne core" to start the walkthrough')
+        print("       -- or --")
+        print('       Type: "search my documents for..." to start using it')
+        print()
+        if url:
+            print(f"  Your server: {url}")
+            print()
         return
     print()
     print("=" * 60)
@@ -1259,13 +1272,22 @@ def deploy_railway(env_path, env_vars):
         if not url.startswith("https://"):
             url = f"https://{url}"
 
-    # --- Phase 3: Building container (watch deployment status) ---
+    # --- Phase 3: Building container / Deploying (watch deployment status) ---
+    # Labels include an estimate so the user knows what "normal" looks like.
+    # A \r-based ticker updates elapsed time on every poll so the line never
+    # looks frozen. Trailing spaces on overwrites clear leftover chars from
+    # longer prior strings.
+    build_label = "Building container (usually 1-3 min)..."
+    deploy_label = "Deploying (usually 15-30s)..."
+    pad = " " * 20  # clears any leftover chars when overwriting
+
     phase_start = time.time()
-    print("    Building container...", end="", flush=True)
-    building_open = True   # "Building container..." is on screen without newline
-    deploying_open = False # "Deploying..." is on screen without newline
+    current = "building"  # "building" or "deploying"
+    print(f"    {build_label} (elapsed: 0s)", end="", flush=True)
+
     deployment_ok = False
     for _ in range(40):  # 40 x 15s = 10 minutes max for the build+deploy cycle
+        time.sleep(15)
         result = railway_gql(
             token,
             """query($input: DeploymentListInput!) {
@@ -1277,43 +1299,49 @@ def deploy_railway(env_path, env_vars):
         if result and ((result.get("data") or {}).get("deployments") or {}).get("edges"):
             status = (result["data"]["deployments"]["edges"][0]["node"].get("status") or "unknown").upper()
 
+        elapsed = fmt_elapsed(time.time() - phase_start)
+
         if status == "SUCCESS":
-            if building_open:
+            if current == "building":
                 # Jumped straight from BUILDING to SUCCESS without seeing DEPLOYING.
-                print(f" OK  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
-                building_open = False
-                print("    Deploying... OK")
-            elif deploying_open:
-                print(f" OK  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
-                deploying_open = False
+                print(f"\r    {build_label} OK  ({elapsed}){pad}")
+                print(f"    {deploy_label} OK")
+            else:
+                print(f"\r    {deploy_label} OK  ({elapsed}){pad}")
             deployment_ok = True
             break
 
         if status in ("FAILED", "CRASHED"):
-            print(f" {status.lower()}")
+            label = build_label if current == "building" else deploy_label
+            print(f"\r    {label} {status.lower()}  ({elapsed}){pad}")
             print("    Check the Railway dashboard for error logs.")
             return url, False
 
-        if status == "DEPLOYING" and building_open:
-            print(f" OK  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
-            building_open = False
-            print("    Deploying...", end="", flush=True)
-            deploying_open = True
+        if status == "DEPLOYING" and current == "building":
+            print(f"\r    {build_label} OK  ({elapsed}){pad}")
+            current = "deploying"
             phase_start = time.time()
+            print(f"    {deploy_label} (elapsed: 0s)", end="", flush=True)
+            continue
 
-        time.sleep(15)
+        # Still in the same phase -- tick the elapsed-time line.
+        label = build_label if current == "building" else deploy_label
+        print(f"\r    {label} (elapsed: {elapsed}){pad}", end="", flush=True)
 
     if not deployment_ok:
-        print(f" timeout after {fmt_elapsed(time.time() - phase_start)}")
+        elapsed = fmt_elapsed(time.time() - phase_start)
+        label = build_label if current == "building" else deploy_label
+        print(f"\r    {label} timeout  ({elapsed}){pad}")
         print("    Deployment did not finish within 10 minutes.")
         return url, False
 
     # --- Health check ---
+    health_label = "Health check (usually 30-60s)..."
     phase_start = time.time()
     health_ok = False
     interval = 15
     iterations = 8  # 8 x 15s = 2 minutes
-    print("    Health check... (elapsed: 0s)", end="", flush=True)
+    print(f"    {health_label} (elapsed: 0s)", end="", flush=True)
     for _ in range(iterations):
         try:
             req = urllib.request.Request(
@@ -1329,14 +1357,13 @@ def deploy_railway(env_path, env_vars):
             pass
         time.sleep(interval)
         elapsed = fmt_elapsed(time.time() - phase_start)
-        # \r overwrites the previous line. Trailing spaces clear leftover chars.
-        print(f"\r    Health check... (elapsed: {elapsed})            ", end="", flush=True)
+        print(f"\r    {health_label} (elapsed: {elapsed}){pad}", end="", flush=True)
 
+    elapsed = fmt_elapsed(time.time() - phase_start)
     if health_ok:
-        print(f"\r    Health check... OK                                    ")
+        print(f"\r    {health_label} OK  ({elapsed}){pad}")
     else:
-        elapsed = fmt_elapsed(time.time() - phase_start)
-        print(f"\r    Health check... not yet  (elapsed: {elapsed})          ")
+        print(f"\r    {health_label} not yet  ({elapsed}){pad}")
 
     return url, health_ok
 
