@@ -1082,8 +1082,6 @@ def deploy_railway(env_path, env_vars):
     else:
         print(f" not yet  (elapsed: {fmt_elapsed(time.time() - phase_start)})")
 
-    print()
-    print(f"  OK Live at: {url}")
     return url, health_ok
 
 
@@ -1092,7 +1090,7 @@ def deploy_railway(env_path, env_vars):
 # ─────────────────────────────────────────────────────────────────
 
 def show_connection(url, ariadne_key):
-    step_header(4, "Done")
+    print("    Configuring Claude Code...          ", end="", flush=True)
 
     config_path = Path.home() / ".claude.json"
 
@@ -1101,16 +1099,20 @@ def show_connection(url, ariadne_key):
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
-            print(f"  Could not parse {config_path}: {e}")
-            print("  Fix the file manually, then re-run this script.")
+            print(" failed")
+            print(f"    Could not parse {config_path}: {e}")
+            print("    Fix the file manually, then re-run this script.")
             return
     else:
         config = {}
 
     mcp_servers = config.setdefault("mcpServers", {})
 
-    # Offer to preserve existing entry
+    # If an existing entry is there, ask whether to update (does not print " OK"
+    # above until we know which path we're taking).
     if "ariadne-core" in mcp_servers:
+        print(" existing entry found")
+        step_header(4, "Done")
         print("  MCP server \"ariadne-core\" already configured in Claude Code.\n")
         options = [
             "Update with new URL and key",
@@ -1121,6 +1123,12 @@ def show_connection(url, ariadne_key):
             print("  Keeping existing configuration.")
             print("  Restart Claude Code if you haven't already.\n")
             return
+    else:
+        # Fresh write path: finish the status line now.
+        print("OK")
+        print()
+        print(f"  OK Live at: {url}")
+        step_header(4, "Done")
 
     mcp_servers["ariadne-core"] = {
         "type": "http",
@@ -1133,17 +1141,24 @@ def show_connection(url, ariadne_key):
     # One-time backup of the original config before our first modification
     backup_path = config_path.with_suffix(".json.bak")
     if config_path.exists() and not backup_path.exists():
-        shutil.copy(config_path, backup_path)
+        try:
+            shutil.copy(config_path, backup_path)
+        except Exception as e:
+            print(f"  Warning: could not back up {config_path}: {e}")
 
     # Atomic write: write to temp, then rename into place
-    tmp_path = config_path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-    tmp_path.replace(config_path)
+    try:
+        tmp_path = config_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        tmp_path.replace(config_path)
+    except Exception as e:
+        print(f"  Warning: could not write {config_path}: {e}")
+        print("  Configure Claude Code manually with the URL and key above.")
+        return
 
-    success(f"MCP server configured in {config_path}")
-    print(f"  URL:     {url}/mcp")
-    print(f"  API key: {mask_key(ariadne_key)} (stored in .env and ~/.claude.json)")
-    print("  Restart Claude Code to connect.\n")
+    print(f"  OK Claude Code configured -- restart Claude Code to connect.")
+    print(f"     (MCP config written to {config_path})")
+    print()
 
 
 def show_connection_template():
@@ -1353,4 +1368,8 @@ Document extraction + vector search for AI agents
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n  Setup interrupted. Your .env is saved -- run again to continue.\n")
+        sys.exit(1)
