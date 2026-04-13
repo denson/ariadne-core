@@ -1420,7 +1420,7 @@ def show_connection(url, ariadne_key):
         config_path = Path.home() / ".claude.json"
         scope = "global"
     else:
-        config_path = Path.cwd() / ".claude.json"
+        config_path = Path.cwd() / ".mcp.json"
         scope = "project"
 
     print()
