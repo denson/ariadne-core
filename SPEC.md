@@ -79,10 +79,11 @@ claude mcp add ariadne-core https://your-deployment.up.railway.app/mcp \
 
 Since the server runs remotely, clients cannot pass local file paths. Documents must be provided as:
 
-- **HTTP/HTTPS URLs** — the server downloads them directly
-- **Upload endpoint** — `POST /api/upload` accepts file uploads and returns a server-side path for use with `convert_document`
+- **HTTP/HTTPS URLs** — the server downloads them directly via `convert_document`
+- **MCP upload** — `upload_and_convert` accepts base64-encoded file bytes, writes them to a server-side temp file, extracts, then deletes the temp file. This is the preferred path for MCP clients that have local files
+- **REST upload endpoint** — `POST /api/upload` accepts file uploads and returns a server-side path for use with `convert_document`. Used by non-MCP clients and for files that exceed the MCP upload size limit
 
-The MCP `convert_document` tool accepts URLs in the `uri` parameter. For local files, clients should upload them first via the REST API upload endpoint, then pass the returned path.
+The MCP `convert_document` tool accepts URLs and server-side paths in the `uri` parameter. For local files, MCP clients should call `upload_and_convert` directly; REST clients should upload first via `/api/upload` and then call `convert_document` with the returned path.
 
 The `ingest` tool (batch directory ingestion) only works with server-side paths. To batch-ingest local files, upload them first or make them available via URL.
 
@@ -141,7 +142,7 @@ Both API keys can use the same OpenAI key, or you can use different ones to trac
 
 ## MCP tools
 
-Six tools are available to any connected MCP client. All processing is synchronous — the tool returns the full result when it completes.
+Seven tools are available to any connected MCP client. All processing is synchronous — the tool returns the full result when it completes.
 
 ### `convert_document`
 
@@ -163,6 +164,28 @@ Returns JSON with: `document_id`, `source_file`, `title`, `markdown` (the full e
 **Chunking auto-selection:** If no `chunking_config` is provided, the strategy is chosen by file type: `.pptx` → `by_page`, `.csv`/`.xlsx` → `fixed_size`, `.txt` with no headings → `fixed_size` with high overlap, everything else → `by_title`.
 
 **Image handling:** If the file is an image format and no vision API key is configured, the tool returns a warning in the `warnings` array explaining that a vision API key is needed for image content extraction.
+
+### `upload_and_convert`
+
+Upload a local file as base64-encoded bytes and convert it to Markdown. Use this when the document is on the caller's local machine and is not reachable by URL. The file is written to a server-side temp directory, extracted, and the temp file is deleted after extraction — only the Markdown, chunks, and embeddings are retained.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `filename` | string | (required) | Original filename (e.g., `"report.pdf"`). Used for provenance and to pick the extraction engine by extension. Only the basename is kept; any directory components are stripped |
+| `content_base64` | string | (required) | File content, base64-encoded |
+| `store` | bool | `true` | Chunk, embed, and store in vector DB |
+| `collection` | string | `"default"` | Logical namespace for the document |
+| `tags` | list[str] | `[]` | Tags applied to the document |
+| `force` | bool | `false` | Re-process even if the document fingerprint already exists in this collection |
+| `chunking_config` | dict | `null` | Override chunking strategy (same keys as `convert_document`) |
+
+Returns the same JSON shape as `convert_document`. The document's `source_file` records the original filename.
+
+**Size limit:** Decoded content must not exceed **50 MB** (≈67 MB base64). Larger files must be sent via the REST `POST /api/upload` endpoint and then processed with `convert_document`. Exceeding the limit returns an error without attempting extraction.
+
+**Retention:** The uploaded file is deleted from the server after extraction completes (success or failure). If you need the original retained on the server, use the REST upload endpoint instead, which writes to a persistent uploads directory.
+
+**Provenance:** Interactions created by this tool record `action = "upload"` (instead of `"convert"`) so that queries against `document_interactions` can distinguish uploaded-then-deleted sources from URL/server-side conversions.
 
 ### `search`
 
@@ -544,11 +567,12 @@ The `action` field in `document_interactions` uses these canonical values:
 
 | Action | Source | Meaning |
 |--------|--------|---------|
-| `"convert"` | `convert_document` | Agent deliberately processed a single document |
+| `"convert"` | `convert_document` | Agent deliberately processed a single document via URL or server-side path |
+| `"upload"` | `upload_and_convert` | Agent uploaded a local file's bytes; the temp file was deleted after extraction |
 | `"ingest"` | `ingest` | Document was swept up in a batch directory ingestion |
 | `"search"` | `search` (in `search_log`) | Query recorded in the search log |
 
-The distinction between `"convert"` and `"ingest"` matters for provenance — knowing whether a document was specifically selected mid-conversation vs. picked up in a batch tells you something about intent.
+The distinction between `"convert"`, `"upload"`, and `"ingest"` matters for provenance — knowing whether a document was fetched from a URL, uploaded from the caller's machine, or swept up in a batch tells you something about intent and about whether the original source still exists on disk.
 
 ---
 
@@ -609,11 +633,12 @@ When the agent encounters a document (PDF, DOCX, PPTX, XLSX, or any supported fo
 
 ### How to handle local files
 
-Since Ariadne Core runs as a remote service, the agent cannot pass local file paths directly. When the user references a local file:
+Since Ariadne Core runs as a remote service, the agent cannot pass local file paths directly to `convert_document`. When the user references a local file:
 
-1. If the agent has access to the file (e.g., in Claude Code where the agent can read the filesystem), upload it via `POST /api/upload` first, then pass the returned server-side path to `convert_document`.
-2. If the file is available at a URL, pass the URL directly.
-3. If neither works, tell the user the file needs to be accessible via URL or uploaded to the server.
+1. If the file is available at a URL, pass the URL to `convert_document` directly.
+2. If the agent has access to the file bytes (e.g., Claude Code reading from disk) and the file is under 50 MB, call `upload_and_convert` with the filename and base64-encoded contents. This is the preferred MCP path — one call, no REST round-trip, and the temp file is cleaned up automatically after extraction.
+3. For files larger than 50 MB, or for non-MCP clients, upload via `POST /api/upload` first and then call `convert_document` with the returned server-side path.
+4. If none of the above apply, tell the user the file needs to be accessible via URL or small enough to upload through the MCP tool.
 
 ### How to choose a collection
 

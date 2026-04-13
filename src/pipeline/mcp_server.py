@@ -5,11 +5,16 @@ Import `app` for programmatic use.
 """
 
 import asyncio
+import base64
 import json
 import os
+import shutil
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
+
+UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 
 from mcp.server import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -55,8 +60,13 @@ searchable vector embeddings.
 
 AVAILABLE TOOLS:
 
-- convert_document — Extract a single document to Markdown. Chunks, embeds, and \
-stores it by default. Use for any individual file.
+- convert_document — Extract a single document to Markdown from a URL or server-side \
+path. Chunks, embeds, and stores it by default. Use when the document is reachable \
+by URL or already on the server.
+- upload_and_convert — Same as convert_document, but accepts file bytes directly \
+(base64-encoded). Use when the document only exists on the caller's local machine \
+and can't be reached by URL. The uploaded file is deleted from the server after \
+extraction — only the extracted Markdown, chunks, and embeddings are kept.
 - search — Semantic search over stored documents. Supports filters for collection, \
 source_file, file_type, tags, and document_id.
 - get_document — Retrieve the full Markdown content and chunks for a document by ID.
@@ -191,6 +201,111 @@ async def convert_document(
         chunking_config=chunking_config,
         action="convert",
     )
+    return json.dumps(response, indent=2)
+
+
+@app.tool()
+async def upload_and_convert(
+    filename: str,
+    content_base64: str,
+    store: bool = True,
+    collection: str = "default",
+    tags: list[str] = [],
+    force: bool = False,
+    agent_id: Optional[str] = None,
+    agent_type: Optional[str] = None,
+    model: Optional[str] = None,
+    initiated_by: Optional[str] = None,
+    agent_notes: Optional[str] = None,
+    agent_metadata: Optional[dict] = None,
+    chunking_config: Optional[dict] = None,
+) -> str:
+    """Upload a local file and convert it to clean Markdown.
+
+    Use this when the document is on the user's local machine and cannot be
+    reached by URL. The file content is sent base64-encoded. After extraction,
+    the uploaded file is deleted from the server — only the extracted
+    Markdown, chunks, and embeddings are kept.
+
+    For documents already reachable by URL, use convert_document instead.
+
+    Args:
+        filename: Original filename (e.g., "report.pdf"). Used for provenance
+            and to pick the extraction engine by extension. Only the basename
+            is kept — any directory components are stripped.
+        content_base64: File content, base64-encoded. Decoded size must not
+            exceed 50 MB; larger files should be sent via the REST
+            /api/upload endpoint.
+        store: If true, also chunk, embed, and store in vector DB.
+        collection: Collection name — use a project or topic name, not 'default'. See SPEC Metadata Conventions.
+        tags: Lowercase, hyphenated labels with namespace prefixes. See SPEC Metadata Conventions.
+        force: If true, re-process even if fingerprint matches existing document.
+        agent_id: Caller's identity.
+        agent_type: Client type: "claude-cowork", "claude-code", "ob1", "api", etc.
+        model: The LLM model the caller is running.
+        initiated_by: Human or system identity (e.g., "user:denson").
+        agent_notes: Why this document is being uploaded. See SPEC Metadata Conventions.
+        agent_metadata: Structured JSON. See SPEC Metadata Conventions.
+        chunking_config: Optional override for chunking parameters.
+
+    Returns:
+        JSON string with extracted Markdown content plus metadata. The
+        document's `source_file` records the original filename.
+    """
+    try:
+        content = base64.b64decode(content_base64, validate=True)
+    except Exception as e:
+        return json.dumps(
+            {"error": True, "message": f"Invalid base64 content: {e}"},
+            indent=2,
+        )
+
+    if len(content) > UPLOAD_MAX_BYTES:
+        size_mb = len(content) / (1024 * 1024)
+        limit_mb = UPLOAD_MAX_BYTES / (1024 * 1024)
+        return json.dumps(
+            {
+                "error": True,
+                "message": (
+                    f"File too large: {size_mb:.1f}MB exceeds the "
+                    f"{limit_mb:.0f}MB upload limit. Upload via the REST "
+                    "API /api/upload endpoint instead."
+                ),
+            },
+            indent=2,
+        )
+
+    safe_name = Path(filename).name
+    if not safe_name:
+        return json.dumps(
+            {"error": True, "message": "filename must not be empty"},
+            indent=2,
+        )
+
+    upload_root = os.environ.get("UPLOAD_DIR")
+    tmpdir = Path(tempfile.mkdtemp(prefix="ariadne_upload_", dir=upload_root))
+    tmp_path = tmpdir / safe_name
+    try:
+        tmp_path.write_bytes(content)
+        response = _process_single_document(
+            uri=str(tmp_path),
+            store=store,
+            collection=collection,
+            tags=tags,
+            force=force,
+            agent_id=agent_id,
+            agent_type=agent_type,
+            model=model,
+            initiated_by=initiated_by,
+            agent_notes=agent_notes,
+            agent_metadata=agent_metadata,
+            chunking_config=chunking_config,
+            action="upload",
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    response["source_file"] = safe_name
     return json.dumps(response, indent=2)
 
 

@@ -200,7 +200,9 @@ curl -X POST https://<URL>/api/search \
   -H "X-API-Key: <key>" \
   -d '{"query": "search terms", "top_k": 5}'
 
-# Upload a file
+# Upload a file (REST path — for non-MCP clients or files >50 MB).
+# MCP clients should use the `upload_and_convert` tool instead, which
+# sends the bytes in one call and cleans up the server-side temp file.
 curl -X POST https://<URL>/api/upload \
   -H "X-API-Key: <key>" \
   -F "file=@document.pdf"

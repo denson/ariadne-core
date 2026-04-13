@@ -75,11 +75,12 @@ All endpoints except `/api/health` require the `X-API-Key` header. The key match
 
 ---
 
-## The 6 MCP tools
+## The 7 MCP tools
 
 | Tool | What it does |
 |------|-------------|
-| `convert_document` | Convert a single document to Markdown. Chunks, embeds, and stores it by default. Handles dedup via content fingerprint. |
+| `convert_document` | Convert a single document to Markdown from a URL or server-side path. Chunks, embeds, and stores it by default. Handles dedup via content fingerprint. |
+| `upload_and_convert` | Same as `convert_document`, but accepts base64-encoded file bytes directly. Use for local files the server can't reach by URL (under 50 MB). The upload is deleted after extraction. |
 | `search` | Semantic search over stored document chunks. Filters by collection, source file, file type, tags, and document ID. |
 | `get_document` | Retrieve the full Markdown content, chunks, and interaction history for a document by ID. |
 | `list_documents` | Browse stored documents by collection or file type. Returns metadata for pagination. |
@@ -92,9 +93,10 @@ All tools accept caller metadata for provenance tracking — see the next sectio
 
 ### Document input
 
-The server runs remotely, so local file paths won't work. Provide documents as:
+The server runs remotely, so local file paths won't work with `convert_document`. Provide documents as:
 - **HTTP/HTTPS URLs** — passed directly to `convert_document` via the `uri` parameter
-- **Upload first** — `POST /api/upload` accepts a file and returns a server-side path, which you then pass to `convert_document`
+- **MCP upload** — `upload_and_convert` accepts base64-encoded file bytes (under 50 MB decoded). Preferred for local files when you're connected over MCP — one call, and the server deletes the upload after extraction
+- **REST upload** — `POST /api/upload` accepts a file and returns a server-side path, which you then pass to `convert_document`. Use this for files over the MCP limit or from non-MCP clients
 
 For batch ingestion, `ingest` operates on server-side directories only.
 
