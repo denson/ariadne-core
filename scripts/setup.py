@@ -1419,9 +1419,44 @@ def show_connection(url, ariadne_key):
     if scope_choice == 0:
         config_path = Path.home() / ".claude.json"
         scope = "global"
+        project_dir = None
     else:
-        config_path = Path.cwd() / ".mcp.json"
         scope = "project"
+        print()
+        print("  Which project directory should this MCP connection be available in?")
+        print("  (This is where you'll run Claude Code to work with your documents)")
+        print()
+        print("  Press Enter for the current directory:")
+        print(f"    {Path.cwd()}")
+        print()
+        print("  Or type a different path:")
+        while True:
+            raw = input("  Path: ").strip()
+            if not raw:
+                project_dir = Path.cwd()
+                break
+            candidate = Path(raw).expanduser()
+            if candidate.is_dir():
+                project_dir = candidate
+                break
+            print()
+            print(f'  "{candidate}" does not exist.')
+            create_opts = [
+                "Create it",
+                "Enter a different path",
+            ]
+            create_choice = prompt_choice(create_opts, default=1)
+            if create_choice == 0:
+                try:
+                    candidate.mkdir(parents=True, exist_ok=True)
+                    project_dir = candidate
+                    break
+                except Exception as e:
+                    print(f"  Could not create {candidate}: {e}")
+                    print()
+                    continue
+            print()
+        config_path = project_dir / ".mcp.json"
 
     print()
     print(f"    Configuring Claude Code...          ", end="", flush=True)
@@ -1487,7 +1522,7 @@ def show_connection(url, ariadne_key):
     if scope == "project":
         print(f'  OK Claude Code configured for THIS project.')
         print(f'     Connection "{entry_name}" will only appear when working in:')
-        print(f"       {Path.cwd()}")
+        print(f"       {project_dir}")
     else:
         print(f"  OK Claude Code configured globally.")
         print(f'     Connection "{entry_name}" will appear in all Claude Code sessions.')
