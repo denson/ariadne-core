@@ -93,12 +93,14 @@ All tools accept caller metadata for provenance tracking — see the next sectio
 
 ### Document input
 
-The server runs remotely, so local file paths won't work with `convert_document`. Provide documents as:
-- **HTTP/HTTPS URLs** — passed directly to `convert_document` via the `uri` parameter
-- **MCP upload** — `upload_and_convert` accepts base64-encoded file bytes (under 50 MB decoded). Preferred for local files when you're connected over MCP — one call, and the server deletes the upload after extraction
-- **REST upload** — `POST /api/upload` accepts a file and returns a server-side path, which you then pass to `convert_document`. Use this for files over the MCP limit or from non-MCP clients
+The server runs remotely. Provide documents as:
+- **HTTP/HTTPS URLs** — pass directly to `convert_document`
+- **Local files** — upload first via `POST /api/upload` (multipart form data with `X-API-Key` header), then pass the returned server-side `path` to `convert_document`
+- **Tiny local files (<100 KB)** — use `upload_and_convert` with base64-encoded content
 
-For batch ingestion, `ingest` operates on server-side directories only.
+For batch ingestion of a local directory, use the helper script pattern documented in the project skills, or call `ingest` with a server-side directory path after uploading files.
+
+Do NOT use `upload_and_convert` for files larger than ~100 KB — the base64 encoding consumes LLM context tokens proportional to the encoded size. A 6 MB PDF becomes ~8 MB of base64 and burns ~1.5–2 M tokens of tool-call payload. Use the REST endpoint instead.
 
 ---
 

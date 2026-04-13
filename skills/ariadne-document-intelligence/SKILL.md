@@ -86,17 +86,38 @@ use `convert_document` rather than trying to read it directly. There are three r
 The only exception: very small plain text files (under ~10 pages) that you can handle
 directly in context without extraction.
 
-## How to handle local files
+## Ingesting local files
 
-Ariadne Core runs as a remote service, so you cannot pass local file paths directly.
-When the user references a local file:
+Ariadne Core runs as a remote service, so you cannot pass local file paths
+directly to `convert_document`. There are three ingestion paths — pick by
+where the file lives and how big it is:
 
-1. **If the file is at a URL** — pass the URL directly to `convert_document`.
-2. **If you have file access** (e.g., in Claude Code) — upload it via
-   `POST /api/upload` first, then pass the returned server-side path to
-   `convert_document`.
-3. **If neither works** — tell the user the file needs to be accessible via URL or
-   uploaded to the server.
+1. **HTTP/HTTPS URL** → call `convert_document` directly with the URL in
+   the `uri` parameter. The server fetches the bytes itself. No upload step.
+
+2. **Local file** → upload via REST (`POST /api/upload`, multipart form
+   data, `X-API-Key` header), read the `path` field from the response, then
+   call `convert_document` with that server-side path as `uri`. This is
+   the canonical path for any non-trivial local file: the bytes move over
+   HTTP once and never pass through the LLM's context.
+
+3. **Tiny local file (<100 KB)** → `upload_and_convert` via MCP with
+   base64-encoded content. This is a convenience for small files where
+   the round trip isn't worth it.
+
+**Warning — do NOT pass large files as base64 through MCP tools.** A 6 MB
+PDF becomes ~8 MB of base64, which consumes roughly 1.5–2 M tokens of LLM
+context just to emit the tool call. Use the REST upload endpoint instead.
+The 100 KB rule of thumb exists because of LLM context cost, not server
+capacity — the server itself will happily accept up to 50 MB via
+`upload_and_convert`, but you'll burn your context budget getting there.
+
+For batch ingestion of local directories, use a small upload helper
+script that reads `.mcp.json`, POSTs each file to `/api/upload`, and then
+calls `convert_document` with the returned path. The project-level skill
+for your corpus (e.g., `ariadne-cannabis`) is a good place to keep a
+ready-to-use version of this script — see that skill for a template that
+handles single files, directories, and `--recursive` mode.
 
 ## When to use `ingest` vs `convert_document`
 
