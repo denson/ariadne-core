@@ -1373,9 +1373,34 @@ def deploy_railway(env_path, env_vars):
 # ─────────────────────────────────────────────────────────────────
 
 def show_connection(url, ariadne_key):
-    print("    Configuring Claude Code...          ", end="", flush=True)
+    # --- Ask for connection name ---
+    print()
+    print(f"  OK Live at: {url}")
+    print()
+    print("  Name for this MCP connection:")
+    print('  (e.g. "ariadne-ree", "ariadne-cannabis", "ariadne-shared")')
+    print('  Press Enter for "ariadne-core":')
+    print()
+    entry_name = input("  Name: ").strip() or "ariadne-core"
+    print()
 
-    config_path = Path.home() / ".claude.json"
+    # --- Ask for scope ---
+    print("  Where should this connection be available?\n")
+    scope_options = [
+        "All Claude Code sessions (global)",
+        "This project only",
+    ]
+    scope_choice = prompt_choice(scope_options, default=1)
+
+    if scope_choice == 0:
+        config_path = Path.home() / ".claude.json"
+        scope = "global"
+    else:
+        config_path = Path.cwd() / ".claude.json"
+        scope = "project"
+
+    print()
+    print(f"    Configuring Claude Code...          ", end="", flush=True)
 
     # Read existing config (or start empty)
     if config_path.exists():
@@ -1391,12 +1416,11 @@ def show_connection(url, ariadne_key):
 
     mcp_servers = config.setdefault("mcpServers", {})
 
-    # If an existing entry is there, ask whether to update (does not print " OK"
-    # above until we know which path we're taking).
-    if "ariadne-core" in mcp_servers:
+    # If an existing entry by the same name is there, ask whether to update.
+    if entry_name in mcp_servers:
         print(" existing entry found")
         step_header(4, "Done")
-        print("  MCP server \"ariadne-core\" already configured in Claude Code.\n")
+        print(f'  MCP server "{entry_name}" already configured in Claude Code.\n')
         options = [
             "Update with new URL and key",
             "Keep existing configuration",
@@ -1407,13 +1431,10 @@ def show_connection(url, ariadne_key):
             print("  Restart Claude Code if you haven't already.\n")
             return
     else:
-        # Fresh write path: finish the status line now.
         print("OK")
-        print()
-        print(f"  OK Live at: {url}")
         step_header(4, "Done")
 
-    mcp_servers["ariadne-core"] = {
+    mcp_servers[entry_name] = {
         "type": "http",
         "url": f"{url}/mcp",
         "headers": {
@@ -1439,7 +1460,13 @@ def show_connection(url, ariadne_key):
         print("  Configure Claude Code manually with the URL and key above.")
         return
 
-    print(f"  OK Claude Code configured -- restart Claude Code to connect.")
+    if scope == "project":
+        print(f'  OK Claude Code configured for THIS project.')
+        print(f'     Connection "{entry_name}" will only appear when working in:')
+        print(f"       {Path.cwd()}")
+    else:
+        print(f"  OK Claude Code configured globally.")
+        print(f'     Connection "{entry_name}" will appear in all Claude Code sessions.')
     print(f"     (MCP config written to {config_path})")
     print()
 
