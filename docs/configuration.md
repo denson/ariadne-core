@@ -20,9 +20,11 @@ Required variables:
 
 | Variable | What it is | Where to get it |
 |----------|-----------|-----------------|
-| `EMBEDDING_API_KEY` | API key for the embedding model | Any OpenAI-compatible provider (OpenAI, Gemini, Groq, DeepSeek, Together AI, etc.) |
-| `VISION_API_KEY` | API key for the vision model (image descriptions) | Same provider key works, or use a different provider |
+| `ARIADNE_EMBEDDING_API_KEY` | API key for the embedding model | Any OpenAI-compatible provider (OpenAI, Gemini, Groq, DeepSeek, Together AI, etc.) |
+| `ARIADNE_IMAGE_ENRICHMENT_API_KEY` | API key for the vision model (image descriptions) | Same provider key works, or use a different provider |
 | `ARIADNE_API_KEY` | API key for client authentication | Pick any strong secret |
+
+For backward compatibility, unprefixed names (`EMBEDDING_API_KEY`, `VISION_API_KEY`, ...) also work.
 
 Optional overrides:
 
@@ -31,12 +33,12 @@ Optional overrides:
 | `DATABASE_URL` | (from Postgres plugin) | Postgres connection string |
 | `PORT` | `8000` | HTTP port (Railway sets this) |
 | `MCP_PORT` | (from config) | MCP port. Set equal to `PORT` for single-port mode on Railway |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
-| `EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | Embedding API endpoint |
-| `VISION_MODEL` | `gpt-4o-mini` | Vision model name |
-| `VISION_BASE_URL` | `https://api.openai.com/v1` | Vision API endpoint |
+| `ARIADNE_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
+| `ARIADNE_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | Embedding API endpoint |
+| `ARIADNE_IMAGE_ENRICHMENT_MODEL` | `gpt-4o-mini` | Vision model name |
+| `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` | `https://api.openai.com/v1` | Vision API endpoint |
 
-`EMBEDDING_API_KEY` and `VISION_API_KEY` can use the same key if you use the same provider for both. They work with any OpenAI-compatible provider — see [Compatible providers](../README.md#compatible-providers).
+`ARIADNE_EMBEDDING_API_KEY` and `ARIADNE_IMAGE_ENRICHMENT_API_KEY` can use the same key if you use the same provider for both. They work with any OpenAI-compatible provider — see [Compatible providers](../README.md#compatible-providers).
 
 ## Config file reference
 

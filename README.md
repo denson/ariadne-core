@@ -8,7 +8,7 @@ Ariadne Core works with any agentic system — Claude Code, Open Brain, OpenClaw
 
 Ariadne Core is distributed as a **plugin** — a packaged bundle of skills, metadata, and (optionally) an MCP server. A plugin is just an advanced form of a skill: where a standalone skill is a single `SKILL.md` that teaches an agent how to do one thing, a plugin bundles multiple skills together with a manifest so they can be discovered, installed, and updated as a unit.
 
-This plugin includes seven skills — a router, onboarding, install, deploy, build, and document intelligence.
+This plugin includes seven skills — a router, onboarding, install, deploy, build, document intelligence, and ConceptViz prompt generation.
 
 ### Claude Code (recommended)
 
@@ -166,14 +166,14 @@ railway up
 In the Railway dashboard or via CLI:
 
 ```bash
-railway variables set EMBEDDING_API_KEY=your-provider-api-key
-railway variables set VISION_API_KEY=your-provider-api-key
-railway variables set EMBEDDING_MODEL=text-embedding-3-small
-railway variables set VISION_MODEL=gpt-4o-mini
+railway variables set ARIADNE_EMBEDDING_API_KEY=your-provider-api-key
+railway variables set ARIADNE_IMAGE_ENRICHMENT_API_KEY=your-provider-api-key
+railway variables set ARIADNE_EMBEDDING_MODEL=text-embedding-3-small
+railway variables set ARIADNE_IMAGE_ENRICHMENT_MODEL=gpt-4o-mini
 railway variables set ARIADNE_API_KEY=your-secret-api-key
 ```
 
-`EMBEDDING_API_KEY` and `VISION_API_KEY` work with any OpenAI-compatible provider — they don't have to be OpenAI. Both can use the same key if you use the same provider for both. If you use a non-OpenAI provider, also set `EMBEDDING_BASE_URL` and/or `VISION_BASE_URL` to match (see [Compatible providers](#compatible-providers)).
+`ARIADNE_EMBEDDING_API_KEY` and `ARIADNE_IMAGE_ENRICHMENT_API_KEY` work with any OpenAI-compatible provider — they don't have to be OpenAI. Both can use the same key if you use the same provider for both. If you use a non-OpenAI provider, also set `ARIADNE_EMBEDDING_BASE_URL` and/or `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` to match (see [Compatible providers](#compatible-providers)). For backward compatibility, unprefixed names (`EMBEDDING_API_KEY`, `VISION_API_KEY`, ...) also work.
 
 `ARIADNE_API_KEY` is the key clients use to authenticate — pick any strong secret.
 
@@ -203,7 +203,7 @@ claude mcp add ariadne-core https://your-url.up.railway.app/mcp \
   --header "X-API-Key:your-api-key"
 ```
 
-Restart Claude Code. The six Ariadne Core tools should appear. Verify with `claude mcp list`.
+Restart Claude Code. The seven Ariadne Core tools should appear. Verify with `claude mcp list`.
 
 ### Step 6: Connect other clients
 
@@ -229,11 +229,12 @@ All options use the same `Dockerfile` and environment variables. See [deploy ski
 
 ## MCP tools
 
-Six tools are available to any connected MCP client. See [SPEC.md](SPEC.md) for full parameter details.
+Seven tools are available to any connected MCP client. See [SPEC.md](SPEC.md) for full parameter details.
 
 | Tool | What it does |
 |------|-------------|
 | `convert_document` | Convert a document to Markdown. Chunks, embeds, and stores automatically. Handles dedup. |
+| `upload_and_convert` | Same as `convert_document` but accepts base64-encoded bytes directly. Small files only (<~100 KB) — base64 in MCP calls consumes LLM context tokens. For larger files, use REST `POST /api/upload` + `convert_document`. |
 | `search` | Semantic search over your document store. Filters by collection, source file, file type, or tags. Returns ranked chunks with provenance. |
 | `get_document` | Retrieve the full Markdown content, chunks, and interaction history for a document by ID. |
 | `list_documents` | Browse documents by collection or file type. Returns metadata for pagination. |
@@ -385,9 +386,9 @@ Anthropic uses a proprietary API format, not OpenAI-compatible. If you want to u
 To use a non-default provider, set the base URL and model alongside the API key:
 
 ```bash
-railway variables set EMBEDDING_BASE_URL=https://api.together.xyz/v1
-railway variables set EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
-railway variables set EMBEDDING_API_KEY=your-together-key
+railway variables set ARIADNE_EMBEDDING_BASE_URL=https://api.together.xyz/v1
+railway variables set ARIADNE_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+railway variables set ARIADNE_EMBEDDING_API_KEY=your-together-key
 ```
 
 Google Gemini and OpenAI models work particularly well for this task. We plan to deploy custom open models in the future.

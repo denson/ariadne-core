@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ariadne-core": {
+      "type": "http",
+      "url": "https://YOUR-DEPLOYMENT.up.railway.app/mcp",
+      "headers": {
+        "X-API-Key": "YOUR-ARIADNE-API-KEY"
+      }
+    }
+  }
+}

@@ -67,15 +67,15 @@ The deployment exposes two endpoints from one process:
 
 5. **Set environment variables:**
    ```bash
-   railway variables set EMBEDDING_API_KEY=your-provider-api-key
-   railway variables set VISION_API_KEY=your-provider-api-key
-   railway variables set EMBEDDING_MODEL=text-embedding-3-small
-   railway variables set VISION_MODEL=gpt-4o-mini
+   railway variables set ARIADNE_EMBEDDING_API_KEY=your-provider-api-key
+   railway variables set ARIADNE_IMAGE_ENRICHMENT_API_KEY=your-provider-api-key
+   railway variables set ARIADNE_EMBEDDING_MODEL=text-embedding-3-small
+   railway variables set ARIADNE_IMAGE_ENRICHMENT_MODEL=gpt-4o-mini
    ```
 
    `DB_PASSWORD` is not needed — Railway provides `DATABASE_URL` directly.
 
-   Both API keys work with any OpenAI-compatible provider — not just OpenAI. They can use the same key if you use the same provider. If using a non-OpenAI provider, also set `EMBEDDING_BASE_URL` and `VISION_BASE_URL`. Use different keys if you want separate usage tracking or different providers for each.
+   Both API keys work with any OpenAI-compatible provider — not just OpenAI. They can use the same key if you use the same provider. If using a non-OpenAI provider, also set `ARIADNE_EMBEDDING_BASE_URL` and `ARIADNE_IMAGE_ENRICHMENT_BASE_URL`. Use different keys if you want separate usage tracking or different providers for each. For backward compatibility, unprefixed names (`EMBEDDING_API_KEY`, `VISION_API_KEY`, ...) also work.
 
 6. **Deploy:**
    ```bash
@@ -117,13 +117,15 @@ railway logs --tail 50  # last 50 lines
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | Auto | Set by Railway's Postgres plugin |
-| `EMBEDDING_API_KEY` | Yes | API key for chunk embeddings (any OpenAI-compatible provider) |
-| `VISION_API_KEY` | Yes | API key for image descriptions (any OpenAI-compatible provider) |
-| `EMBEDDING_MODEL` | No | Default: `text-embedding-3-small` |
-| `EMBEDDING_BASE_URL` | No | Default: `https://api.openai.com/v1` |
-| `VISION_MODEL` | No | Default: `gpt-4o-mini` |
-| `VISION_BASE_URL` | No | Default: `https://api.openai.com/v1` |
+| `ARIADNE_EMBEDDING_API_KEY` | Yes | API key for chunk embeddings (any OpenAI-compatible provider) |
+| `ARIADNE_IMAGE_ENRICHMENT_API_KEY` | Yes | API key for image descriptions (any OpenAI-compatible provider) |
+| `ARIADNE_EMBEDDING_MODEL` | No | Default: `text-embedding-3-small` |
+| `ARIADNE_EMBEDDING_BASE_URL` | No | Default: `https://api.openai.com/v1` |
+| `ARIADNE_IMAGE_ENRICHMENT_MODEL` | No | Default: `gpt-4o-mini` |
+| `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` | No | Default: `https://api.openai.com/v1` |
 | `PORT` | Auto | Set by Railway, used by the server to bind |
+
+Unprefixed names (`EMBEDDING_API_KEY`, `VISION_API_KEY`, ...) also work for backward compatibility.
 
 ## Adapting to other platforms
 
@@ -201,5 +203,5 @@ See the **ariadne-core-install** skill for detailed client connection instructio
 - Verify the URL ends in `/mcp` for MCP clients
 - Verify the deployment is actually running: `curl https://your-url/api/health`
 **Embedding/vision errors**
-- Check that `EMBEDDING_API_KEY` and `VISION_API_KEY` are set: `railway variables`
+- Check that `ARIADNE_EMBEDDING_API_KEY` and `ARIADNE_IMAGE_ENRICHMENT_API_KEY` are set: `railway variables`
 - Verify the key works with a direct API call to your provider

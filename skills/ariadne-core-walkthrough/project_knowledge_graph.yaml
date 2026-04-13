@@ -503,14 +503,15 @@ concepts:
 
   - id: connect_claude_code
     name: "Connect Claude Code to Ariadne Core"
-    one_line: "One `claude mcp add` command and you have six tools: convert_document, search, get_document, list_documents, list_collections, ingest."
+    one_line: "One `claude mcp add` command and you have seven tools: convert_document, upload_and_convert, search, get_document, list_documents, list_collections, ingest."
     body: |
       Connecting Claude Code (or any MCP client) to a running Ariadne Core
       deployment is one command: `claude mcp add ariadne-core
       https://your-deployment.up.railway.app/mcp --transport http --scope
-      user --header "X-API-Key:your-api-key"`. Restart Claude Code and six
+      user --header "X-API-Key:your-api-key"`. Restart Claude Code and seven
       tools become available: `convert_document` (extract any file to
-      Markdown), `search` (semantic search across stored docs), `get_document`
+      Markdown), `upload_and_convert` (base64 upload + convert — small files
+      only), `search` (semantic search across stored docs), `get_document`
       (retrieve by ID), `list_documents`, `list_collections`, and `ingest`
       (batch-process a directory). The REST API is also available for scripts
       that don't speak MCP.
@@ -645,12 +646,16 @@ concepts:
     images: [roadmap_dedup_coordination]
 
   - id: mcp_tools_overview
-    name: "The six MCP tools"
-    one_line: "convert_document, search, get_document, list_documents, list_collections, ingest — all accept caller metadata for provenance. REST API mirrors MCP."
+    name: "The seven MCP tools"
+    one_line: "convert_document, upload_and_convert, search, get_document, list_documents, list_collections, ingest — all accept caller metadata for provenance. REST API mirrors MCP."
     body: |
-      Six tools are available via MCP and mirrored on the REST API.
+      Seven tools are available via MCP and mirrored on the REST API.
       **convert_document** extracts any file to Markdown, optionally chunks,
-      embeds, and stores it. **search** does semantic search across stored
+      embeds, and stores it. **upload_and_convert** accepts base64-encoded
+      bytes directly — use only for files under ~100 KB; larger files should
+      upload via REST `POST /api/upload` first because base64 in an MCP tool
+      call consumes LLM context tokens proportional to encoded size.
+      **search** does semantic search across stored
       chunks with filters (collection, file_type, source_file, tags,
       document_id). **get_document** retrieves full content and interaction
       history by ID. **list_documents** browses by collection or file type.

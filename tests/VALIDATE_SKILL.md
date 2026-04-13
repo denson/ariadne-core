@@ -25,7 +25,7 @@ Report discrepancies in all three directions.
 
 1. **You are a tester, not a fixer.** Your job is to document what works and what doesn't. Do NOT fix code, modify Docker configs, copy files into containers, create workarounds, or change anything to make a test pass. If a test fails, record the failure with the exact error and move to the next test.
 
-2. **Do not work around problems.** If the MCP server doesn't expose all 6 tools — that's a finding, not something to route around via REST API. If a file path doesn't resolve inside Docker — that's a finding. Record it and move on.
+2. **Do not work around problems.** If the MCP server doesn't expose all 7 tools — that's a finding, not something to route around via REST API. If a file path doesn't resolve inside Docker — that's a finding. Record it and move on.
 
 3. **Use MCP tools only.** The SKILL.md teaches agents to use MCP tools. Test what agents would actually experience. Do not fall back to REST API or curl. If an MCP tool is missing, that's a FAIL for every test that depends on it.
 

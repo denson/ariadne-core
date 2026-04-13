@@ -274,7 +274,7 @@ of playing cards.
 
 **Use for:** CLI tools, showing what capabilities a single command unlocks.
 
-**Example:** img_06 (connect Claude Code — one command, six tools).
+**Example:** img_06 (connect Claude Code — one command, seven tools).
 
 **Key details:** each card a different pastel shade, bold tool name with one-line
 description.

@@ -44,7 +44,7 @@ PROVIDERS = {
         "models_endpoint": "https://api.openai.com/v1/models",
         "docs_url": "https://developers.openai.com/api/docs/models",
         "default_embedding": "text-embedding-3-small",
-        "default_vision": "gpt-5.4-nano",
+        "default_vision": "gpt-4o-mini",
     },
     "together": {
         "name": "Together AI",
@@ -79,7 +79,7 @@ Provider defaults:
 
   OpenAI:
     Embedding: text-embedding-3-small
-    Vision:    gpt-5.4-nano
+    Vision:    gpt-4o-mini
     Docs:      https://developers.openai.com/api/docs/models
 
   Together AI:

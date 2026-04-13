@@ -27,6 +27,7 @@ images:
 
   - id: video_thumbnail
     file: assets/images/video_thumbnail.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/video_thumbnail.png
     audience: [general, business, engineering]
     topics: [nate-jones, hook, opening-beat, 10x-sessions]
     mechanism: both
@@ -42,6 +43,7 @@ images:
 
   - id: onboarding_token_waste
     file: assets/images/img_01.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_01.png
     audience: [general]
     topics: [token-waste, mechanism-1, value-prop, before-after]
     mechanism: 1
@@ -56,6 +58,7 @@ images:
 
   - id: onboarding_pipeline
     file: assets/images/img_02.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_02.png
     audience: [general, engineering]
     topics: [pipeline, extraction, architecture, free-steps, conveyor]
     mechanism: 2
@@ -79,6 +82,7 @@ images:
 
   - id: onboarding_many_clients
     file: assets/images/img_03.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_03.png
     audience: [general, engineering]
     topics: [deployment, mcp, auth, api-key, oauth, clients]
     mechanism: none
@@ -98,6 +102,7 @@ images:
 
   - id: onboarding_hosting
     file: assets/images/img_04.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_04.png
     audience: [general, engineering]
     topics: [deployment, hosting, railway, fly, docker, getting-started]
     mechanism: none
@@ -117,6 +122,7 @@ images:
 
   - id: onboarding_agent_heavy_lifting
     file: assets/images/img_05.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_05.png
     audience: [general]
     topics: [getting-started, agent-autonomy, railway, setup, two-minutes]
     mechanism: none
@@ -140,6 +146,7 @@ images:
 
   - id: onboarding_connect_claude_code
     file: assets/images/img_06.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_06.png
     audience: [general, engineering]
     topics: [getting-started, mcp, claude-code, tools, six-tools]
     mechanism: none
@@ -151,18 +158,20 @@ images:
     short_description: "Terminal showing claude mcp add command, plus a fan of 6 pastel cards (the tool names)."
     prompt: |
       Top half: terminal window showing "claude mcp add ariadne-core https://your-url/mcp --transport http --scope user --header X-API-Key:your-key". A "restart Claude Code" arrow below.
-      Bottom half: six cards arranged in a fan, each a different pastel shade, each showing a tool name and one-line description:
+      Bottom half: seven cards arranged in a fan, each a different pastel shade, each showing a tool name and one-line description:
       - "convert_document — Extract any document to Markdown"
+      - "upload_and_convert — Base64 upload + convert (small files)"
       - "search — Find relevant chunks by meaning"
       - "get_document — Get full content by ID"
       - "list_documents — Browse your document store"
       - "list_collections — See how documents are organized"
       - "ingest — Batch-process a directory"
-      Caption: "One command. Six tools. Ready to use."
+      Caption: "One command. Seven tools. Ready to use."
       Style: flat design editorial illustration, colorblind-friendly.
 
   - id: onboarding_format_mosaic
     file: assets/images/img_07.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_07.png
     audience: [general]
     topics: [format-coverage, markitdown, extraction, 20-formats]
     mechanism: 1
@@ -182,6 +191,7 @@ images:
 
   - id: onboarding_search_dont_send
     file: assets/images/img_08.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_08.png
     audience: [general]
     topics: [search, retrieval, value-prop, mechanism-1, before-after]
     mechanism: 1
@@ -201,6 +211,7 @@ images:
 
   - id: onboarding_architecture
     file: assets/images/architecture.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/architecture.png
     audience: [engineering]
     topics: [architecture, internals, mcp, fastapi, postgres, pgvector]
     mechanism: none
@@ -221,6 +232,7 @@ images:
 
   - id: onboarding_env_vars
     file: assets/images/env_vars.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/env_vars.png
     audience: [engineering]
     topics: [deployment, config, environment, reference]
     mechanism: none
@@ -241,6 +253,7 @@ images:
 
   - id: roadmap_five_tiers
     file: assets/images/tiers.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/tiers.png
     audience: [business, engineering]
     topics: [editions, tiers, personal, managed, team, enterprise, pricing]
     mechanism: none
@@ -262,6 +275,7 @@ images:
 
   - id: roadmap_data_vs_mcp
     file: assets/images/mcp_server.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/mcp_server.png
     audience: [engineering]
     topics: [architecture, mcp, data-layer, tier-boundary, skills-layer]
     mechanism: none
@@ -285,6 +299,7 @@ images:
 
   - id: roadmap_dedup_coordination
     file: assets/images/team_agent.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/team_agent.png
     audience: [business, engineering]
     topics: [team, dedup, coordination, shared-knowledge, team-agent]
     mechanism: none
@@ -302,6 +317,7 @@ images:
 
   - id: roadmap_diy_vs_managed_cost
     file: assets/images/cost_point.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/cost_point.png
     audience: [engineering, business]
     topics: [cost-breakdown, diy-vs-managed, pipeline-cost, per-doc-cost, engineering-transparency]
     mechanism: both
@@ -351,6 +367,7 @@ images:
 
   - id: roadmap_enterprise_menu
     file: assets/images/enterprise_options.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/enterprise_options.png
     audience: [business, engineering]
     topics: [enterprise, custom-stack, snowflake, weaviate, on-prem, data-residency]
     mechanism: none
@@ -371,6 +388,7 @@ images:
 
   - id: roadmap_two_token_economies
     file: assets/images/two_token_economies.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/two_token_economies.png
     audience: [general, business, engineering]
     topics: [token-economics, value-prop, mechanism-1, pennies-vs-dollars, dramatic-scale]
     mechanism: 1
@@ -390,6 +408,7 @@ images:
 
   - id: roadmap_pay_vs_save
     file: assets/images/pay_vs_save.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/pay_vs_save.png
     audience: [business, engineering]
     topics: [savings, cost-comparison, bar-chart, mechanism-1, volume-based, two-audiences]
     mechanism: 1
@@ -423,6 +442,7 @@ images:
 
   - id: roadmap_bulk_storage
     file: assets/images/bulk_storage.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/bulk_storage.png
     audience: [engineering]
     topics: [storage, tiered-storage, active-vs-bulk, summaries, cost-management]
     mechanism: none
@@ -443,6 +463,7 @@ images:
 
   - id: infra_per_user_architecture
     file: assets/images/per_user_arch.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/per_user_arch.png
     audience: [engineering, business]
     topics: [managed, architecture, multi-tenant, railway, weaviate, per-user-db]
     mechanism: none
@@ -464,6 +485,7 @@ images:
 
   - id: infra_what_20_gets_you
     file: assets/images/diy_vs_plus.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/diy_vs_plus.png
     audience: [business]
     topics: [managed, value-prop, management-fee, operations, railway-at-cost]
     mechanism: none
@@ -484,6 +506,7 @@ images:
 
   - id: infra_storage_growth
     file: assets/images/storage_growth.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/storage_growth.png
     audience: [engineering, business]
     topics: [managed, storage, growth, cost-transparency, alerts]
     mechanism: none
@@ -503,6 +526,7 @@ images:
 
   - id: roadmap_plus_vs_pro_orphan
     file: assets/images/plus_vs_pro.png
+    url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/plus_vs_pro.png
     audience: [business]
     topics: [orphan, legacy, plus-vs-pro]
     mechanism: none

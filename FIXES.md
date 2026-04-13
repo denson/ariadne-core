@@ -186,7 +186,7 @@ Update the REST endpoint `GET /api/collections` (in `routes.py`) to also return 
 
 ## 8. MCP server instructions block update
 
-**Target state:** The `instructions` string in the `FastMCP()` constructor reflects all six tools and correct format count. It should mention `ingest` and `list_collections` and stop telling agents to use the REST API for batch operations.
+**Target state:** The `instructions` string in the `FastMCP()` constructor reflects all seven tools and correct format count. It should mention `ingest` and `list_collections` and stop telling agents to use the REST API for batch operations.
 
 **Current state:** The instructions block in `mcp_server.py` lines 29-73:
 - Says "25+ supported formats" (should be "over 20")
@@ -197,7 +197,7 @@ Update the REST endpoint `GET /api/collections` (in `routes.py`) to also return 
 
 Rewrite the `instructions` parameter of `FastMCP()` in `mcp_server.py`. The updated instructions should:
 - Say "over 20 supported formats"
-- Mention all six tools: `convert_document`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`
+- Mention all seven tools: `convert_document`, `upload_and_convert`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`
 - Tell agents to use `ingest` for batch/directory operations (not the REST API)
 - Tell agents to call `list_collections` before choosing a collection
 - Remove the line about suggesting the REST API for batch operations
@@ -205,7 +205,7 @@ Rewrite the `instructions` parameter of `FastMCP()` in `mcp_server.py`. The upda
 Similarly update the instructions block in `mcp_stdio_proxy.py` if it has one.
 
 **How to test:**
-- Start the MCP server. Connect a client. Verify the instructions block appears in the server capabilities and mentions all six tools.
+- Start the MCP server. Connect a client. Verify the instructions block appears in the server capabilities and mentions all seven tools.
 - Manually review the text for accuracy against SPEC.md.
 
 ---

@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
     dimensions = config.embedding.dimensions
 
     logger.info(
-        "Starting with embedding model=%s dimensions=%d endpoint=%s [v2-gemini-fix]",
+        "Starting with embedding model=%s dimensions=%d endpoint=%s",
         config.embedding.model,
         dimensions,
         config.embedding.base_url,

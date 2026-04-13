@@ -12,7 +12,7 @@ Run every test in the test plan below. For each failure, write a finding with th
 
 - SPEC.md (repo root) is the source of truth for expected behavior
 - SKILL.md (skills/ariadne-document-intelligence/SKILL.md) describes the expected agent experience
-- The MCP server is running in Docker. Six tools should be available: `convert_document`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`
+- The MCP server is running in Docker. Seven tools should be available: `convert_document`, `upload_and_convert`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`
 - Test fixtures are in `tests/fixtures/`. Inside the Docker container they are at `/data/fixtures/`
 
 ## CAPABILITIES

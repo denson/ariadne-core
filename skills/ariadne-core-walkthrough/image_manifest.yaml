@@ -158,14 +158,15 @@ images:
     short_description: "Terminal showing claude mcp add command, plus a fan of 6 pastel cards (the tool names)."
     prompt: |
       Top half: terminal window showing "claude mcp add ariadne-core https://your-url/mcp --transport http --scope user --header X-API-Key:your-key". A "restart Claude Code" arrow below.
-      Bottom half: six cards arranged in a fan, each a different pastel shade, each showing a tool name and one-line description:
+      Bottom half: seven cards arranged in a fan, each a different pastel shade, each showing a tool name and one-line description:
       - "convert_document — Extract any document to Markdown"
+      - "upload_and_convert — Base64 upload + convert (small files)"
       - "search — Find relevant chunks by meaning"
       - "get_document — Get full content by ID"
       - "list_documents — Browse your document store"
       - "list_collections — See how documents are organized"
       - "ingest — Batch-process a directory"
-      Caption: "One command. Six tools. Ready to use."
+      Caption: "One command. Seven tools. Ready to use."
       Style: flat design editorial illustration, colorblind-friendly.
 
   - id: onboarding_format_mosaic

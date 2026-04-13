@@ -36,3 +36,4 @@ walkthrough_html/two_token_economies.png
 # Secret files that should never be committed
 .env.backup*
 .claude.json
+.mcp.json

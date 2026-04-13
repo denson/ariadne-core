@@ -48,7 +48,7 @@ If unclear, ask: *"Are you setting this up yourself, or should I run the command
 
 A document extraction and retrieval pipeline. Converts documents (PDF, DOCX, PPTX,
 XLSX, HTML, 20+ formats) into clean Markdown and vector embeddings. Exposes them via
-MCP server and REST API. Six MCP tools for ingestion, search, and retrieval.
+MCP server and REST API. Seven MCP tools for ingestion, search, and retrieval.
 
 ### Architecture
 
@@ -168,6 +168,13 @@ See the **ariadne-core-deploy** skill for Fly.io and VPS instructions.
 
 The user already has a URL and API key. They just need to connect a client.
 
+### Quickest path — copy `.mcp.json.template`
+
+Copy `.mcp.json.template` to `.mcp.json` in the project directory, then fill in
+the deployment URL and API key. The setup script (`python scripts/setup.py`)
+does this automatically. This replaces the manual `claude mcp add` step below
+when a project-scoped `.mcp.json` is acceptable.
+
 ### AI path — connect Claude Code
 
 ```bash
@@ -179,7 +186,7 @@ claude mcp add ariadne-core https://<URL>/mcp \
 Restart Claude Code. Verify:
 ```bash
 claude mcp list
-# Expected: ariadne-core listed with 6 tools
+# Expected: ariadne-core listed with 7 tools
 ```
 
 **If tools don't appear:**
@@ -239,7 +246,7 @@ Tell them:
 - Try asking Claude Code: "List the Ariadne Core collections"
 
 If they want to see what the tools do, the **ariadne-core-walkthrough** skill has
-a visual tool card (img_06) showing all six tools.
+a visual tool card (img_06) showing all seven tools.
 
 ### Human path — connect Cursor
 

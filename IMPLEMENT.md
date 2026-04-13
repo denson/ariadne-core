@@ -345,7 +345,7 @@ ls skills/ariadne-core-integration/
 Rewrite the `instructions` string in the `FastMCP()` constructor in `mcp_server.py`. The new instructions should:
 
 1. Say "over 20 supported formats" (not "25+")
-2. List all six tools with brief descriptions:
+2. List all seven tools with brief descriptions:
    - `convert_document` — single file extraction + storage
    - `search` — semantic search with filters
    - `get_document` — full document by ID
@@ -361,7 +361,7 @@ If `mcp_stdio_proxy.py` has a similar instructions block, update it the same way
 
 **Validate:**
 
-Read the instructions block and verify it mentions all six tools and doesn't say "25+" or reference the REST API for batch operations.
+Read the instructions block and verify it mentions all seven tools and doesn't say "25+" or reference the REST API for batch operations.
 
 ```bash
 python -c "
@@ -440,7 +440,7 @@ grep -rn "25+" src/ --include="*.py"
 # Old skill directory deleted
 test -d skills/ariadne-core-integration && echo "FAIL: old skill dir still exists" || echo "PASS"
 
-# All six tools exist in MCP server
+# All seven tools exist in MCP server
 python -c "
 from pipeline.mcp_server import app
 tools = [t.name for t in app._tools.values()]
@@ -449,7 +449,7 @@ missing = expected - set(tools)
 if missing:
     print(f'FAIL: missing tools: {missing}')
 else:
-    print(f'PASS: all 6 tools registered: {sorted(expected)}')
+    print(f'PASS: all 7 tools registered: {sorted(expected)}')
 "
 ```
 
