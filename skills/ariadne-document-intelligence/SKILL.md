@@ -39,12 +39,18 @@ tool until you've confirmed the connection works.
 
 ## Tools available
 
-You have six MCP tools when Ariadne Core is connected:
+You have seven MCP tools when Ariadne Core is connected:
 
 - **`convert_document`** — Convert a single document to Markdown. Chunks, embeds, and
   stores it by default. Use for any individual file the user uploads or references.
   Accepts optional `chunking_config` to override the auto-selected chunking strategy.
   Accepts HTTP/HTTPS URLs or server-side paths from the upload endpoint.
+
+- **`upload_and_convert`** — Same as `convert_document`, but accepts base64-encoded
+  file bytes directly. Use for local files under ~100 KB where the base64 payload
+  cost is negligible. For larger files, upload via REST `POST /api/upload` first and
+  then pass the returned path to `convert_document` instead — base64 in an MCP tool
+  call consumes LLM context tokens proportional to the encoded size.
 
 - **`search`** — Semantic search over stored documents. Returns JSON with `query`,
   `results_count`, and `results` array. Each result includes `chunk_id`, `document_id`,
@@ -112,12 +118,137 @@ The 100 KB rule of thumb exists because of LLM context cost, not server
 capacity — the server itself will happily accept up to 50 MB via
 `upload_and_convert`, but you'll burn your context budget getting there.
 
-For batch ingestion of local directories, use a small upload helper
-script that reads `.mcp.json`, POSTs each file to `/api/upload`, and then
-calls `convert_document` with the returned path. The project-level skill
-for your corpus (e.g., `ariadne-cannabis`) is a good place to keep a
-ready-to-use version of this script — see that skill for a template that
-handles single files, directories, and `--recursive` mode.
+### Upload helper script
+
+For single files and especially for batch ingestion of local directories,
+use this helper script. It reads the server URL and API key from
+`.mcp.json` (or `~/.claude.json`), POSTs each file to `/api/upload`, then
+calls `convert_document` with the returned server-side path. It never
+prints the API key. Write it to a temp location when you need it, or
+save it to the project root for repeat use.
+
+```python
+#!/usr/bin/env python3
+"""Upload and ingest local files into Ariadne Core.
+
+Usage:
+  python ariadne_upload.py file.pdf                     # single file
+  python ariadne_upload.py /path/to/docs/               # all supported files
+  python ariadne_upload.py /path/to/docs/ --recursive   # recursive
+"""
+import json, sys, subprocess, urllib.request, urllib.error
+from pathlib import Path
+
+SUPPORTED = {".pdf",".docx",".pptx",".xlsx",".csv",".html",".txt",
+             ".md",".json",".xml",".rtf",".epub",".eml",".msg",
+             ".zip",".ipynb",".wav",".mp3"}
+
+def load_config():
+    """Read server URL and API key from .mcp.json. NEVER display these."""
+    for p in [Path(".mcp.json"), Path.home() / ".claude.json"]:
+        if p.exists():
+            config = json.loads(p.read_text())
+            for name, srv in config.get("mcpServers", {}).items():
+                if "ariadne" in name.lower():
+                    url = srv["url"].replace("/mcp", "")
+                    key = srv["headers"]["X-API-Key"]
+                    return url, key
+    print("No Ariadne MCP config found in .mcp.json or ~/.claude.json")
+    sys.exit(1)
+
+def upload(url, key, filepath):
+    """Upload a file via REST, return server-side path."""
+    result = subprocess.run(
+        ["curl", "-s", "-X", "POST", f"{url}/api/upload",
+         "-H", f"X-API-Key:{key}",
+         "-F", f"file=@{filepath}"],
+        capture_output=True, text=True
+    )
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print(f"  Upload error: {result.stdout[:200]}")
+        return None
+    if "path" in data:
+        return data["path"]
+    print(f"  Upload failed: {data.get('message', 'unknown error')}")
+    return None
+
+def convert(url, key, server_path, collection, tags=None):
+    """Call convert_document via REST to extract and store."""
+    payload = json.dumps({
+        "uri": server_path,
+        "store": True,
+        "collection": collection,
+        "tags": tags or [],
+        "agent_type": "script",
+        "initiated_by": "ariadne_upload.py",
+        "agent_notes": "Uploaded via helper script."
+    }).encode()
+    req = urllib.request.Request(
+        f"{url}/api/documents",
+        data=payload,
+        headers={"X-API-Key": key, "Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        print(f"  Convert failed: {e}")
+        return None
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    url, key = load_config()
+    collection = input("Collection name [default]: ").strip() or "default"
+    recursive = "--recursive" in sys.argv
+
+    files = []
+    for arg in sys.argv[1:]:
+        if arg.startswith("--"):
+            continue
+        p = Path(arg)
+        if p.is_file() and p.suffix.lower() in SUPPORTED:
+            files.append(p)
+        elif p.is_dir():
+            pattern = "**/*" if recursive else "*"
+            files.extend(f for f in p.glob(pattern)
+                        if f.is_file() and f.suffix.lower() in SUPPORTED)
+
+    if not files:
+        print("No supported files found.")
+        sys.exit(1)
+
+    print(f"Found {len(files)} supported files.")
+    ok = 0
+    for i, f in enumerate(files, 1):
+        print(f"  [{i}/{len(files)}] {f.name}...", end="", flush=True)
+        path = upload(url, key, str(f))
+        if path:
+            result = convert(url, key, path, collection)
+            if result and not result.get("error"):
+                skip = " (dedup)" if result.get("was_dedup_skip") else ""
+                print(f" OK{skip}")
+                ok += 1
+            else:
+                print(" FAILED")
+        else:
+            print(" UPLOAD FAILED")
+
+    print(f"\nDone. {ok}/{len(files)} files ingested into '{collection}'.")
+
+if __name__ == "__main__":
+    main()
+```
+
+**Credential handling:** never display the API key from `.mcp.json` in
+terminal output, chat, or logs. Never include it in curl commands shown
+to the user. Always use this helper script (or equivalent programmatic
+approach) for file ingestion so credentials are read without being
+echoed.
 
 ## When to use `ingest` vs `convert_document`
 
