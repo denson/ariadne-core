@@ -966,8 +966,25 @@ def _process_single_document(
             "processing_chain": processing_chain,
         },
         "warnings": warnings,
-        "markdown": markdown,
     }
+
+    # When the document is being stored, the full markdown is already
+    # persisted and retrievable via get_document / search — returning it
+    # inline blows up the LLM context window (a 110-chunk PDF is ~160K
+    # chars). Send a short preview instead. When store=false, the caller
+    # has nowhere else to get the content, so we return the full text.
+    if store:
+        if len(markdown) > 500:
+            response["markdown"] = (
+                markdown[:500]
+                + "... [truncated, use get_document for full content]"
+            )
+            response["markdown_truncated"] = True
+        else:
+            response["markdown"] = markdown
+            response["markdown_truncated"] = False
+    else:
+        response["markdown"] = markdown
 
     if store:
         chunk_cfg = None
