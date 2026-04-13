@@ -1072,12 +1072,12 @@ def deploy_railway(env_path, env_vars):
     if ws_result and (ws_result.get("data") or {}).get("me"):
         for ws in ws_result["data"]["me"].get("workspaces") or []:
             if ws.get("id"):
-                project_names = []
+                project_records = []  # list of {"id": ..., "name": ...}
                 for edge in ((ws.get("projects") or {}).get("edges") or []):
                     node = edge.get("node") or {}
-                    if node.get("name"):
-                        project_names.append(node["name"])
-                workspaces.append((ws["id"], ws.get("name") or ws["id"], project_names))
+                    if node.get("name") and node.get("id"):
+                        project_records.append({"id": node["id"], "name": node["name"]})
+                workspaces.append((ws["id"], ws.get("name") or ws["id"], project_records))
 
     if len(workspaces) == 0:
         print("  No Railway workspaces found on this account.")
@@ -1094,86 +1094,104 @@ def deploy_railway(env_path, env_vars):
     print(f"  Workspace: {team_name}\n")
 
     # --- Project name (optional), with collision check ---
-    existing_lower = {n.lower() for n in existing_projects}
+    # Build a lowercase-name -> project-id map so we can offer to update an
+    # existing project in place instead of creating a duplicate.
+    existing_by_name = {p["name"].lower(): p["id"] for p in existing_projects}
+    update_existing_id = None  # set if the user chooses "Update existing"
     print('  What would you like to name this project? (e.g. "my-ariadne", "ree-research")')
     print("  Press Enter for Railway's default:")
     while True:
         project_name = input("\n  Name: ").strip()
         if not project_name:
             break
-        if project_name.lower() not in existing_lower:
+        if project_name.lower() not in existing_by_name:
             break
         print()
         print(f'  A project named "{project_name}" already exists in this workspace.\n')
         options = [
+            "Update the existing project (reuse it, re-upsert env vars, redeploy)",
             "Use a different name",
             "Deploy anyway (creates a second project with the same name)",
         ]
-        choice = prompt_choice(options, default=1)
-        if choice == 1:
+        choice = prompt_choice(options, default=0)
+        if choice == 0:
+            update_existing_id = existing_by_name[project_name.lower()]
             break
-        # choice == 0: loop and re-prompt for a name
+        if choice == 2:
+            break
+        # choice == 1: loop and re-prompt for a name
     print()
 
-    print("  Deploying Ariadne Core...")
+    if update_existing_id:
+        print(f'  Reusing existing project "{project_name}"...')
+    else:
+        print("  Deploying Ariadne Core...")
 
-    # --- Phase 1: Creating project and database ---
+    # --- Phase 1: Creating project and database (or reusing existing) ---
     phase_start = time.time()
-    print("    Creating project and database...", end="", flush=True)
-    # serializedConfig is a custom GraphQL scalar (SerializedTemplateConfig) —
-    # pass the parsed dict, not a json.dumps()'d string, or the project
-    # deploys empty with no services.
-    result = railway_gql(
-        token,
-        """mutation deploy($input: TemplateDeployV2Input!) {
-            templateDeployV2(input: $input) { projectId workflowId }
-        }""",
-        {
-            "input": {
-                "templateId": template_id,
-                "serializedConfig": serialized_config,
-                "workspaceId": team_id,
-            }
-        },
-    )
-    if not result or not (result.get("data") or {}).get("templateDeployV2"):
-        print(" failed")
-        errors = (result or {}).get("errors", []) or []
-        if errors:
-            msg = errors[0].get("message", "unknown error")
-            if "verif" in msg.lower() or "trial" in msg.lower() or "billing" in msg.lower():
-                print("\n  Railway requires account verification before deploying.")
-                print("  Go to https://railway.com/account to verify, then run this script again.")
-                print("  Your .env is saved -- you won't lose your configuration.")
-            else:
-                print(f"\n  Railway error: {msg}")
-                for err in errors[1:]:
-                    print(f"    - {err.get('message', 'unknown')}")
-        else:
-            print("\n  Deploy failed: no data returned from Railway")
-        return None, False
-
-    project_id = result["data"]["templateDeployV2"]["projectId"]
-    workflow_id = result["data"]["templateDeployV2"].get("workflowId")
-    print(f" OK")
-
-    # --- Rename the project if the user gave it a name ---
-    # TemplateDeployV2Input doesn't accept a name, so rename after creation.
-    if project_name:
-        rename_result = railway_gql(
+    if update_existing_id:
+        # Reusing an existing project — skip templateDeployV2 and rename.
+        # The services already exist; the env-var upsert below will trigger
+        # Railway to redeploy them.
+        project_id = update_existing_id
+        workflow_id = None
+        print("    Reusing existing project and services... OK")
+    else:
+        print("    Creating project and database...", end="", flush=True)
+        # serializedConfig is a custom GraphQL scalar (SerializedTemplateConfig) —
+        # pass the parsed dict, not a json.dumps()'d string, or the project
+        # deploys empty with no services.
+        result = railway_gql(
             token,
-            """mutation rename($id: String!, $input: ProjectUpdateInput!) {
-                projectUpdate(id: $id, input: $input) { id name }
+            """mutation deploy($input: TemplateDeployV2Input!) {
+                templateDeployV2(input: $input) { projectId workflowId }
             }""",
-            {"id": project_id, "input": {"name": project_name}},
+            {
+                "input": {
+                    "templateId": template_id,
+                    "serializedConfig": serialized_config,
+                    "workspaceId": team_id,
+                }
+            },
         )
-        renamed = (rename_result or {}).get("data", {}).get("projectUpdate") if rename_result else None
-        if renamed and renamed.get("name"):
-            print(f"    Project name: {renamed['name']}")
-        else:
-            errs = (rename_result or {}).get("errors") or []
-            msg = errs[0].get("message") if errs else "unknown"
-            print(f"    Could not set project name ({msg}) -- using Railway default")
+        if not result or not (result.get("data") or {}).get("templateDeployV2"):
+            print(" failed")
+            errors = (result or {}).get("errors", []) or []
+            if errors:
+                msg = errors[0].get("message", "unknown error")
+                if "verif" in msg.lower() or "trial" in msg.lower() or "billing" in msg.lower():
+                    print("\n  Railway requires account verification before deploying.")
+                    print("  Go to https://railway.com/account to verify, then run this script again.")
+                    print("  Your .env is saved -- you won't lose your configuration.")
+                else:
+                    print(f"\n  Railway error: {msg}")
+                    for err in errors[1:]:
+                        print(f"    - {err.get('message', 'unknown')}")
+            else:
+                print("\n  Deploy failed: no data returned from Railway")
+            return None, False
+
+        project_id = result["data"]["templateDeployV2"]["projectId"]
+        workflow_id = result["data"]["templateDeployV2"].get("workflowId")
+        print(f" OK")
+
+        # --- Rename the project if the user gave it a name ---
+        # TemplateDeployV2Input doesn't accept a name, so rename after creation.
+        if project_name:
+            rename_result = railway_gql(
+                token,
+                """mutation rename($id: String!, $input: ProjectUpdateInput!) {
+                    projectUpdate(id: $id, input: $input) { id name }
+                }""",
+                {"id": project_id, "input": {"name": project_name}},
+            )
+            renamed = (rename_result or {}).get("data", {}).get("projectUpdate") if rename_result else None
+            if renamed and renamed.get("name"):
+                print(f"    Project name: {renamed['name']}")
+            else:
+                errs = (rename_result or {}).get("errors") or []
+                msg = errs[0].get("message") if errs else "unknown"
+                print(f"    Could not set project name ({msg}) -- using Railway default")
 
     # --- Phase 2: Configuring services (poll workflowStatus) ---
     phase_start = time.time()
@@ -1345,10 +1363,12 @@ def deploy_railway(env_path, env_vars):
             print(f"\r    {build_label} OK  ({elapsed}){pad}")
             current = "deploying"
             phase_start = time.time()
-            print(f"    {deploy_label} (elapsed: 0s)", end="", flush=True)
-            continue
+            elapsed = fmt_elapsed(time.time() - phase_start)
+            # Fall through to the normal ticker below so we only emit one
+            # "Deploying..." line per iteration (previously printed twice:
+            # once with elapsed=0s here and again in the ticker).
 
-        # Still in the same phase -- tick the elapsed-time line.
+        # Still in the same phase (or just transitioned) -- tick the elapsed-time line.
         label = build_label if current == "building" else deploy_label
         print(f"\r    {label} (elapsed: {elapsed}){pad}", end="", flush=True)
 
@@ -1379,9 +1399,12 @@ def deploy_railway(env_path, env_vars):
                     break
         except Exception:
             pass
-        time.sleep(interval)
-        elapsed = fmt_elapsed(time.time() - phase_start)
-        print(f"\r    {health_label} (elapsed: {elapsed}){pad}", end="", flush=True)
+        # Sleep with a per-second ticker so the elapsed counter advances
+        # visibly instead of jumping by the full poll interval at once.
+        for _ in range(interval):
+            time.sleep(1)
+            elapsed = fmt_elapsed(time.time() - phase_start)
+            print(f"\r    {health_label} (elapsed: {elapsed}){pad}", end="", flush=True)
 
     elapsed = fmt_elapsed(time.time() - phase_start)
     if health_ok:
