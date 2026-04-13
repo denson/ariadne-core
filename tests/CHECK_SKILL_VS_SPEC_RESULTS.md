@@ -12,7 +12,7 @@
 
 ### 1. MCP tools — PASS
 
-Both documents list the same 7 tools: `convert_document`, `upload_and_convert`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`. Descriptions are consistent. The skill doesn't use parameter tables per tool (it covers parameters in the process sections instead), but all parameters are documented somewhere in the skill.
+Both documents list the same tools: `convert_document`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`. Descriptions are consistent. The skill doesn't use parameter tables per tool (it covers parameters in the process sections instead), but all parameters are documented somewhere in the skill.
 
 ### 2. convert_document response fields — PASS
 

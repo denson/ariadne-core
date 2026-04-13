@@ -8,7 +8,7 @@ Ariadne Core works with any agentic system — Claude Code, Open Brain, OpenClaw
 
 Ariadne Core is distributed as a **plugin** — a packaged bundle of skills, metadata, and (optionally) an MCP server. A plugin is just an advanced form of a skill: where a standalone skill is a single `SKILL.md` that teaches an agent how to do one thing, a plugin bundles multiple skills together with a manifest so they can be discovered, installed, and updated as a unit.
 
-This plugin includes seven skills — a router, onboarding, install, deploy, build, document intelligence, and ConceptViz prompt generation.
+This plugin includes a router, onboarding, install, deploy, build, document intelligence, and ConceptViz prompt generation skills.
 
 ### Claude Code (recommended)
 
@@ -203,7 +203,7 @@ claude mcp add ariadne-core https://your-url.up.railway.app/mcp \
   --header "X-API-Key:your-api-key"
 ```
 
-Restart Claude Code. The seven Ariadne Core tools should appear. Verify with `claude mcp list`.
+Restart Claude Code. The Ariadne Core tools should appear. Verify with `claude mcp list`.
 
 ### Step 6: Connect other clients
 
@@ -229,12 +229,11 @@ All options use the same `Dockerfile` and environment variables. See [deploy ski
 
 ## MCP tools
 
-Seven tools are available to any connected MCP client. See [SPEC.md](SPEC.md) for full parameter details.
+The following tools are available to any connected MCP client. See [SPEC.md](SPEC.md) for full parameter details.
 
 | Tool | What it does |
 |------|-------------|
-| `convert_document` | Convert a document to Markdown. Chunks, embeds, and stores automatically. Handles dedup. |
-| `upload_and_convert` | Same as `convert_document` but accepts base64-encoded bytes directly. Small files only (<~100 KB) — base64 in MCP calls consumes LLM context tokens. For larger files, use REST `POST /api/upload` + `convert_document`. |
+| `convert_document` | Convert a document to Markdown. Chunks, embeds, and stores automatically. Handles dedup. For local files, upload via REST `POST /api/upload` first and pass the returned server-side path. |
 | `search` | Semantic search over your document store. Filters by collection, source file, file type, or tags. Returns ranked chunks with provenance. |
 | `get_document` | Retrieve the full Markdown content, chunks, and interaction history for a document by ID. |
 | `list_documents` | Browse documents by collection or file type. Returns metadata for pagination. |

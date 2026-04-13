@@ -75,12 +75,11 @@ All endpoints except `/api/health` require the `X-API-Key` header. The key match
 
 ---
 
-## The 7 MCP tools
+## MCP tools
 
 | Tool | What it does |
 |------|-------------|
-| `convert_document` | Convert a single document to Markdown from a URL or server-side path. Chunks, embeds, and stores it by default. Handles dedup via content fingerprint. |
-| `upload_and_convert` | Same as `convert_document`, but accepts base64-encoded file bytes directly. Use for local files the server can't reach by URL (under 50 MB). The upload is deleted after extraction. |
+| `convert_document` | Convert a single document to Markdown from a URL or server-side path. Chunks, embeds, and stores it by default. Handles dedup via content fingerprint. For local files, upload via REST `POST /api/upload` first and pass the returned server-side path. |
 | `search` | Semantic search over stored document chunks. Filters by collection, source file, file type, tags, and document ID. |
 | `get_document` | Retrieve the full Markdown content, chunks, and interaction history for a document by ID. |
 | `list_documents` | Browse stored documents by collection or file type. Returns metadata for pagination. |
@@ -96,11 +95,10 @@ All tools accept caller metadata for provenance tracking — see the next sectio
 The server runs remotely. Provide documents as:
 - **HTTP/HTTPS URLs** — pass directly to `convert_document`
 - **Local files** — upload first via `POST /api/upload` (multipart form data with `X-API-Key` header), then pass the returned server-side `path` to `convert_document`
-- **Tiny local files (<100 KB)** — use `upload_and_convert` with base64-encoded content
 
 For batch ingestion of a local directory, use the helper script pattern documented in the project skills, or call `ingest` with a server-side directory path after uploading files.
 
-Do NOT use `upload_and_convert` for files larger than ~100 KB — the base64 encoding consumes LLM context tokens proportional to the encoded size. A 6 MB PDF becomes ~8 MB of base64 and burns ~1.5–2 M tokens of tool-call payload. Use the REST endpoint instead.
+Never base64-encode file content into an MCP tool argument. The bytes would pass through the LLM context, defeating the entire point of the pipeline. A 6 MB PDF becomes ~8 MB of base64 and burns ~1.5–2 M tokens of tool-call payload. Always use the REST upload endpoint for local files.
 
 ---
 
@@ -147,7 +145,7 @@ Every call to `convert_document`, `search`, and `ingest` should include caller m
 
 ## What you're missing without Claude Code
 
-Claude Code users get a plugin with seven skills that handle routing, onboarding, deployment, and document intelligence guidance automatically. Without the plugin, you lose:
+Claude Code users get a plugin with skills that handle routing, onboarding, deployment, and document intelligence guidance automatically. Without the plugin, you lose:
 
 - **Interactive walkthrough** — A visual presentation in Claude Code Desktop's preview panel that explains the token waste problem, how the pipeline fixes it, and how it applies to the user's setup. It runs through a sequence of HTML "beats" with images and branching paths based on user responses. The content covers the same material as this guide plus the framing doc, but in an interactive format.
 

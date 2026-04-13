@@ -14,7 +14,7 @@ Read BOTH files in full before starting.
 
 For each of these categories, verify the skill matches the spec:
 
-1. **MCP tools** — Are all 7 tools documented? Do parameters match (names, types, defaults, descriptions)?
+1. **MCP tools** — Are all tools documented? Do parameters match (names, types, defaults, descriptions)?
 2. **convert_document response fields** — Does the skill list all response fields from the spec?
 3. **search response fields** — Does the skill describe what search returns accurately?
 4. **search filters** — Does the filter table match?

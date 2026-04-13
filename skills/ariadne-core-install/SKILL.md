@@ -48,7 +48,7 @@ If unclear, ask: *"Are you setting this up yourself, or should I run the command
 
 A document extraction and retrieval pipeline. Converts documents (PDF, DOCX, PPTX,
 XLSX, HTML, 20+ formats) into clean Markdown and vector embeddings. Exposes them via
-MCP server and REST API. Seven MCP tools for ingestion, search, and retrieval.
+MCP server and REST API with tools for ingestion, search, and retrieval.
 
 ### Architecture
 
@@ -186,7 +186,7 @@ claude mcp add ariadne-core https://<URL>/mcp \
 Restart Claude Code. Verify:
 ```bash
 claude mcp list
-# Expected: ariadne-core listed with 7 tools
+# Expected: ariadne-core listed with its tools
 ```
 
 **If tools don't appear:**
@@ -207,9 +207,9 @@ curl -X POST https://<URL>/api/search \
   -H "X-API-Key: <key>" \
   -d '{"query": "search terms", "top_k": 5}'
 
-# Upload a file (REST path — for non-MCP clients or files >50 MB).
-# MCP clients should use the `upload_and_convert` tool instead, which
-# sends the bytes in one call and cleans up the server-side temp file.
+# Upload a file (canonical path for any local file). The response includes
+# a server-side path; pass it to convert_document via MCP or REST. Never
+# base64-encode file content into an MCP tool call.
 curl -X POST https://<URL>/api/upload \
   -H "X-API-Key: <key>" \
   -F "file=@document.pdf"
@@ -246,7 +246,7 @@ Tell them:
 - Try asking Claude Code: "List the Ariadne Core collections"
 
 If they want to see what the tools do, the **ariadne-core-walkthrough** skill has
-a visual tool card (img_06) showing all seven tools.
+a visual tool card (img_06) showing the available tools.
 
 ### Human path — connect Cursor
 

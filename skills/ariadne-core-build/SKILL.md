@@ -198,12 +198,11 @@ and configuration.
 
 ## MCP tools
 
-Seven tools defined in SPEC.md: `convert_document`, `upload_and_convert`,
-`search`, `get_document`, `list_documents`, `list_collections`, `ingest`. All
-accept caller metadata. `convert_document` and `ingest` accept a `force` flag
-to override dedup. `upload_and_convert` accepts base64-encoded bytes directly —
-use only for small files (<~100 KB); for larger files, upload via REST
-`POST /api/upload` first and pass the returned path to `convert_document`.
+Tools defined in SPEC.md: `convert_document`, `search`, `get_document`,
+`list_documents`, `list_collections`, `ingest`. All accept caller metadata.
+`convert_document` and `ingest` accept a `force` flag to override dedup. For
+local files, callers upload via REST `POST /api/upload` first and pass the
+returned server-side path to `convert_document`.
 
 See SPEC.md for full parameter tables and response fields.
 

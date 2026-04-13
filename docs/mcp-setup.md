@@ -50,7 +50,7 @@ Restart Claude Code. Verify the connection:
 claude mcp list
 ```
 
-You should see `ariadne-core` listed with the seven tools: `convert_document`, `upload_and_convert`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`.
+You should see `ariadne-core` listed with its tools: `convert_document`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`.
 
 ### Removing
 

@@ -15,7 +15,7 @@ to actually run the commands.
 ## What to emphasize
 
 - Speed: they can go from zero to live in ~5 minutes on Railway
-- Simplicity: one Dockerfile, one CLI command to connect, seven tools immediately available
+- Simplicity: one Dockerfile, one CLI command to connect, the full tool set immediately available
 - Cost: free tier works, pennies per document for API calls
 - They don't need to understand the internals — just deploy, connect, use
 - **The actual deployment happens in Claude Code** — this presentation shows them
@@ -69,7 +69,7 @@ claude mcp add ariadne-core https://your-url/mcp \
   --header "X-API-Key:your-api-key"
 ```
 
-Then restart Claude Code and seven tools become available.
+Then restart Claude Code and the tool set becomes available.
 
 -> **Show `img_06.png`** (Connect Claude Code)
 

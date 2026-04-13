@@ -80,10 +80,9 @@ claude mcp add ariadne-core https://your-deployment.up.railway.app/mcp \
 Since the server runs remotely, clients cannot pass local file paths. Documents must be provided as:
 
 - **HTTP/HTTPS URLs** — the server downloads them directly via `convert_document`
-- **REST upload endpoint** — `POST /api/upload` accepts file uploads and returns a server-side path for use with `convert_document`. This is the preferred path for local files of any size above a trivial threshold: the bytes move once, over HTTP, without passing through the LLM's context
-- **MCP upload (small files only)** — `upload_and_convert` accepts base64-encoded file bytes. Intended for files under ~100 KB. Larger files should go through the REST endpoint, because base64 content embedded in an MCP tool call consumes LLM context tokens proportional to the encoded size
+- **REST upload endpoint** — `POST /api/upload` accepts file uploads and returns a server-side path for use with `convert_document`. This is the canonical path for local files: the bytes move once, over HTTP, without passing through the LLM's context
 
-The MCP `convert_document` tool accepts URLs and server-side paths in the `uri` parameter. For local files, the canonical flow is: upload via `POST /api/upload`, get the `path` back, then call `convert_document` (via MCP or REST) with that path. `upload_and_convert` is a convenience for tiny files where the round trip isn't worth it.
+The MCP `convert_document` tool accepts URLs and server-side paths in the `uri` parameter. For local files, the canonical flow is: upload via `POST /api/upload`, get the `path` back, then call `convert_document` (via MCP or REST) with that path. Never base64-encode file content into an MCP tool call — the bytes would pass through the LLM's context, defeating the entire point of the pipeline.
 
 The `ingest` tool (batch directory ingestion) only works with server-side paths. To batch-ingest local files, upload them first or make them available via URL.
 
@@ -142,7 +141,7 @@ Both API keys can use the same OpenAI key, or you can use different ones to trac
 
 ## MCP tools
 
-Seven tools are available to any connected MCP client. All processing is synchronous — the tool returns the full result when it completes.
+The following tools are available to any connected MCP client. All processing is synchronous — the tool returns the full result when it completes.
 
 ### `convert_document`
 
@@ -164,30 +163,6 @@ Returns JSON with: `document_id`, `source_file`, `title`, `markdown` (the full e
 **Chunking auto-selection:** If no `chunking_config` is provided, the strategy is chosen by file type: `.pptx` → `by_page`, `.csv`/`.xlsx` → `fixed_size`, `.txt` with no headings → `fixed_size` with high overlap, everything else → `by_title`.
 
 **Image handling:** If the file is an image format and no vision API key is configured, the tool returns a warning in the `warnings` array explaining that a vision API key is needed for image content extraction.
-
-### `upload_and_convert`
-
-Upload a local file as base64-encoded bytes and convert it to Markdown. **Best for small files under ~100 KB.** For larger files, use the REST `POST /api/upload` endpoint followed by `convert_document` — base64 content in an MCP tool call consumes LLM context tokens proportional to the encoded size, so a multi-MB file can burn a million tokens before the server even sees it.
-
-Use this when the document is on the caller's local machine, not reachable by URL, and small enough that the base64 overhead is acceptable. The file is written to a server-side temp directory, extracted, and the temp file is deleted after extraction — only the Markdown, chunks, and embeddings are retained.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `filename` | string | (required) | Original filename (e.g., `"report.pdf"`). Used for provenance and to pick the extraction engine by extension. Only the basename is kept; any directory components are stripped |
-| `content_base64` | string | (required) | File content, base64-encoded |
-| `store` | bool | `true` | Chunk, embed, and store in vector DB |
-| `collection` | string | `"default"` | Logical namespace for the document |
-| `tags` | list[str] | `[]` | Tags applied to the document |
-| `force` | bool | `false` | Re-process even if the document fingerprint already exists in this collection |
-| `chunking_config` | dict | `null` | Override chunking strategy (same keys as `convert_document`) |
-
-Returns the same JSON shape as `convert_document`. The document's `source_file` records the original filename.
-
-**Size limit:** Decoded content must not exceed **50 MB** (≈67 MB base64). Larger files must be sent via the REST `POST /api/upload` endpoint and then processed with `convert_document`. Exceeding the limit returns an error without attempting extraction.
-
-**Retention:** The uploaded file is deleted from the server after extraction completes (success or failure). If you need the original retained on the server, use the REST upload endpoint instead, which writes to a persistent uploads directory.
-
-**Provenance:** Interactions created by this tool record `action = "upload"` (instead of `"convert"`) so that queries against `document_interactions` can distinguish uploaded-then-deleted sources from URL/server-side conversions.
 
 ### `search`
 
@@ -280,7 +255,7 @@ The MCP `convert_document` tool accepts URIs — HTTP/HTTPS URLs and server-side
 2. The response includes a `path` field with the server-side location.
 3. Pass that path to `convert_document` via MCP (or REST).
 
-The `upload_and_convert` MCP tool accepts base64-encoded file content for small files (<100 KB). For larger files, always use the REST upload endpoint — base64 encoding through MCP tool parameters consumes LLM context tokens proportional to the encoded file size. A 6 MB PDF becomes ~8 MB of base64, which is roughly 1.5–2 M tokens of tool-call payload before the server has done any work.
+Never base64-encode file content into an MCP tool call. The bytes would pass through the LLM's context, which defeats the entire point of the pipeline — a 6 MB PDF becomes ~8 MB of base64, roughly 1.5–2 M tokens of tool-call payload before the server has done any work. Use REST `POST /api/upload` instead.
 
 For batch ingestion of a local directory, the normal pattern is: script the upload of each file against `POST /api/upload`, then call `ingest` on the resulting server-side directory, or call `convert_document` per returned path. A reference helper script is included in the project-specific skills.
 
@@ -626,11 +601,10 @@ The `action` field in `document_interactions` uses these canonical values:
 | Action | Source | Meaning |
 |--------|--------|---------|
 | `"convert"` | `convert_document` | Agent deliberately processed a single document via URL or server-side path |
-| `"upload"` | `upload_and_convert` | Agent uploaded a local file's bytes; the temp file was deleted after extraction |
 | `"ingest"` | `ingest` | Document was swept up in a batch directory ingestion |
 | `"search"` | `search` (in `search_log`) | Query recorded in the search log |
 
-The distinction between `"convert"`, `"upload"`, and `"ingest"` matters for provenance — knowing whether a document was fetched from a URL, uploaded from the caller's machine, or swept up in a batch tells you something about intent and about whether the original source still exists on disk.
+The distinction between `"convert"` and `"ingest"` matters for provenance — knowing whether a document was deliberately processed or swept up in a batch tells you something about intent.
 
 ---
 
@@ -695,8 +669,7 @@ Since Ariadne Core runs as a remote service, the agent cannot pass local file pa
 
 1. If the file is available at a URL, pass the URL to `convert_document` directly.
 2. Otherwise, upload via `POST /api/upload` first and then call `convert_document` with the returned server-side path. This is the canonical path for local files — the bytes move over HTTP once and never enter the LLM's context.
-3. For tiny files (<100 KB), `upload_and_convert` with base64 is fine as a one-call shortcut. Do NOT use it for larger files: a 6 MB PDF becomes ~8 MB of base64 which burns ~1.5–2 M tokens of LLM context just to emit the tool call.
-4. If none of the above apply, tell the user the file needs to be accessible via URL or uploaded to the server first.
+3. If none of the above apply, tell the user the file needs to be accessible via URL or uploaded to the server first.
 
 ### How to choose a collection
 

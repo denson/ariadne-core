@@ -148,25 +148,24 @@ images:
     file: assets/images/img_06.png
     url: https://raw.githubusercontent.com/denson/ariadne-core/main/skills/ariadne-core-walkthrough/assets/images/img_06.png
     audience: [general, engineering]
-    topics: [getting-started, mcp, claude-code, tools, six-tools]
+    topics: [getting-started, mcp, claude-code, tools]
     mechanism: none
     when_to_show: |
       When the user is ready to connect their agent and wants to see what
       tools become available. Good handoff beat — "here's what you'll actually
       use."
     anchors_depicted: []
-    short_description: "Terminal showing claude mcp add command, plus a fan of 6 pastel cards (the tool names)."
+    short_description: "Terminal showing claude mcp add command, plus a fan of pastel cards (the tool names)."
     prompt: |
       Top half: terminal window showing "claude mcp add ariadne-core https://your-url/mcp --transport http --scope user --header X-API-Key:your-key". A "restart Claude Code" arrow below.
-      Bottom half: seven cards arranged in a fan, each a different pastel shade, each showing a tool name and one-line description:
+      Bottom half: cards arranged in a fan, each a different pastel shade, each showing a tool name and one-line description:
       - "convert_document — Extract any document to Markdown"
-      - "upload_and_convert — Base64 upload + convert (small files)"
       - "search — Find relevant chunks by meaning"
       - "get_document — Get full content by ID"
       - "list_documents — Browse your document store"
       - "list_collections — See how documents are organized"
       - "ingest — Batch-process a directory"
-      Caption: "One command. Seven tools. Ready to use."
+      Caption: "One command. Tools ready to use."
       Style: flat design editorial illustration, colorblind-friendly.
 
   - id: onboarding_format_mosaic

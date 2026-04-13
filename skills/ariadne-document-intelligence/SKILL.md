@@ -39,18 +39,14 @@ tool until you've confirmed the connection works.
 
 ## Tools available
 
-You have seven MCP tools when Ariadne Core is connected:
+You have the following MCP tools when Ariadne Core is connected:
 
 - **`convert_document`** — Convert a single document to Markdown. Chunks, embeds, and
   stores it by default. Use for any individual file the user uploads or references.
   Accepts optional `chunking_config` to override the auto-selected chunking strategy.
-  Accepts HTTP/HTTPS URLs or server-side paths from the upload endpoint.
-
-- **`upload_and_convert`** — Same as `convert_document`, but accepts base64-encoded
-  file bytes directly. Use for local files under ~100 KB where the base64 payload
-  cost is negligible. For larger files, upload via REST `POST /api/upload` first and
-  then pass the returned path to `convert_document` instead — base64 in an MCP tool
-  call consumes LLM context tokens proportional to the encoded size.
+  Accepts HTTP/HTTPS URLs or server-side paths from the upload endpoint. For local
+  files, upload via REST `POST /api/upload` first and pass the returned server-side
+  path here.
 
 - **`search`** — Semantic search over stored documents. Returns JSON with `query`,
   `results_count`, and `results` array. Each result includes `chunk_id`, `document_id`,
@@ -95,28 +91,22 @@ directly in context without extraction.
 ## Ingesting local files
 
 Ariadne Core runs as a remote service, so you cannot pass local file paths
-directly to `convert_document`. There are three ingestion paths — pick by
-where the file lives and how big it is:
+directly to `convert_document`. There are two ingestion paths — pick by
+where the file lives:
 
 1. **HTTP/HTTPS URL** → call `convert_document` directly with the URL in
    the `uri` parameter. The server fetches the bytes itself. No upload step.
 
 2. **Local file** → upload via REST (`POST /api/upload`, multipart form
    data, `X-API-Key` header), read the `path` field from the response, then
-   call `convert_document` with that server-side path as `uri`. This is
-   the canonical path for any non-trivial local file: the bytes move over
-   HTTP once and never pass through the LLM's context.
+   call `convert_document` with that server-side path as `uri`. The bytes
+   move over HTTP once and never pass through the LLM's context.
 
-3. **Tiny local file (<100 KB)** → `upload_and_convert` via MCP with
-   base64-encoded content. This is a convenience for small files where
-   the round trip isn't worth it.
-
-**Warning — do NOT pass large files as base64 through MCP tools.** A 6 MB
-PDF becomes ~8 MB of base64, which consumes roughly 1.5–2 M tokens of LLM
-context just to emit the tool call. Use the REST upload endpoint instead.
-The 100 KB rule of thumb exists because of LLM context cost, not server
-capacity — the server itself will happily accept up to 50 MB via
-`upload_and_convert`, but you'll burn your context budget getting there.
+**Never base64-encode file content into an MCP tool argument.** That sends
+the bytes through the LLM context, defeating the entire point of the
+pipeline. A 6 MB PDF becomes ~8 MB of base64 — roughly 1.5–2 M tokens of
+tool-call payload before the server has done any work. Always use the REST
+upload endpoint for local files.
 
 ### Upload helper script
 

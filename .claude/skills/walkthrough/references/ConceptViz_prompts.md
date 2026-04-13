@@ -107,17 +107,16 @@ Colorblind-friendly, no hex codes. These images are for the onboarding skill, no
 
 Top half: a terminal window with a dark background showing the command: "claude mcp add ariadne-core https://your-url/mcp --transport http --scope user --header X-API-Key:your-key". A small "restart Claude Code" arrow below the terminal.
 
-Bottom half: seven cards arranged in a fan (like a hand of playing cards), each a different pastel shade. Each card shows a tool name in bold and a one-line description below it:
+Bottom half: cards arranged in a fan (like a hand of playing cards), each a different pastel shade. Each card shows a tool name in bold and a one-line description below it:
 
 - "convert_document — Extract any document to Markdown"
-- "upload_and_convert — Base64 upload + convert (small files)"
 - "search — Find relevant chunks by meaning"
 - "get_document — Get full content by ID"
 - "list_documents — Browse your document store"
 - "list_collections — See how documents are organized"
 - "ingest — Batch-process a directory"
 
-Caption: "One command. Seven tools. Ready to use."
+Caption: "One command. Tools ready to use."
 
 Colorblind-friendly, no hex codes. These images are for the onboarding skill, not technical documentation. They should be conceptual and accessible — designed to make the project's value, architecture, and deployment process immediately clear to anyone. Style for all: flat design, editorial illustration, simple shapes, bold colors on a light warm-gray background. Think "product landing page illustrations," not technical diagrams.
 
