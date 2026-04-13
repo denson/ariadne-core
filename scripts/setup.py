@@ -1063,32 +1063,56 @@ def deploy_railway(env_path, env_vars):
     raw_config = template["serializedConfig"]
     serialized_config = json.loads(raw_config) if isinstance(raw_config, str) else raw_config
 
-    # --- Pick a workspace ---
-    ws_result = railway_gql(token, "{ me { workspaces { id name } } }")
+    # --- Pick a workspace (and grab existing project names for collision check) ---
+    ws_result = railway_gql(
+        token,
+        "{ me { workspaces { id name projects { edges { node { id name } } } } } }",
+    )
     workspaces = []
     if ws_result and (ws_result.get("data") or {}).get("me"):
         for ws in ws_result["data"]["me"].get("workspaces") or []:
             if ws.get("id"):
-                workspaces.append((ws["id"], ws.get("name") or ws["id"]))
+                project_names = []
+                for edge in ((ws.get("projects") or {}).get("edges") or []):
+                    node = edge.get("node") or {}
+                    if node.get("name"):
+                        project_names.append(node["name"])
+                workspaces.append((ws["id"], ws.get("name") or ws["id"], project_names))
 
     if len(workspaces) == 0:
         print("  No Railway workspaces found on this account.")
         print("  Create one in the Railway dashboard and try again.")
         return None, False
     if len(workspaces) == 1:
-        team_id, team_name = workspaces[0]
+        team_id, team_name, existing_projects = workspaces[0]
     else:
         print("\n  Multiple workspaces found. Pick one:\n")
-        display = [name for _, name in workspaces]
+        display = [name for _, name, _ in workspaces]
         idx = prompt_choice(display, default=1)
-        team_id, team_name = workspaces[idx]
+        team_id, team_name, existing_projects = workspaces[idx]
 
     print(f"  Workspace: {team_name}\n")
 
-    # --- Project name (optional) ---
+    # --- Project name (optional), with collision check ---
+    existing_lower = {n.lower() for n in existing_projects}
     print('  What would you like to name this project? (e.g. "my-ariadne", "ree-research")')
     print("  Press Enter for Railway's default:")
-    project_name = input("\n  Name: ").strip()
+    while True:
+        project_name = input("\n  Name: ").strip()
+        if not project_name:
+            break
+        if project_name.lower() not in existing_lower:
+            break
+        print()
+        print(f'  A project named "{project_name}" already exists in this workspace.\n')
+        options = [
+            "Use a different name",
+            "Deploy anyway (creates a second project with the same name)",
+        ]
+        choice = prompt_choice(options, default=1)
+        if choice == 1:
+            break
+        # choice == 0: loop and re-prompt for a name
     print()
 
     print("  Deploying Ariadne Core...")
