@@ -596,7 +596,15 @@ async def ingest(
     dir_path = Path(path)
     if not dir_path.is_dir():
         return json.dumps(
-            {"error": True, "message": f"Not a directory: {path}"},
+            {
+                "error": True,
+                "message": (
+                    f"Path not found on server: {path}. "
+                    "The ingest tool only works with server-side directories. "
+                    "For local files, upload each file via POST /api/upload first, "
+                    "then call convert_document with the returned server-side path."
+                ),
+            },
             indent=2,
         )
 
@@ -996,6 +1004,16 @@ def _process_single_document(
         return {
             "error": True,
             "message": f"Extraction failed: {'; '.join(result.errors)}",
+            "document_id": result.document_id,
+            "source_file": result.source_file,
+        }
+
+    if not result.markdown or not result.markdown.strip():
+        return {
+            "error": True,
+            "message": f"Extraction produced empty output for {result.source_file}. "
+                       "Image files require vision API configuration. "
+                       "Check ARIADNE_IMAGE_ENRICHMENT_API_KEY.",
             "document_id": result.document_id,
             "source_file": result.source_file,
         }
