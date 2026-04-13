@@ -11,11 +11,15 @@ are stored without embeddings (search will not work).
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -107,7 +111,44 @@ class EmbeddingClient:
         try:
             with urlopen(req) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
+        except HTTPError as e:
+            # Drain the response body so we actually see Google's / OpenAI's
+            # error message, not just "HTTP Error 400: Bad Request".
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                err_body = "<could not read response body>"
+            logger.error(
+                "Embedding API call failed: status=%s endpoint=%s model=%s "
+                "dimensions=%s batch_size=%d response_body=%s",
+                e.code,
+                self._endpoint,
+                self._config.model,
+                self._config.dimensions,
+                len(texts),
+                err_body,
+            )
+            raise RuntimeError(
+                f"Embedding API call failed: HTTP {e.code} from "
+                f"{self._endpoint} (model={self._config.model}): {err_body}"
+            ) from e
+        except URLError as e:
+            logger.error(
+                "Embedding API call failed (network/URL): endpoint=%s "
+                "model=%s reason=%s",
+                self._endpoint,
+                self._config.model,
+                e.reason,
+            )
+            raise RuntimeError(
+                f"Embedding API call failed ({self._endpoint}): {e.reason}"
+            ) from e
         except Exception as e:
+            logger.exception(
+                "Embedding API call failed unexpectedly: endpoint=%s model=%s",
+                self._endpoint,
+                self._config.model,
+            )
             raise RuntimeError(f"Embedding API call failed: {e}") from e
 
         # Extract embeddings in order
