@@ -45,6 +45,12 @@ class SearchRequest(CallerMetadata):
     top_k: int = Field(default=5, ge=1, le=20)
     collection: Optional[str] = None
     filters: Optional[dict] = None
+    include_deleted: bool = False
+
+
+class UpdateDocumentRequest(CallerMetadata):
+    tags: Optional[list[str]] = None
+    collection: Optional[str] = None
 
 
 class IngestRequest(CallerMetadata):
@@ -255,6 +261,7 @@ async def list_documents(
     file_type: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    include_deleted: bool = Query(False),
     api_key: APIKey | None = Depends(check_api_key),
 ):
     """List all documents, optionally filtered by collection or file type."""
@@ -264,9 +271,15 @@ async def list_documents(
         page_docs, total = _mcp._dedup_store.list_documents(
             collection=collection, file_type=file_type,
             limit=limit, offset=offset,
+            include_deleted=include_deleted,
         )
     else:
         docs = list(_mcp._dedup_store._documents.values())
+        if not include_deleted:
+            docs = [
+                d for d in docs
+                if d.document_id not in _mcp._dedup_store._deletions
+            ]
         if collection:
             docs = [d for d in docs if d.collection_id == collection]
         if file_type:
@@ -296,6 +309,163 @@ async def list_documents(
         "limit": limit,
         "offset": offset,
     }
+
+
+@router.patch("/documents/{document_id}")
+async def update_document(
+    document_id: str,
+    req: UpdateDocumentRequest,
+    api_key: APIKey | None = Depends(check_api_key),
+):
+    """Patch a stored document's metadata.
+
+    `tags` REPLACES the full tag list. `agent_metadata` is shallow-merged
+    into the existing metadata. `collection` moves the document.
+    """
+    from pipeline.dedup import DocumentInteraction
+
+    updated_fields: list[str] = []
+    if req.tags is not None:
+        updated_fields.append("tags")
+    if req.agent_metadata is not None:
+        updated_fields.append("agent_metadata")
+    if req.collection is not None:
+        updated_fields.append("collection")
+
+    if not updated_fields:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No fields to update. Provide at least one of: "
+                "tags, agent_metadata, collection."
+            ),
+        )
+
+    try:
+        updated = _mcp._dedup_store.update_document_metadata(
+            document_id=document_id,
+            tags=req.tags,
+            agent_metadata=req.agent_metadata,
+            collection=req.collection,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    agent_id = _resolve_agent_id(req, api_key)
+    _mcp._dedup_store.record_interaction(
+        DocumentInteraction(
+            document_id=document_id,
+            collection_id=updated.get("collection") or "",
+            agent_id=agent_id,
+            agent_type=req.agent_type,
+            model=req.model,
+            initiated_by=req.initiated_by,
+            agent_notes=req.agent_notes,
+            agent_metadata=req.agent_metadata,
+            action="update",
+            was_dedup_skip=False,
+        )
+    )
+
+    return {
+        "document_id": updated["document_id"],
+        "collection": updated.get("collection"),
+        "tags": updated.get("tags", []),
+        "agent_metadata": updated.get("agent_metadata", {}),
+        "updated_fields": updated_fields,
+    }
+
+
+@router.delete("/documents/{document_id}")
+async def delete_document(
+    document_id: str,
+    req: Optional[CallerMetadata] = None,
+    api_key: APIKey | None = Depends(check_api_key),
+):
+    """Soft-delete a document. Hidden immediately, purged after 48 hours."""
+    from datetime import datetime, timezone
+    from pipeline.dedup import DocumentInteraction
+
+    req = req or CallerMetadata()
+    doc = _mcp._find_document_by_id(document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    _mcp._dedup_store.soft_delete_document(document_id)
+    scheduled_at = datetime.now(timezone.utc).isoformat()
+
+    agent_id = _resolve_agent_id(req, api_key)
+    _mcp._dedup_store.record_interaction(
+        DocumentInteraction(
+            document_id=document_id,
+            collection_id=doc.collection_id,
+            agent_id=agent_id,
+            agent_type=req.agent_type,
+            model=req.model,
+            initiated_by=req.initiated_by,
+            agent_notes=req.agent_notes,
+            agent_metadata=req.agent_metadata,
+            action="delete",
+            was_dedup_skip=False,
+        )
+    )
+
+    return {
+        "document_id": document_id,
+        "status": "scheduled_for_deletion",
+        "deletion_scheduled_at": scheduled_at,
+        "message": "Will be purged after 48 hours.",
+    }
+
+
+@router.post("/documents/{document_id}/restore")
+async def restore_document(
+    document_id: str,
+    req: Optional[CallerMetadata] = None,
+    api_key: APIKey | None = Depends(check_api_key),
+):
+    """Undo a soft-delete within the 48-hour grace window."""
+    from pipeline.dedup import DocumentInteraction, PgDedupStore
+
+    req = req or CallerMetadata()
+    doc = None
+    if isinstance(_mcp._dedup_store, PgDedupStore):
+        doc = _mcp._dedup_store.get_document_by_id(
+            document_id, include_deleted=True
+        )
+    else:
+        for (_coll, _fp), candidate in _mcp._dedup_store._documents.items():
+            if candidate.document_id == document_id:
+                doc = candidate
+                break
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        _mcp._dedup_store.restore_document(document_id)
+    except ValueError as e:
+        msg = str(e)
+        if "48h" in msg or "48 h" in msg or "outside" in msg:
+            raise HTTPException(status_code=410, detail=msg)
+        raise HTTPException(status_code=404, detail=msg)
+
+    agent_id = _resolve_agent_id(req, api_key)
+    _mcp._dedup_store.record_interaction(
+        DocumentInteraction(
+            document_id=document_id,
+            collection_id=doc.collection_id,
+            agent_id=agent_id,
+            agent_type=req.agent_type,
+            model=req.model,
+            initiated_by=req.initiated_by,
+            agent_notes=req.agent_notes,
+            agent_metadata=req.agent_metadata,
+            action="restore",
+            was_dedup_skip=False,
+        )
+    )
+
+    return {"document_id": document_id, "status": "restored"}
 
 
 # ── Search endpoint ──────────────────────────────────────────────────────────
@@ -331,6 +501,7 @@ async def search_documents(
         query_embedding=query_embedding,
         top_k=req.top_k,
         filters=search_filters if search_filters else None,
+        include_deleted=req.include_deleted,
     )
 
     # Post-filter for source_file, file_type, tags when using in-memory store
@@ -528,6 +699,8 @@ async def list_collections(
             )
     else:
         for (coll, _fp), _doc in _mcp._dedup_store._documents.items():
+            if _doc.document_id in _mcp._dedup_store._deletions:
+                continue
             collection_counts[coll] = collection_counts.get(coll, 0) + 1
 
     # Merge registered collections with those that have documents
@@ -566,6 +739,47 @@ async def create_collection(
     return {"name": req.name, "description": req.description, "status": "created"}
 
 
+@router.delete("/collections/{collection_name}")
+async def delete_collection(
+    collection_name: str,
+    req: Optional[CallerMetadata] = None,
+    api_key: APIKey | None = Depends(check_api_key),
+):
+    """Soft-delete every document in a collection.
+
+    Each document keeps its own 48-hour restore clock — documents that were
+    individually deleted earlier retain their original deletion time. The
+    collection record itself is preserved.
+    """
+    _ = req or CallerMetadata()
+    marked = _mcp._dedup_store.soft_delete_collection(collection_name)
+    return {
+        "collection": collection_name,
+        "documents_marked": marked,
+        "message": (
+            f"{marked} document(s) scheduled for deletion. "
+            "Each will be purged after its own 48-hour window expires. "
+            "Use POST /api/documents/{document_id}/restore on individual "
+            "documents to undo."
+        ),
+    }
+
+
+@router.post("/collections/{collection_name}/restore")
+async def restore_collection(
+    collection_name: str,
+    req: Optional[CallerMetadata] = None,
+    api_key: APIKey | None = Depends(check_api_key),
+):
+    """Restore soft-deleted documents in a collection within the 48h window."""
+    _ = req or CallerMetadata()
+    restored = _mcp._dedup_store.restore_collection(collection_name)
+    return {
+        "collection": collection_name,
+        "documents_restored": restored,
+    }
+
+
 # ── Stats endpoint ───────────────────────────────────────────────────────────
 
 
@@ -579,7 +793,10 @@ async def get_stats(
     if isinstance(_mcp._dedup_store, PgDedupStore):
         all_docs, total_docs = _mcp._dedup_store.list_documents(limit=10000)
     else:
-        all_docs = list(_mcp._dedup_store._documents.values())
+        all_docs = [
+            d for d in _mcp._dedup_store._documents.values()
+            if d.document_id not in _mcp._dedup_store._deletions
+        ]
         total_docs = len(all_docs)
 
     # Per-collection counts
