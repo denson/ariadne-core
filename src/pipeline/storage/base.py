@@ -36,13 +36,18 @@ class VectorStore(Protocol):
         query_embedding: list[float],
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
+        include_deleted: bool = False,
     ) -> list[SearchResult]: ...
 
     def delete(self, chunk_ids: list[str]) -> None: ...
 
     def delete_by_document(self, document_id: str) -> None: ...
 
-    def count(self, filters: dict[str, Any] | None = None) -> int: ...
+    def count(
+        self,
+        filters: dict[str, Any] | None = None,
+        include_deleted: bool = False,
+    ) -> int: ...
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -82,6 +87,7 @@ class InMemoryVectorStore:
         query_embedding: list[float],
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
+        include_deleted: bool = False,
     ) -> list[SearchResult]:
         """Search for chunks similar to the query embedding.
 
@@ -89,6 +95,8 @@ class InMemoryVectorStore:
             query_embedding: The query vector.
             top_k: Maximum number of results.
             filters: Optional filters (collection, document_id, file_type).
+            include_deleted: In-memory store has no soft-delete concept,
+                so this flag is a no-op for parity with PgVectorStore.
 
         Returns:
             List of SearchResult sorted by descending similarity.
@@ -129,8 +137,15 @@ class InMemoryVectorStore:
         for cid in to_delete:
             del self._chunks[cid]
 
-    def count(self, filters: dict[str, Any] | None = None) -> int:
-        """Count chunks matching optional filters."""
+    def count(
+        self,
+        filters: dict[str, Any] | None = None,
+        include_deleted: bool = False,
+    ) -> int:
+        """Count chunks matching optional filters.
+
+        `include_deleted` is a no-op for the in-memory store.
+        """
         return len(self._apply_filters(filters))
 
     def _apply_filters(self, filters: dict[str, Any] | None) -> list[Chunk]:

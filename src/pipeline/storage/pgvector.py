@@ -85,6 +85,7 @@ class PgVectorStore:
         query_embedding: list[float],
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
+        include_deleted: bool = False,
     ) -> list[SearchResult]:
         """Vector similarity search using pgvector cosine distance."""
         embedding_str = _vector_literal(query_embedding)
@@ -96,7 +97,11 @@ class PgVectorStore:
             "top_k": top_k,
         }
 
-        need_doc_join = False
+        # Exclude soft-deleted documents by default — requires a join to
+        # the documents table.
+        need_doc_join = not include_deleted
+        if not include_deleted:
+            where_clauses.append("d.deleted_at IS NULL")
         if filters:
             if "collection" in filters:
                 where_clauses.append(
@@ -194,7 +199,11 @@ class PgVectorStore:
                 )
             conn.commit()
 
-    def count(self, filters: dict[str, Any] | None = None) -> int:
+    def count(
+        self,
+        filters: dict[str, Any] | None = None,
+        include_deleted: bool = False,
+    ) -> int:
         """COUNT chunks, optionally filtered."""
         where_clauses: list[str] = []
         params: dict[str, Any] = {}
@@ -202,12 +211,19 @@ class PgVectorStore:
         if filters:
             if "collection" in filters:
                 where_clauses.append(
-                    "collection_id = (SELECT id FROM collections WHERE name = %(col)s)"
+                    "c.collection_id = "
+                    "(SELECT id FROM collections WHERE name = %(col)s)"
                 )
                 params["col"] = filters["collection"]
             if "document_id" in filters:
-                where_clauses.append("document_id = %(doc_id)s::uuid")
+                where_clauses.append("c.document_id = %(doc_id)s::uuid")
                 params["doc_id"] = filters["document_id"]
+
+        # Default: exclude chunks whose parent document is soft-deleted.
+        doc_join = ""
+        if not include_deleted:
+            doc_join = "JOIN documents d ON c.document_id = d.id"
+            where_clauses.append("d.deleted_at IS NULL")
 
         where_sql = ""
         if where_clauses:
@@ -215,23 +231,35 @@ class PgVectorStore:
 
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) FROM chunks {where_sql}", params)
+                cur.execute(
+                    f"SELECT COUNT(*) FROM chunks c {doc_join} {where_sql}",
+                    params,
+                )
                 return cur.fetchone()[0]
 
     # -- Additional methods for get_document / list_documents ------------------
 
-    def get_document_chunks(self, document_id: str) -> list[Chunk]:
+    def get_document_chunks(
+        self, document_id: str, include_deleted: bool = False
+    ) -> list[Chunk]:
         """Get all chunks for a document, ordered by chunk index."""
+        deleted_join = (
+            "" if include_deleted
+            else "JOIN documents d ON c.document_id = d.id"
+        )
+        deleted_clause = "" if include_deleted else "AND d.deleted_at IS NULL"
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT c.id, c.document_id, col.name, c.chunk_index,
                            c.text, c.section, c.page_start, c.page_end,
                            c.token_count, c.embedding_model, c.metadata
                     FROM chunks c
                     JOIN collections col ON c.collection_id = col.id
+                    {deleted_join}
                     WHERE c.document_id = %(doc_id)s::uuid
+                      {deleted_clause}
                     ORDER BY c.chunk_index
                     """,
                     {"doc_id": document_id},
@@ -253,14 +281,25 @@ class PgVectorStore:
                     for row in cur.fetchall()
                 ]
 
-    def count_by_document(self, document_id: str) -> int:
+    def count_by_document(
+        self, document_id: str, include_deleted: bool = False
+    ) -> int:
         """Count chunks for a specific document."""
+        if include_deleted:
+            query = (
+                "SELECT COUNT(*) FROM chunks "
+                "WHERE document_id = %(doc_id)s::uuid"
+            )
+        else:
+            query = (
+                "SELECT COUNT(*) FROM chunks c "
+                "JOIN documents d ON c.document_id = d.id "
+                "WHERE c.document_id = %(doc_id)s::uuid "
+                "AND d.deleted_at IS NULL"
+            )
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) FROM chunks WHERE document_id = %(doc_id)s::uuid",
-                    {"doc_id": document_id},
-                )
+                cur.execute(query, {"doc_id": document_id})
                 return cur.fetchone()[0]
 
 
