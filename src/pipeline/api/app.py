@@ -17,7 +17,7 @@ from pipeline.api.auth import get_key_store, set_require_auth
 from pipeline.api.routes import router
 from pipeline.config import load_config
 from pipeline.embedding.embedder import EmbeddingConfig
-from pipeline.mcp_server import configure_embedding, configure_stores
+from pipeline.mcp_server import configure_embedding, configure_image_enrichment, configure_stores
 from pipeline.stores import create_stores, close_pool
 
 logger = logging.getLogger("ariadne.app")
@@ -55,6 +55,17 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info("No embedding API key — search disabled")
+
+    # Configure image enrichment from config (reads ARIADNE_IMAGE_ENRICHMENT_* env vars)
+    if config.image_enrichment.api_key:
+        configure_image_enrichment(
+            api_key=config.image_enrichment.api_key,
+            model=config.image_enrichment.model,
+            base_url=config.image_enrichment.base_url,
+        )
+        logger.info("Image enrichment enabled (model=%s)", config.image_enrichment.model)
+    else:
+        logger.info("No image enrichment API key — image descriptions disabled")
 
     # Auth enforcement
     api_key = os.environ.get("ARIADNE_API_KEY")

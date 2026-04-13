@@ -128,19 +128,27 @@ _dedup_store = InMemoryDedupStore()
 _vector_store = InMemoryVectorStore()
 _embedding_client = EmbeddingClient()  # Disabled by default (no API key)
 
-# Image enrichment — enabled only when VISION_API_KEY is set
-_vision_config = VisionConfig(
-    api_key=os.environ.get("VISION_API_KEY", ""),
-    model=os.environ.get("VISION_MODEL", "gpt-4o-mini"),
-    base_url=os.environ.get("VISION_BASE_URL", "https://api.openai.com/v1"),
-)
-_image_enricher = ImageEnricher(_vision_config if _vision_config.api_key else None)
+# Image enrichment — disabled by default, configured at startup via configure_image_enrichment()
+_image_enricher = ImageEnricher(None)
 
 
 def configure_embedding(config: EmbeddingConfig) -> None:
     """Configure the embedding client. Call before using store/search."""
     global _embedding_client
     _embedding_client = EmbeddingClient(config)
+
+
+def configure_image_enrichment(api_key: str, model: str, base_url: str) -> None:
+    """Configure the image enrichment client. Call at startup from app.py."""
+    global _image_enricher
+    if api_key:
+        _image_enricher = ImageEnricher(VisionConfig(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+        ))
+    else:
+        _image_enricher = ImageEnricher(None)
 
 
 def configure_stores(dedup_store, vector_store) -> None:

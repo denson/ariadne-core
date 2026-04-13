@@ -303,6 +303,25 @@ def load_config(
             section_obj = cls()
         setattr(config, section_name, section_obj)
 
+    # Step 4b: Legacy unprefixed env var fallback.
+    # Old deployments set EMBEDDING_API_KEY / VISION_API_KEY (+ MODEL, BASE_URL).
+    # The ARIADNE_-prefixed form takes priority; legacy names are only applied
+    # when the corresponding ARIADNE_ var is absent from the environment.
+    _legacy_env_fallback = [
+        ("EMBEDDING_API_KEY",    "ARIADNE_EMBEDDING_API_KEY",           config.embedding,        "api_key"),
+        ("EMBEDDING_MODEL",      "ARIADNE_EMBEDDING_MODEL",             config.embedding,        "model"),
+        ("EMBEDDING_BASE_URL",   "ARIADNE_EMBEDDING_BASE_URL",          config.embedding,        "base_url"),
+        ("VISION_API_KEY",       "ARIADNE_IMAGE_ENRICHMENT_API_KEY",    config.image_enrichment, "api_key"),
+        ("VISION_MODEL",         "ARIADNE_IMAGE_ENRICHMENT_MODEL",      config.image_enrichment, "model"),
+        ("VISION_BASE_URL",      "ARIADNE_IMAGE_ENRICHMENT_BASE_URL",   config.image_enrichment, "base_url"),
+    ]
+    for legacy_key, ariadne_key, section, field_name in _legacy_env_fallback:
+        if ariadne_key in env:
+            continue
+        value = env.get(legacy_key)
+        if value:
+            setattr(section, field_name, value)
+
     # Step 5: Handle common env vars that aren't in the ARIADNE_ namespace
     # Railway sets PORT directly; DATABASE_URL_PRIVATE is Railway's internal
     # Postgres URL (no egress fees), DATABASE_URL is the public fallback.
