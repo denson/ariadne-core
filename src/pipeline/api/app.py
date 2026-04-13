@@ -30,9 +30,10 @@ async def lifespan(app: FastAPI):
     dimensions = config.embedding.dimensions
 
     logger.info(
-        "Starting with embedding model=%s dimensions=%d",
+        "Starting with embedding model=%s dimensions=%d endpoint=%s [v2-gemini-fix]",
         config.embedding.model,
         dimensions,
+        config.embedding.base_url,
     )
 
     # Initialize stores (Postgres or in-memory based on config)

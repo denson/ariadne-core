@@ -32,3 +32,7 @@ htmlcov/
 walkthrough_html/dynamic_*.html
 walkthrough_html/many_clients.png
 walkthrough_html/two_token_economies.png
+
+# Secret files that should never be committed
+.env.backup*
+.claude.json
