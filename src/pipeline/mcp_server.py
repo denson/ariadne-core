@@ -59,13 +59,23 @@ AVAILABLE TOOLS:
 path. Chunks, embeds, and stores it by default. For local files, upload via the REST \
 endpoint POST /api/upload first, then pass the returned server-side path here.
 - search — Semantic search over stored documents. Supports filters for collection, \
-source_file, file_type, tags, and document_id.
+source_file, file_type, tags, and document_id. Pass include_deleted=true to include \
+soft-deleted documents.
 - get_document — Retrieve the full Markdown content and chunks for a document by ID.
-- list_documents — Browse stored documents by collection or file type.
+- list_documents — Browse stored documents by collection or file type. Pass \
+include_deleted=true to include soft-deleted documents.
 - list_collections — See all collections with document counts. Call this before \
 choosing a collection for ingestion or search scoping.
 - ingest — Batch-ingest a directory of documents. Use for processing multiple files \
 at once.
+- update_document — Patch a stored document's tags, agent_metadata, or collection. \
+Records an interaction so the update is auditable.
+- delete_document — Soft-delete a document. It is hidden from search and listings \
+immediately but retained for 48 hours before being hard-purged. Use restore_document \
+to undo within that window.
+- restore_document — Undo a soft-delete within the 48-hour grace window.
+- delete_collection — Soft-delete every document in a collection at once. Individual \
+restore_document calls still work within each document's own 48-hour clock.
 
 WHEN TO USE THESE TOOLS:
 
@@ -215,6 +225,7 @@ async def search(
     initiated_by: Optional[str] = None,
     agent_notes: Optional[str] = None,
     agent_metadata: Optional[dict] = None,
+    include_deleted: bool = False,
 ) -> str:
     """Semantic search over the document knowledge store.
 
@@ -229,6 +240,7 @@ async def search(
         initiated_by: Human or system identity.
         agent_notes: Why this search is being performed — helps with search log analysis. See SPEC Metadata Conventions.
         agent_metadata: Structured JSON — recommended keys: project, source_url, intent, findings, status, related_documents. See SPEC Metadata Conventions.
+        include_deleted: If true, include soft-deleted documents in results (default false).
 
     Returns:
         JSON with top-level keys: query, top_k, collection, results_count, results.
@@ -280,6 +292,7 @@ async def search(
         query_embedding=query_embedding,
         top_k=top_k,
         filters=search_filters if search_filters else None,
+        include_deleted=include_deleted,
     )
 
     # Post-filter for source_file, file_type, tags when using in-memory store
@@ -441,6 +454,7 @@ async def list_documents(
     file_type: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
+    include_deleted: bool = False,
 ) -> str:
     """List documents in the knowledge store.
 
@@ -452,6 +466,7 @@ async def list_documents(
         file_type: Filter by file extension (e.g., ".pdf", ".docx").
         limit: Number of documents to return (default 20, max 100).
         offset: Pagination offset (default 0).
+        include_deleted: If true, include soft-deleted documents (default false).
 
     Returns:
         JSON string with document list and total count.
@@ -463,9 +478,15 @@ async def list_documents(
         page_docs, total = _dedup_store.list_documents(
             collection=collection, file_type=file_type,
             limit=limit, offset=offset,
+            include_deleted=include_deleted,
         )
     else:
         docs = list(_dedup_store._documents.values())
+        if not include_deleted:
+            docs = [
+                d for d in docs
+                if d.document_id not in _dedup_store._deletions
+            ]
         if collection:
             docs = [d for d in docs if d.collection_id == collection]
         if file_type:
@@ -515,6 +536,8 @@ async def list_collections() -> str:
             )
     else:
         for (coll, _fp), _doc in _dedup_store._documents.items():
+            if _doc.document_id in _dedup_store._deletions:
+                continue
             collection_counts[coll] = collection_counts.get(coll, 0) + 1
 
     # Import the routes-level collections store for descriptions
@@ -669,6 +692,271 @@ async def ingest(
             "files_skipped": files_skipped,
             "files_errored": files_errored,
             "results": results_list,
+        },
+        indent=2,
+    )
+
+
+@app.tool()
+async def update_document(
+    document_id: str,
+    tags: Optional[list[str]] = None,
+    agent_metadata: Optional[dict] = None,
+    collection: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    agent_type: Optional[str] = None,
+    model: Optional[str] = None,
+    initiated_by: Optional[str] = None,
+    agent_notes: Optional[str] = None,
+) -> str:
+    """Patch a stored document's metadata.
+
+    Args:
+        document_id: The document UUID.
+        tags: If provided, REPLACES the document's full tag list.
+        agent_metadata: If provided, shallow-merged into the document's
+            existing agent_metadata (new keys added, existing keys overwritten).
+        collection: If provided, moves the document to that collection.
+            The target collection is created if it doesn't exist. The
+            document's chunks are moved along with it.
+        agent_id: Caller's identity.
+        agent_type: Client type.
+        model: The LLM model the caller is running.
+        initiated_by: Human or system identity.
+        agent_notes: Why this update is being made.
+
+    Returns:
+        JSON with the updated document metadata and a list of fields that
+        were actually changed.
+    """
+    updated_fields: list[str] = []
+    if tags is not None:
+        updated_fields.append("tags")
+    if agent_metadata is not None:
+        updated_fields.append("agent_metadata")
+    if collection is not None:
+        updated_fields.append("collection")
+
+    if not updated_fields:
+        return json.dumps(
+            {
+                "error": True,
+                "message": (
+                    "No fields to update. Provide at least one of: "
+                    "tags, agent_metadata, collection."
+                ),
+            },
+            indent=2,
+        )
+
+    try:
+        updated = _dedup_store.update_document_metadata(
+            document_id=document_id,
+            tags=tags,
+            agent_metadata=agent_metadata,
+            collection=collection,
+        )
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)}, indent=2)
+
+    _dedup_store.record_interaction(
+        DocumentInteraction(
+            document_id=document_id,
+            collection_id=updated.get("collection") or "",
+            agent_id=agent_id,
+            agent_type=agent_type,
+            model=model,
+            initiated_by=initiated_by,
+            agent_notes=agent_notes,
+            agent_metadata=agent_metadata,
+            action="update",
+            was_dedup_skip=False,
+        )
+    )
+
+    return json.dumps(
+        {
+            "document_id": updated["document_id"],
+            "collection": updated.get("collection"),
+            "tags": updated.get("tags", []),
+            "agent_metadata": updated.get("agent_metadata", {}),
+            "updated_fields": updated_fields,
+        },
+        indent=2,
+    )
+
+
+@app.tool()
+async def delete_document(
+    document_id: str,
+    agent_id: Optional[str] = None,
+    agent_type: Optional[str] = None,
+    initiated_by: Optional[str] = None,
+    agent_notes: Optional[str] = None,
+) -> str:
+    """Soft-delete a document.
+
+    The document is hidden from search and listings immediately but retained
+    for 48 hours before being hard-purged. Use restore_document to undo.
+
+    Args:
+        document_id: The document UUID.
+        agent_id: Caller's identity.
+        agent_type: Client type.
+        initiated_by: Human or system identity.
+        agent_notes: Why the document is being deleted.
+
+    Returns:
+        JSON with document_id, status "scheduled_for_deletion", and
+        deletion_scheduled_at.
+    """
+    from datetime import datetime, timezone
+
+    doc = _find_document_by_id(document_id)
+    if doc is None:
+        return json.dumps(
+            {"error": True, "message": f"Document not found: {document_id}"},
+            indent=2,
+        )
+
+    try:
+        _dedup_store.soft_delete_document(document_id)
+    except Exception as e:
+        return json.dumps({"error": True, "message": str(e)}, indent=2)
+
+    scheduled_at = datetime.now(timezone.utc).isoformat()
+
+    _dedup_store.record_interaction(
+        DocumentInteraction(
+            document_id=document_id,
+            collection_id=doc.collection_id,
+            agent_id=agent_id,
+            agent_type=agent_type,
+            model=None,
+            initiated_by=initiated_by,
+            agent_notes=agent_notes,
+            agent_metadata=None,
+            action="delete",
+            was_dedup_skip=False,
+        )
+    )
+
+    return json.dumps(
+        {
+            "document_id": document_id,
+            "status": "scheduled_for_deletion",
+            "deletion_scheduled_at": scheduled_at,
+            "message": (
+                "Will be purged after 48 hours. "
+                "Use restore_document to undo."
+            ),
+        },
+        indent=2,
+    )
+
+
+@app.tool()
+async def restore_document(
+    document_id: str,
+    agent_id: Optional[str] = None,
+    agent_type: Optional[str] = None,
+    initiated_by: Optional[str] = None,
+    agent_notes: Optional[str] = None,
+) -> str:
+    """Undo a soft-delete within the 48-hour grace window.
+
+    Args:
+        document_id: The document UUID.
+        agent_id: Caller's identity.
+        agent_type: Client type.
+        initiated_by: Human or system identity.
+        agent_notes: Why the document is being restored.
+
+    Returns:
+        JSON with document_id and status "restored", or an error if the
+        document is not deleted or is past the 48-hour window.
+    """
+    # Look up the document with include_deleted so we can still find its
+    # collection for the interaction record.
+    doc: StoredDocument | None = None
+    if isinstance(_dedup_store, PgDedupStore):
+        doc = _dedup_store.get_document_by_id(document_id, include_deleted=True)
+    else:
+        for (_coll, _fp), candidate in _dedup_store._documents.items():
+            if candidate.document_id == document_id:
+                doc = candidate
+                break
+    if doc is None:
+        return json.dumps(
+            {"error": True, "message": f"Document not found: {document_id}"},
+            indent=2,
+        )
+
+    try:
+        _dedup_store.restore_document(document_id)
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)}, indent=2)
+
+    _dedup_store.record_interaction(
+        DocumentInteraction(
+            document_id=document_id,
+            collection_id=doc.collection_id,
+            agent_id=agent_id,
+            agent_type=agent_type,
+            model=None,
+            initiated_by=initiated_by,
+            agent_notes=agent_notes,
+            agent_metadata=None,
+            action="restore",
+            was_dedup_skip=False,
+        )
+    )
+
+    return json.dumps(
+        {"document_id": document_id, "status": "restored"},
+        indent=2,
+    )
+
+
+@app.tool()
+async def delete_collection(
+    collection: str,
+    agent_id: Optional[str] = None,
+    agent_type: Optional[str] = None,
+    initiated_by: Optional[str] = None,
+    agent_notes: Optional[str] = None,
+) -> str:
+    """Soft-delete every document in a collection.
+
+    Each document retains its own 48-hour restore clock — documents that were
+    individually deleted earlier keep their original deletion time. The
+    collection record itself is preserved; only its documents are marked.
+
+    Args:
+        collection: The collection name.
+        agent_id: Caller's identity.
+        agent_type: Client type.
+        initiated_by: Human or system identity.
+        agent_notes: Why the collection is being deleted.
+
+    Returns:
+        JSON with collection name, documents_marked count, and a message
+        about the 48-hour purge window.
+    """
+    try:
+        marked = _dedup_store.soft_delete_collection(collection)
+    except Exception as e:
+        return json.dumps({"error": True, "message": str(e)}, indent=2)
+
+    return json.dumps(
+        {
+            "collection": collection,
+            "documents_marked": marked,
+            "message": (
+                f"{marked} document(s) scheduled for deletion. "
+                "Each will be purged after its own 48-hour window expires. "
+                "Use restore_document on individual documents to undo."
+            ),
         },
         indent=2,
     )
