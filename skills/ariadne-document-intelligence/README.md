@@ -18,7 +18,7 @@ Without this skill, agents tend to try reading documents directly (wasting token
 ## Requirements
 
 - Ariadne Core running and connected via MCP (STDIO or Streamable HTTP)
-- The six MCP tools available: `convert_document`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`
+- The seven MCP tools available: `convert_document`, `search`, `get_document`, `list_documents`, `list_collections`, `ingest`, `upload_and_convert`
 
 ## Installation
 

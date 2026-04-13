@@ -199,15 +199,15 @@ def print_env_summary(env_path):
     """Print a human-readable summary of an existing .env — path, provider, masked keys."""
     values = _read_env_dict(env_path)
 
-    emb_base = values.get("EMBEDDING_BASE_URL", "")
+    emb_base = values.get("ARIADNE_EMBEDDING_BASE_URL", "") or values.get("EMBEDDING_BASE_URL", "")
     provider = _provider_name_from_base_url(emb_base)
     if provider.startswith("Custom") and emb_base:
         provider = emb_base
 
-    emb_key = values.get("EMBEDDING_API_KEY", "")
-    vis_key = values.get("VISION_API_KEY", "")
-    emb_model = values.get("EMBEDDING_MODEL", "?")
-    vis_model = values.get("VISION_MODEL", "?")
+    emb_key = values.get("ARIADNE_EMBEDDING_API_KEY", "") or values.get("EMBEDDING_API_KEY", "")
+    vis_key = values.get("ARIADNE_IMAGE_ENRICHMENT_API_KEY", "") or values.get("VISION_API_KEY", "")
+    emb_model = values.get("ARIADNE_EMBEDDING_MODEL", "") or values.get("EMBEDDING_MODEL", "?")
+    vis_model = values.get("ARIADNE_IMAGE_ENRICHMENT_MODEL", "") or values.get("VISION_MODEL", "?")
     dimensions = values.get("ARIADNE_EMBEDDING_DIMENSIONS", "?")
     ariadne_key = values.get("ARIADNE_API_KEY", "")
 
@@ -286,12 +286,12 @@ def edit_env(env_path, repo_root):
     """
     values = _read_env_dict(env_path)
 
-    emb_key = values.get("EMBEDDING_API_KEY", "")
-    vis_key = values.get("VISION_API_KEY", "")
-    emb_model = values.get("EMBEDDING_MODEL", "")
-    vis_model = values.get("VISION_MODEL", "")
-    emb_base = values.get("EMBEDDING_BASE_URL", "")
-    vis_base = values.get("VISION_BASE_URL", "") or emb_base
+    emb_key = values.get("ARIADNE_EMBEDDING_API_KEY", "") or values.get("EMBEDDING_API_KEY", "")
+    vis_key = values.get("ARIADNE_IMAGE_ENRICHMENT_API_KEY", "") or values.get("VISION_API_KEY", "")
+    emb_model = values.get("ARIADNE_EMBEDDING_MODEL", "") or values.get("EMBEDDING_MODEL", "")
+    vis_model = values.get("ARIADNE_IMAGE_ENRICHMENT_MODEL", "") or values.get("VISION_MODEL", "")
+    emb_base = values.get("ARIADNE_EMBEDDING_BASE_URL", "") or values.get("EMBEDDING_BASE_URL", "")
+    vis_base = values.get("ARIADNE_IMAGE_ENRICHMENT_BASE_URL", "") or values.get("VISION_BASE_URL", "") or emb_base
     dimensions_raw = values.get("ARIADNE_EMBEDDING_DIMENSIONS", "")
     try:
         dimensions = int(dimensions_raw)
@@ -331,7 +331,7 @@ def edit_env(env_path, repo_root):
                 emb_model = entered
         success(f"Embedding: {emb_model}")
 
-    vis_key_same_as_emb_before = (vis_key == values.get("EMBEDDING_API_KEY", "")) and bool(vis_key)
+    vis_key_same_as_emb_before = (vis_key == emb_key) and bool(vis_key)
     if emb_key_changed and vis_key_same_as_emb_before:
         print()
         print("  You changed the embedding key.")
@@ -408,15 +408,15 @@ def edit_env(env_path, repo_root):
 DB_PASSWORD=local-dev-only
 
 # --- Embedding Provider ---
-EMBEDDING_API_KEY={emb_key}
-EMBEDDING_MODEL={emb_model}
-EMBEDDING_BASE_URL={emb_base}
+ARIADNE_EMBEDDING_API_KEY={emb_key}
+ARIADNE_EMBEDDING_MODEL={emb_model}
+ARIADNE_EMBEDDING_BASE_URL={emb_base}
 ARIADNE_EMBEDDING_DIMENSIONS={dimensions}
 
 # --- Vision Provider (for image descriptions in documents) ---
-VISION_API_KEY={vis_key}
-VISION_MODEL={vis_model}
-VISION_BASE_URL={vis_base}
+ARIADNE_IMAGE_ENRICHMENT_API_KEY={vis_key}
+ARIADNE_IMAGE_ENRICHMENT_MODEL={vis_model}
+ARIADNE_IMAGE_ENRICHMENT_BASE_URL={vis_base}
 
 # --- Client Authentication ---
 # Auto-generated. Clients connect with this key via X-API-Key header.
@@ -901,15 +901,15 @@ def write_env(
 DB_PASSWORD=local-dev-only
 
 # --- Embedding Provider ---
-EMBEDDING_API_KEY={emb_key}
-EMBEDDING_MODEL={emb_model}
-EMBEDDING_BASE_URL={emb_base_url}
+ARIADNE_EMBEDDING_API_KEY={emb_key}
+ARIADNE_EMBEDDING_MODEL={emb_model}
+ARIADNE_EMBEDDING_BASE_URL={emb_base_url}
 ARIADNE_EMBEDDING_DIMENSIONS={dimensions}
 
 # --- Vision Provider (for image descriptions in documents) ---
-VISION_API_KEY={vis_key}
-VISION_MODEL={vis_model}
-VISION_BASE_URL={vis_base_url}
+ARIADNE_IMAGE_ENRICHMENT_API_KEY={vis_key}
+ARIADNE_IMAGE_ENRICHMENT_MODEL={vis_model}
+ARIADNE_IMAGE_ENRICHMENT_BASE_URL={vis_base_url}
 
 # --- Client Authentication ---
 # Auto-generated. Clients connect with this key via X-API-Key header.
@@ -1610,7 +1610,7 @@ Document extraction + vector search for AI agents
         sys.exit(1)
 
     # --- Early .env check: offer use / edit / start fresh ---
-    if env_path.exists() and read_env_value(env_path, "EMBEDDING_API_KEY"):
+    if env_path.exists() and (read_env_value(env_path, "ARIADNE_EMBEDDING_API_KEY") or read_env_value(env_path, "EMBEDDING_API_KEY")):
         print_env_summary(env_path)
         options = [
             "Use this and deploy",
@@ -1724,13 +1724,13 @@ Document extraction + vector search for AI agents
 
     # Build env vars dict for Railway
     env_vars = {
-        "EMBEDDING_API_KEY": emb_key,
-        "EMBEDDING_MODEL": emb_model,
-        "EMBEDDING_BASE_URL": emb_base_url,
+        "ARIADNE_EMBEDDING_API_KEY": emb_key,
+        "ARIADNE_EMBEDDING_MODEL": emb_model,
+        "ARIADNE_EMBEDDING_BASE_URL": emb_base_url,
         "ARIADNE_EMBEDDING_DIMENSIONS": str(dimensions),
-        "VISION_API_KEY": vis_key,
-        "VISION_MODEL": vis_model,
-        "VISION_BASE_URL": vis_base_url,
+        "ARIADNE_IMAGE_ENRICHMENT_API_KEY": vis_key,
+        "ARIADNE_IMAGE_ENRICHMENT_MODEL": vis_model,
+        "ARIADNE_IMAGE_ENRICHMENT_BASE_URL": vis_base_url,
         "ARIADNE_API_KEY": ariadne_key,
     }
 

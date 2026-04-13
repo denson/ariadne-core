@@ -96,6 +96,8 @@ class EmbeddingClient:
             "model": self._config.model,
             "input": texts,
         }
+        if self._config.dimensions:
+            payload["dimensions"] = self._config.dimensions
 
         body = json.dumps(payload).encode("utf-8")
         req = Request(
@@ -151,8 +153,10 @@ class EmbeddingClient:
             )
             raise RuntimeError(f"Embedding API call failed: {e}") from e
 
-        # Extract embeddings in order
-        data = sorted(result["data"], key=lambda x: x["index"])
+        # Extract embeddings in order (some providers like Gemini omit "index")
+        data = result["data"]
+        if data and "index" in data[0]:
+            data = sorted(data, key=lambda x: x["index"])
         embeddings = [item["embedding"] for item in data]
 
         total_tokens = result.get("usage", {}).get("total_tokens", 0)
