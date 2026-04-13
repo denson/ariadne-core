@@ -116,6 +116,10 @@ class DedupStore(Protocol):
 
     def restore_document(self, document_id: str) -> None: ...
 
+    def soft_delete_collection(self, collection_name: str) -> int: ...
+
+    def restore_collection(self, collection_name: str) -> int: ...
+
     def purge_deleted(self, older_than_hours: int = 48) -> int: ...
 
     def update_document_metadata(
@@ -505,6 +509,61 @@ class PgDedupStore:
                     )
             conn.commit()
 
+    def soft_delete_collection(self, collection_name: str) -> int:
+        """Soft-delete all active documents in a collection.
+
+        Only touches rows where `deleted_at IS NULL` so documents that were
+        individually deleted earlier keep their original
+        `deletion_scheduled_at` (the 48h restore clock is not reset).
+
+        Returns the number of documents marked.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE documents
+                    SET deleted_at = now(),
+                        deletion_scheduled_at = now()
+                    WHERE collection_id =
+                              (SELECT id FROM collections
+                               WHERE name = %(collection)s)
+                      AND deleted_at IS NULL
+                    """,
+                    {"collection": collection_name},
+                )
+                marked = cur.rowcount
+            conn.commit()
+        return marked
+
+    def restore_collection(self, collection_name: str) -> int:
+        """Restore soft-deleted documents in a collection within the 48h
+        grace window.
+
+        Documents whose `deletion_scheduled_at` is already older than 48
+        hours stay deleted (they will be purged by `purge_deleted`).
+
+        Returns the number of documents restored.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE documents
+                    SET deleted_at = NULL,
+                        deletion_scheduled_at = NULL
+                    WHERE collection_id =
+                              (SELECT id FROM collections
+                               WHERE name = %(collection)s)
+                      AND deleted_at IS NOT NULL
+                      AND deletion_scheduled_at > now() - interval '48 hours'
+                    """,
+                    {"collection": collection_name},
+                )
+                restored = cur.rowcount
+            conn.commit()
+        return restored
+
     def purge_deleted(self, older_than_hours: int = 48) -> int:
         """Hard-delete documents whose deletion_scheduled_at is older than
         the threshold. Chunks and interactions cascade via FK.
@@ -705,6 +764,36 @@ class InMemoryDedupStore:
                 f"Document {document_id} is outside the 48h restore window"
             )
         del self._deletions[document_id]
+
+    def soft_delete_collection(self, collection_name: str) -> int:
+        now = datetime.now(timezone.utc)
+        marked = 0
+        for (coll, _fp), doc in self._documents.items():
+            if coll != collection_name:
+                continue
+            if doc.document_id in self._deletions:
+                # Individually-deleted doc keeps its original clock.
+                continue
+            self._deletions[doc.document_id] = (now, now)
+            marked += 1
+        return marked
+
+    def restore_collection(self, collection_name: str) -> int:
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        window = timedelta(hours=48)
+        restored = 0
+        for (coll, _fp), doc in self._documents.items():
+            if coll != collection_name:
+                continue
+            entry = self._deletions.get(doc.document_id)
+            if entry is None:
+                continue
+            _deleted_at, scheduled_at = entry
+            if now - scheduled_at <= window:
+                del self._deletions[doc.document_id]
+                restored += 1
+        return restored
 
     def purge_deleted(self, older_than_hours: int = 48) -> int:
         from datetime import timedelta
