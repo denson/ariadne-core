@@ -328,13 +328,55 @@ Every document should have a collection. A document in the `"default"` collectio
 | Key | Type | Description |
 |-----|------|-------------|
 | `project` | string | Project name or identifier (e.g., `"atlas"`, `"q4-review"`) |
-| `source_url` | string | Where the document was downloaded from, if applicable |
+| `source_url` | string | Where the document was downloaded from, if applicable. Still valid; `source_reference` is preferred going forward. |
+| `source_reference` | string | Most authoritative reference to the document's origin: DOI, URL, database/API reference, local file path, or the literal `"unknown"`. See "Source provenance" below. |
+| `source_notes` | string | Free-text context about provenance — especially when the source is unknown, ambiguous, or required interpretation. |
 | `intent` | string | Why the agent processed this document: `"research"`, `"compliance-review"`, `"onboarding"`, `"reference"`, `"archival"` |
 | `findings` | string | Brief summary of what the agent learned from the document |
 | `status` | string | Processing state: `"extracted"`, `"reviewed"`, `"needs-follow-up"`, `"superseded"` |
 | `related_documents` | list[str] | Document IDs of related items the agent found or was working with |
 
 These keys are recommendations, not a schema. Agents can add any additional keys that make sense for their workflow. The value of following the convention is that another agent can filter or search `agent_metadata` for `intent: "research"` and find documents across sessions and agent types.
+
+### Source provenance
+
+Every document should carry a `source_reference`. This is the most important metadata field for corpus integrity: a document with no recorded origin is unverifiable and uncitable, and a corpus full of unsourced documents quickly becomes noise.
+
+**Default hierarchy** (most authoritative first):
+
+1. **DOI** — for research papers, format as `"doi:10.xxxx/..."`
+2. **URL** — the original URL the document was downloaded from (not the server upload path)
+3. **Database / API reference** — the query, endpoint, or record ID the document came from
+4. **Local file path** — the original filesystem path, when no upstream source exists
+5. **`"unknown"`** — explicit, when the agent considered provenance and could not determine it
+
+**Explicit unknown is better than missing.** Setting `"source_reference": "unknown"` (with a `source_notes` explanation) signals that an agent considered provenance and couldn't determine it. A missing field signals that no one tried.
+
+**Backward compatibility.** `source_url` remains valid and readers should accept either key. New code should write `source_reference`; both keys may coexist on the same document.
+
+**Project-specific override.** Project skills (e.g., a cannabis research skill) may override this hierarchy with stricter, domain-specific rules — for example, requiring a DOI for research papers and tagging missing-DOI papers `provenance:no-doi` and `status:needs-review`.
+
+**Worked examples:**
+
+```json
+{
+  "agent_metadata": {
+    "source_reference": "doi:10.1038/s41586-024-07123-4",
+    "intent": "research",
+    "project": "atlas"
+  }
+}
+```
+
+```json
+{
+  "agent_metadata": {
+    "source_reference": "unknown",
+    "source_notes": "User pasted PDF contents into chat with no filename or URL. Asked but they didn't recall where it came from.",
+    "intent": "reference"
+  }
+}
+```
 
 ### How to write useful `agent_notes`
 

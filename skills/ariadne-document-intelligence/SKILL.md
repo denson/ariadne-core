@@ -327,6 +327,10 @@ agent_type: "claude-cowork"
 initiated_by: "user:denson"
 model: "claude-sonnet-4-6"
 agent_notes: "User uploaded Acme MSA and wants to find the termination clause"
+agent_metadata: {
+  "source_reference": "https://acme.example.com/legal/msa-2026.pdf",
+  "intent": "compliance-review"
+}
 ```
 
 **Example — bad metadata (don't do this):**
@@ -352,6 +356,44 @@ Follow the conventions in SPEC.md "Metadata Conventions" for how to populate
   interoperable
 - Omit keys you don't have values for — don't pass `null`
 
+## Provenance
+
+**Every document MUST have `source_reference` in `agent_metadata`. This is not optional.**
+
+A document with no recorded origin is unverifiable and uncitable. A corpus full of unsourced documents is noise. Recording provenance at ingest time is the single cheapest thing you can do to keep the corpus useful.
+
+### Source-of-truth hierarchy (default)
+
+Use the most authoritative source you have:
+
+1. **DOI** — for research papers. Format `"doi:10.xxxx/..."`. Look in the document text and metadata.
+2. **URL** — the original URL the document was downloaded from.
+3. **Database / API reference** — a query, endpoint, or record ID.
+4. **Local file path** — the original filesystem path.
+5. **`"unknown"`** — explicit, with a `source_notes` explanation.
+
+Project-specific skills (e.g., cannabis, legal, medical) may override this hierarchy with stricter rules per document type. Follow the project skill's rules when one applies.
+
+### Per-tier guidance
+
+- **DOI** — search the first page or document metadata. Many papers have a DOI on page 1 or in the bottom-of-page footer.
+- **URL** — record the **original URL the document came from**, not the `/api/upload` server path. The server path is meaningless to a future agent; the source URL lets them re-fetch and verify.
+- **Database / API** — record the query or endpoint that produced the document, e.g. `"pubmed:32168263"` or `"https://api.example.com/reports/2026-03"`.
+- **Local file** — record the original path as context, e.g. `"file:///D:/research/2026/draft.pdf"`. If the path itself is meaningless out of context, also set `source_notes`.
+- **Unknown** — explicit only. Set `"source_reference": "unknown"` AND a `source_notes` explanation. Never leave the field missing as a way to mean "I don't know".
+
+### Explicit unknown beats missing
+
+`"source_reference": "unknown"` with notes is fine. Missing `source_reference` is not. The explicit value tells the next agent "this was considered" — a missing field tells them "no one tried".
+
+### When to ask
+
+If provenance isn't obvious from the user's message or context, **ask before ingesting**. A reasonable question:
+
+> "Where did this document come from? A URL, a DOI, a database, or somewhere else? I want to record it so we can cite it later."
+
+Asking once at ingest time is much cheaper than discovering six months from now that you have a corpus of unsourced documents.
+
 ## Process: Ingesting a document
 
 1. **Get the file URL** from the user's message or context.
@@ -363,19 +405,25 @@ Follow the conventions in SPEC.md "Metadata Conventions" for how to populate
    If the user references a local file and you have file access (e.g., in Claude
    Code), upload it via `POST /api/upload` first, then use the returned path.
 
-2. **Choose a collection** using the decision tree above. Call `list_collections`
+2. **Determine provenance.** Decide what `source_reference` you'll record in
+   `agent_metadata` (see the Provenance section above). If the user gave you a URL
+   or DOI, that IS the provenance. If they handed you a local file with no context,
+   ask them where it came from before ingesting — don't silently default to
+   `"unknown"`.
+
+3. **Choose a collection** using the decision tree above. Call `list_collections`
    first to see what exists.
 
-3. **Call `convert_document`** with:
+4. **Call `convert_document`** with:
    - `uri`: the URL or server-side path
    - `store`: `true` (default)
    - `collection`: your chosen collection name
    - `tags`: any relevant tags the user mentioned or that describe the document
    - `chunking_config`: only if the user requests a specific chunking strategy or if
      the auto-selection isn't appropriate (see chunking section below)
-   - All caller metadata fields populated
+   - All caller metadata fields populated, including `agent_metadata.source_reference`
 
-4. **Check the response.** The response includes:
+5. **Check the response.** The response includes:
    - `document_id`: UUID for this document (use with `get_document` and search filters)
    - `source_file`: original filename
    - `title`: extracted or inferred document title
@@ -397,7 +445,7 @@ Follow the conventions in SPEC.md "Metadata Conventions" for how to populate
    - `store_status`: `"stored"`, `"not_stored"`, or `"skipped"`
    - `interactions`: present on dedup hits, shows who previously touched this document
 
-5. **Handle errors:**
+6. **Handle errors:**
    - Zero-byte or corrupt file → tell the user the file appears damaged
    - Password-protected → tell the user to remove the password and retry
    - Unsupported format → tell the user which formats are supported
@@ -407,7 +455,7 @@ Follow the conventions in SPEC.md "Metadata Conventions" for how to populate
    - Service unreachable → suggest checking that the Ariadne Core deployment is
      running and the URL is correct
 
-6. **Tell the user what happened.** Which collection, how many chunks, whether it was
+7. **Tell the user what happened.** Which collection, how many chunks, whether it was
    a dedup skip. Keep it brief: "Processed acme-msa-2026.pdf into the acme-review
    collection (47 chunks). It's now searchable."
 

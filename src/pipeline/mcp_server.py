@@ -945,6 +945,15 @@ def _process_single_document(
             "No agent_notes provided. Future agents won't know why this "
             "document was processed."
         )
+    if not agent_metadata or (
+        "source_url" not in agent_metadata
+        and "source_reference" not in agent_metadata
+    ):
+        warnings.append(
+            "No source_url or source_reference in agent_metadata. "
+            "Future agents won't know where this document came from. "
+            "See SPEC.md Metadata Conventions for provenance guidelines."
+        )
 
     response: dict[str, Any] = {
         "document_id": doc_id,
