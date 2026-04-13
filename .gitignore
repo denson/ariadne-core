@@ -37,3 +37,6 @@ walkthrough_html/two_token_economies.png
 .env.backup*
 .claude.json
 .mcp.json
+
+# Agent communication (prompts, reviews, handoffs between Dave and Bob)
+dave_and_bob_communication/

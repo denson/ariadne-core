@@ -48,7 +48,9 @@ CREATE TABLE documents (
     metadata JSONB DEFAULT '{}',
     org_id UUID DEFAULT '00000000-0000-0000-0000-000000000000',
     created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    deleted_at TIMESTAMPTZ DEFAULT NULL,
+    deletion_scheduled_at TIMESTAMPTZ DEFAULT NULL
 );
 
 -- Content fingerprint dedup (scoped to collection)

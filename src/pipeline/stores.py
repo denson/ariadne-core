@@ -145,6 +145,14 @@ def _apply_migrations(pool) -> None:
                 cur.execute(sql)
                 conn.commit()
 
+            # Apply 004 (idempotent — uses IF NOT EXISTS)
+            migration_004 = Path("migrations/004_soft_delete.sql")
+            if migration_004.exists():
+                logger.info("Applying migration 004 (soft_delete) if needed")
+                sql = migration_004.read_text(encoding="utf-8")
+                cur.execute(sql)
+                conn.commit()
+
 
 def _ensure_schema(pool, dimensions: int) -> None:
     """Validate and create/update the chunks table schema."""
