@@ -133,7 +133,7 @@ def ensure_schema(conn, dimensions: int) -> SchemaStatus:
         current_dim = None
         dimension_match = False
     else:
-        current_dim = row[0] - 4  # pgvector stores dim + 4 in atttypmod
+        current_dim = row[0]  # pgvector stores dimension directly in atttypmod
         dimension_match = current_dim == dimensions
 
     if not dimension_match and current_dim is not None:
