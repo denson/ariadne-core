@@ -65,6 +65,9 @@ class EmbeddingClient:
     def dimensions(self) -> int:
         return self._config.dimensions if self._config else 0
 
+    # Maximum texts per API call (Gemini caps at 100)
+    MAX_BATCH_SIZE = 100
+
     def embed_texts(self, texts: list[str]) -> EmbeddingResult:
         """Embed a batch of texts.
 
@@ -89,6 +92,10 @@ class EmbeddingClient:
                 processing_chain_entry={},
             )
 
+        # Split into sub-batches if needed (Gemini limits to 100 per request)
+        if len(texts) > self.MAX_BATCH_SIZE:
+            return self._embed_in_batches(texts)
+
         start = time.perf_counter()
         assert self._config is not None
 
@@ -100,58 +107,82 @@ class EmbeddingClient:
             payload["dimensions"] = self._config.dimensions
 
         body = json.dumps(payload).encode("utf-8")
-        req = Request(
-            self._endpoint,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._config.api_key}",
-            },
-            method="POST",
-        )
 
-        try:
-            with urlopen(req) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-        except HTTPError as e:
-            # Drain the response body so we actually see Google's / OpenAI's
-            # error message, not just "HTTP Error 400: Bad Request".
+        max_retries = 3
+        for attempt in range(max_retries + 1):
             try:
-                err_body = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                err_body = "<could not read response body>"
-            logger.error(
-                "Embedding API call failed: status=%s endpoint=%s model=%s "
-                "dimensions=%s batch_size=%d response_body=%s",
-                e.code,
-                self._endpoint,
-                self._config.model,
-                self._config.dimensions,
-                len(texts),
-                err_body,
-            )
-            raise RuntimeError(
-                f"Embedding API call failed: HTTP {e.code} from "
-                f"{self._endpoint} (model={self._config.model}): {err_body}"
-            ) from e
-        except URLError as e:
-            logger.error(
-                "Embedding API call failed (network/URL): endpoint=%s "
-                "model=%s reason=%s",
-                self._endpoint,
-                self._config.model,
-                e.reason,
-            )
-            raise RuntimeError(
-                f"Embedding API call failed ({self._endpoint}): {e.reason}"
-            ) from e
-        except Exception as e:
-            logger.exception(
-                "Embedding API call failed unexpectedly: endpoint=%s model=%s",
-                self._endpoint,
-                self._config.model,
-            )
-            raise RuntimeError(f"Embedding API call failed: {e}") from e
+                # Re-create request each attempt (urlopen consumes the body)
+                req = Request(
+                    self._endpoint,
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self._config.api_key}",
+                    },
+                    method="POST",
+                )
+                with urlopen(req) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
+                break  # success
+            except HTTPError as e:
+                try:
+                    err_body = e.read().decode("utf-8", errors="replace")
+                except Exception:
+                    err_body = "<could not read response body>"
+
+                # Retry on 429 (rate limit) and 503 (overloaded)
+                if e.code in (429, 503) and attempt < max_retries:
+                    # Try to parse retry delay from response
+                    wait = 2 ** attempt * 5  # 5s, 10s, 20s
+                    try:
+                        err_json = json.loads(err_body)
+                        details = err_json.get("error", {}).get("details", [])
+                        for d in details:
+                            if "retryDelay" in d:
+                                delay_str = d["retryDelay"].rstrip("s")
+                                wait = max(int(float(delay_str)) + 1, wait)
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "Embedding API rate limited (HTTP %s), retrying in %ds "
+                        "(attempt %d/%d)",
+                        e.code, wait, attempt + 1, max_retries,
+                    )
+                    time.sleep(wait)
+                    continue
+
+                logger.error(
+                    "Embedding API call failed: status=%s endpoint=%s model=%s "
+                    "dimensions=%s batch_size=%d response_body=%s",
+                    e.code,
+                    self._endpoint,
+                    self._config.model,
+                    self._config.dimensions,
+                    len(texts),
+                    err_body,
+                )
+                raise RuntimeError(
+                    f"Embedding API call failed: HTTP {e.code} from "
+                    f"{self._endpoint} (model={self._config.model}): {err_body}"
+                ) from e
+            except URLError as e:
+                logger.error(
+                    "Embedding API call failed (network/URL): endpoint=%s "
+                    "model=%s reason=%s",
+                    self._endpoint,
+                    self._config.model,
+                    e.reason,
+                )
+                raise RuntimeError(
+                    f"Embedding API call failed ({self._endpoint}): {e.reason}"
+                ) from e
+            except Exception as e:
+                logger.exception(
+                    "Embedding API call failed unexpectedly: endpoint=%s model=%s",
+                    self._endpoint,
+                    self._config.model,
+                )
+                raise RuntimeError(f"Embedding API call failed: {e}") from e
 
         # Extract embeddings in order (some providers like Gemini omit "index")
         data = result["data"]
@@ -173,6 +204,40 @@ class EmbeddingClient:
 
         return EmbeddingResult(
             embeddings=embeddings,
+            model=self._config.model,
+            total_tokens=total_tokens,
+            processing_time_ms=elapsed_ms,
+            processing_chain_entry=chain_entry,
+        )
+
+    def _embed_in_batches(self, texts: list[str]) -> EmbeddingResult:
+        """Split texts into sub-batches and combine results."""
+        start = time.perf_counter()
+        all_embeddings: list[list[float]] = []
+        total_tokens = 0
+
+        for i in range(0, len(texts), self.MAX_BATCH_SIZE):
+            batch = texts[i : i + self.MAX_BATCH_SIZE]
+            logger.info(
+                "Embedding batch %d-%d of %d",
+                i + 1, i + len(batch), len(texts),
+            )
+            result = self.embed_texts(batch)
+            all_embeddings.extend(result.embeddings)
+            total_tokens += result.total_tokens
+
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        assert self._config is not None
+        chain_entry = {
+            "step": "embedding",
+            "tool": f"openai:{self._config.model}",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "ms": elapsed_ms,
+            "chunks_embedded": len(texts),
+            "total_tokens": total_tokens,
+        }
+        return EmbeddingResult(
+            embeddings=all_embeddings,
             model=self._config.model,
             total_tokens=total_tokens,
             processing_time_ms=elapsed_ms,
