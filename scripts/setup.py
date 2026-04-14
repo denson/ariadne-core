@@ -1722,9 +1722,7 @@ def show_connection(url, ariadne_key):
     mcp_servers[entry_name] = {
         "type": "http",
         "url": f"{url}/mcp",
-        "headers": {
-            "X-API-Key": "${ARIADNE_API_KEY}",
-        },
+        "headersHelper": "python ariadne-core/scripts/mcp_auth.py",
     }
 
     # One-time backup of the original config before our first modification
@@ -1825,8 +1823,9 @@ Document extraction + vector search for AI agents
     )
 
     # setup.py lives at <project>/ariadne-core/scripts/setup.py.
-    # .env belongs in the project root alongside .mcp.json so Claude Code
-    # can resolve ${ARIADNE_API_KEY} from the same directory as .mcp.json.
+    # .env belongs in the project root alongside .mcp.json so the
+    # headersHelper script (scripts/mcp_auth.py) can find it when Claude
+    # Code is started from the project root.
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent
     project_root = repo_root.parent

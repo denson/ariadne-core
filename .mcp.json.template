@@ -3,9 +3,7 @@
     "ariadne-core": {
       "type": "http",
       "url": "https://YOUR-DEPLOYMENT.up.railway.app/mcp",
-      "headers": {
-        "X-API-Key": "${ARIADNE_API_KEY}"
-      }
+      "headersHelper": "python ariadne-core/scripts/mcp_auth.py"
     }
   }
 }
