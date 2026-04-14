@@ -4,7 +4,7 @@
       "type": "http",
       "url": "https://YOUR-DEPLOYMENT.up.railway.app/mcp",
       "headers": {
-        "X-API-Key": "YOUR-ARIADNE-API-KEY"
+        "X-API-Key": "${ARIADNE_API_KEY}"
       }
     }
   }

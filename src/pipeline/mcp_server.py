@@ -192,15 +192,22 @@ async def request_upload_url(
             "error": "Signed uploads are not available: no server API key configured.",
         }, indent=2)
 
-    base_url = os.environ.get("ARIADNE_PUBLIC_BASE_URL")
+    # Resolve the public base URL. Railway sets RAILWAY_PUBLIC_DOMAIN
+    # automatically on every deployment; ARIADNE_PUBLIC_BASE_URL is the
+    # manual override for non-Railway hosts. No localhost fallback —
+    # a presigned URL pointing at localhost would be useless to an agent.
+    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    if railway_domain:
+        base_url = f"https://{railway_domain}"
+    else:
+        base_url = os.environ.get("ARIADNE_PUBLIC_BASE_URL")
     if not base_url:
-        # Fall back to the local API host:port from config
-        try:
-            from pipeline.config import load_config
-            _cfg = load_config()
-            base_url = f"http://localhost:{_cfg.api.port}"
-        except Exception:
-            base_url = "http://localhost:8000"
+        return json.dumps({
+            "error": (
+                "Cannot generate upload URL: no public domain configured. "
+                "Set RAILWAY_PUBLIC_DOMAIN or ARIADNE_PUBLIC_BASE_URL."
+            ),
+        }, indent=2)
 
     expires_in = 300
     url = generate_presigned_url(

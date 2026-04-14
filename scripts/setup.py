@@ -1721,7 +1721,7 @@ def show_connection(url, ariadne_key):
         "type": "http",
         "url": f"{url}/mcp",
         "headers": {
-            "X-API-Key": ariadne_key,
+            "X-API-Key": "${ARIADNE_API_KEY}",
         },
     }
 
