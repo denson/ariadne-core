@@ -70,6 +70,68 @@ You have the following MCP tools when Ariadne Core is connected:
 - **`ingest`** — Batch-ingest files from a server-side directory. Use when files have
   been uploaded to the server and need bulk processing.
 
+## When to use CLI scripts vs MCP tools
+
+Atomic operations belong in MCP. Bulk operations belong in CLI scripts run via
+Bash. Mixing these up is the single most expensive mistake you can make with
+Ariadne — looping MCP calls over a directory of files burns LLM context on
+every iteration, which is exactly the waste Ariadne exists to prevent.
+
+### Atomic operations → MCP tools
+
+Use the MCP tools when the work is a single operation the agent needs to
+reason about:
+
+- `search` — find chunks matching a query
+- `get_document` — retrieve one document's content
+- `convert_document` — extract one document (when you have its content or URI)
+- `update_document` — patch one document's metadata
+- `delete_document` / `restore_document` — manage one document's lifecycle
+- `list_collections` / `list_documents` — browse what's there
+
+### Bulk operations → CLI scripts via Bash
+
+Use CLI scripts when processing many files at once. The scripts talk to
+Ariadne's REST API directly, so file bytes NEVER pass through the LLM
+context. This is the whole point of Ariadne — don't waste tokens on data
+movement.
+
+**Available CLI scripts** (in `ariadne-core/scripts/`):
+
+| Script | Purpose | Example |
+|---|---|---|
+| `bulk_ingest.py` | Upload + convert a whole directory | `python ariadne-core/scripts/bulk_ingest.py data/reports --collection wb_reports --tags type:report,topic:policy` |
+
+**When to use `bulk_ingest.py`:**
+
+- User says "ingest this folder" / "process all these documents" / "load these files"
+- Directory contains more than 5 files
+- You don't need to see the content of each file before ingesting
+
+**How to use it:**
+
+1. Confirm with the user: target directory, collection name, any tags.
+2. Run via Bash:
+   ```
+   python ariadne-core/scripts/bulk_ingest.py <dir> --collection <name> --tags <tags>
+   ```
+   Useful flags: `--recursive`, `--dry-run`, `--skip-existing`, `--max-files N`,
+   `--extensions pdf,docx`, `--agent-notes "..."`. The script reads the server
+   URL and API key from `.mcp.json` + `.env`, so no credentials in the command
+   line.
+3. Read the summary output — attempted, succeeded, failed, skipped (dedup),
+   elapsed.
+4. Report to the user: how many succeeded, how many failed, and where the
+   error log lives (`<dir>/bulk_ingest_errors.log`) if anything failed.
+
+**DO NOT** loop over files calling `convert_document` via MCP. That defeats
+Ariadne's core value proposition (saving LLM tokens). One Bash call to
+`bulk_ingest.py` replaces one MCP call per file plus one per upload — all
+of them forcing the LLM to think about files it doesn't need to see.
+
+If the user wants a dry run first, use `--dry-run`. It scans, filters, and
+prints the file list without uploading anything.
+
 ## When to use `convert_document` instead of reading files directly
 
 When you encounter a document — PDF, DOCX, PPTX, XLSX, or any supported format —
@@ -385,6 +447,11 @@ If provenance isn't obvious from the user's message or context, **ask before ing
 Asking once at ingest time is much cheaper than discovering six months from now that you have a corpus of unsourced documents.
 
 ## Process: Ingesting a document
+
+> **Is this a single file or many files?** For bulk ingestion (more than 5
+> files, or a whole directory), skip this process entirely and use
+> `scripts/bulk_ingest.py` via Bash instead. See the "When to use CLI scripts
+> vs MCP tools" section above.
 
 1. **Get the file URL** from the user's message or context.
 
