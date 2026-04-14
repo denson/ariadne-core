@@ -1824,25 +1824,14 @@ Document extraction + vector search for AI agents
     """
     )
 
-    # Determine repo root and project root.
     # setup.py lives at <project>/ariadne-core/scripts/setup.py.
-    # The .env belongs in the project root alongside .mcp.json, not inside
-    # the cloned repo — Claude Code resolves ${ARIADNE_API_KEY} from the .env
-    # in the same directory as .mcp.json, so they have to live together.
+    # .env belongs in the project root alongside .mcp.json so Claude Code
+    # can resolve ${ARIADNE_API_KEY} from the same directory as .mcp.json.
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent
     project_root = repo_root.parent
     env_path = project_root / ".env"
-    legacy_env_path = repo_root / ".env"
     env_example = repo_root / ".env.example"
-
-    # Backward compat: if a legacy .env exists inside the repo but not at
-    # the project root, keep using the legacy location so existing installs
-    # don't lose their configuration.
-    if legacy_env_path.exists() and not env_path.exists():
-        env_path = legacy_env_path
-        print(f"  Using existing .env inside repo: {env_path}")
-        print(f"  (new installs will write .env to {project_root} instead)\n")
 
     if not env_example.exists():
         print("  Error: .env.example not found. Are you running from the ariadne-core repo?")
