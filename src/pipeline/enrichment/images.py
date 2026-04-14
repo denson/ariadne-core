@@ -163,6 +163,16 @@ class ImageEnricher:
             processing_chain_entry=chain_entry,
         )
 
+    def describe_image(self, file_path: str) -> str:
+        """Get a description for a standalone image file via the vision API.
+
+        Unlike ``enrich()``, which scans Markdown for embedded image references,
+        this calls the vision client directly on a single image file. Used for
+        standalone image ingestion where MarkItDown produces no extractable text.
+        """
+        assert self._client is not None
+        return self._client.describe_image_from_path(file_path)
+
     def _describe_image(self, image_ref: str) -> str:
         """Get a description for an image via the vision API."""
         assert self._client is not None

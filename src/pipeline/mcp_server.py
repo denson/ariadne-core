@@ -7,7 +7,9 @@ Import `app` for programmatic use.
 import asyncio
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -970,6 +972,14 @@ async def delete_collection(
     )
 
 
+# File extensions that should be treated as standalone images when
+# MarkItDown produces no extractable text. These trigger a direct
+# vision-model call in _process_single_document.
+_STANDALONE_IMAGE_EXTENSIONS = {
+    "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "svg",
+}
+
+
 # Supported file extensions for ingestion
 SUPPORTED_EXTENSIONS = {
     "pdf", "docx", "pptx", "xlsx", "xls", "csv", "tsv",
@@ -1009,14 +1019,47 @@ def _process_single_document(
         }
 
     if not result.markdown or not result.markdown.strip():
-        return {
-            "error": True,
-            "message": f"Extraction produced empty output for {result.source_file}. "
-                       "Image files require vision API configuration. "
-                       "Check ARIADNE_IMAGE_ENRICHMENT_API_KEY.",
-            "document_id": result.document_id,
-            "source_file": result.source_file,
-        }
+        ext = (result.file_type or "").lower().lstrip(".")
+        is_image = ext in _STANDALONE_IMAGE_EXTENSIONS
+
+        if is_image and _image_enricher.enabled:
+            # Standalone image: MarkItDown produced no text, so call the
+            # vision model directly on the image file. The resulting
+            # description becomes the document's markdown content.
+            local_path = uri
+            if uri.startswith("file://"):
+                local_path = uri[len("file://"):]
+            vision_start = time.perf_counter()
+            try:
+                description = _image_enricher.describe_image(local_path)
+            except Exception as e:
+                return {
+                    "error": True,
+                    "message": (
+                        f"Vision extraction failed for {result.source_file}: {e}"
+                    ),
+                    "document_id": result.document_id,
+                    "source_file": result.source_file,
+                }
+            vision_ms = int((time.perf_counter() - vision_start) * 1000)
+            result.markdown = f"# Image: {result.source_file}\n\n{description}"
+            result.file_type = ext
+            result.output_tokens_estimate = max(1, len(result.markdown) // 4)
+            result.processing_chain.append({
+                "step": "vision_extraction",
+                "tool": "image_enricher",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "ms": vision_ms,
+            })
+        else:
+            return {
+                "error": True,
+                "message": f"Extraction produced empty output for {result.source_file}. "
+                           "Image files require vision API configuration. "
+                           "Check ARIADNE_IMAGE_ENRICHMENT_API_KEY.",
+                "document_id": result.document_id,
+                "source_file": result.source_file,
+            }
 
     fingerprint = compute_fingerprint(result.markdown)
 
