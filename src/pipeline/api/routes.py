@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field
 
 from pipeline.api.auth import APIKey, check_api_key
+from pipeline.api.signing import mark_signature_used, verify_signature
 import pipeline.mcp_server as _mcp
 
 router = APIRouter()
@@ -128,6 +129,81 @@ async def upload_file(
             counter += 1
 
     content = await file.read()
+    dest.write_bytes(content)
+
+    return {
+        "path": str(dest),
+        "filename": safe_name,
+        "size_bytes": len(content),
+    }
+
+
+# ── Signed upload endpoint (no API key header; HMAC-signed query params) ────
+
+
+@router.post("/upload/signed")
+async def upload_file_signed(
+    file: UploadFile = File(...),
+    filename: str = Query(...),
+    expires: int = Query(...),
+    max_size: int = Query(...),
+    signature: str = Query(...),
+):
+    """Upload a file using a presigned URL. No X-API-Key header required.
+
+    The signature must have been generated server-side via
+    `pipeline.api.signing.generate_presigned_url` using the server's
+    ARIADNE_API_KEY as the secret. Each signature is single-use.
+    """
+    import os
+    from pathlib import Path as _Path
+
+    secret_key = os.environ.get("ARIADNE_API_KEY")
+    if not secret_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Signed uploads are not available: no server API key configured.",
+        )
+
+    if not verify_signature(filename, expires, max_size, signature, secret_key):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid or expired upload signature.",
+        )
+
+    uploaded_name = _Path(file.filename).name if file.filename else "upload"
+    if uploaded_name != filename:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded filename does not match signed filename.",
+        )
+
+    content = await file.read()
+    if len(content) > max_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds max_size of {max_size} bytes.",
+        )
+
+    if not mark_signature_used(signature, expires):
+        raise HTTPException(
+            status_code=409,
+            detail="Upload signature has already been consumed.",
+        )
+
+    upload_dir = _Path(os.environ.get("ARIADNE_UPLOAD_DIR", "./data/uploads"))
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = _Path(filename).name
+    dest = upload_dir / safe_name
+    if dest.exists():
+        stem = dest.stem
+        suffix = dest.suffix
+        counter = 1
+        while dest.exists():
+            dest = upload_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+
     dest.write_bytes(content)
 
     return {

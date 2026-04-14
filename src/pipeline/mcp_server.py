@@ -58,8 +58,12 @@ searchable vector embeddings.
 AVAILABLE TOOLS:
 
 - convert_document — Extract a single document to Markdown from a URL or server-side \
-path. Chunks, embeds, and stores it by default. For local files, upload via the REST \
-endpoint POST /api/upload first, then pass the returned server-side path here.
+path. Chunks, embeds, and stores it by default. For local files: call \
+request_upload_url to get a time-limited upload URL, POST the file to that URL (no \
+auth header needed), then call convert_document with the returned server-side path.
+- request_upload_url — Get a presigned, single-use, time-limited URL that you can \
+POST a local file to without any authentication header. Use this instead of asking \
+the user for an API key.
 - search — Semantic search over stored documents. Supports filters for collection, \
 source_file, file_type, tags, and document_id. Pass include_deleted=true to include \
 soft-deleted documents.
@@ -159,6 +163,63 @@ def configure_stores(dedup_store, vector_store) -> None:
     global _dedup_store, _vector_store
     _dedup_store = dedup_store
     _vector_store = vector_store
+
+
+@app.tool()
+async def request_upload_url(
+    filename: str,
+    content_type: Optional[str] = None,
+) -> str:
+    """Get a presigned upload URL for a local file — no API key needed by the agent.
+
+    The returned URL is single-use and expires in 5 minutes. POST the file
+    to it as multipart form data with field name 'file' (no auth header).
+    On success, the server returns a JSON body with `path` — pass that
+    path to `convert_document` to extract and store the document.
+
+    Args:
+        filename: The name of the file being uploaded (e.g. "report.pdf").
+        content_type: Optional MIME type hint.
+
+    Returns:
+        JSON string with upload_url, expires_in, method, and instructions.
+    """
+    from pipeline.api.signing import generate_presigned_url
+
+    secret_key = os.environ.get("ARIADNE_API_KEY")
+    if not secret_key:
+        return json.dumps({
+            "error": "Signed uploads are not available: no server API key configured.",
+        }, indent=2)
+
+    base_url = os.environ.get("ARIADNE_PUBLIC_BASE_URL")
+    if not base_url:
+        # Fall back to the local API host:port from config
+        try:
+            from pipeline.config import load_config
+            _cfg = load_config()
+            base_url = f"http://localhost:{_cfg.api.port}"
+        except Exception:
+            base_url = "http://localhost:8000"
+
+    expires_in = 300
+    url = generate_presigned_url(
+        base_url=base_url,
+        filename=filename,
+        secret_key=secret_key,
+        expires_in=expires_in,
+    )
+
+    return json.dumps({
+        "upload_url": url,
+        "expires_in": expires_in,
+        "method": "POST",
+        "instructions": (
+            "POST the file as multipart form data with field name 'file'. "
+            "No authentication header needed. On success, pass the returned "
+            "`path` to convert_document."
+        ),
+    }, indent=2)
 
 
 @app.tool()
