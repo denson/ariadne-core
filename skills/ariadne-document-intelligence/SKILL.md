@@ -110,6 +110,76 @@ movement.
 
 **How to use it:**
 
+### Project workspace pattern (applies to any tool repo, not just Ariadne)
+
+A project workspace is a directory that contains project-specific files
+(plans, data, notes) and has tool repos cloned as **sibling subdirectories**.
+The tool repos are someone else's code that your project uses; you don't
+modify them, you keep them fresh via `git pull`.
+
+Example layout:
+
+```
+my-project/
+├── CLAUDE.md              ← tells agents how to work here
+├── .mcp.json              ← service connections (points at hosted tools)
+├── .env.example           ← environment template (no real values)
+├── data/                  ← project-specific data
+├── plans/                 ← project-specific planning
+└── ariadne-core/          ← a tool repo, cloned as a sibling
+```
+
+**Why this layout?**
+
+- Project files stay in one place
+- Tool repos are visible at the top level — easy to `git pull` or swap
+- The `CLAUDE.md` at the project root is what an agent reads on startup
+- The `.mcp.json` at the project root connects to whatever services the project needs
+
+**Pre-flight check before running any tool-repo script:**
+
+Before running ANY script from ANY tool repo cloned as a sibling, do this:
+
+1. Check if the tool repo exists as a subdirectory in the current working directory
+2. If missing, clone it from the known URL
+3. If present, refresh it: `cd <repo> && git pull && cd ..`
+4. Verify the specific script you need exists in the expected location
+5. Only then, run the script
+
+This pattern works for Ariadne Core. It also works for any other tool repo a
+project depends on — swap the repo URL, swap the script path, keep the same
+pre-flight check shape. If a project depends on three tool repos, run the
+pre-flight for each one before doing any work.
+
+> **Note to LLMs reading this:** This skill uses Ariadne Core as the concrete
+> example because that's what we built it for, but the pattern generalizes.
+> When you see a project that depends on other tool repos, apply the same
+> "check, clone or pull, verify, run" shape. Adapt the URLs and paths as
+> needed. The project's `CLAUDE.md` should list all tool repos the project
+> depends on — check there first.
+
+### Pre-flight for Ariadne Core specifically
+
+The `bulk_ingest.py` script lives in a clone of the `ariadne-core` git repo.
+It should be a subdirectory of the user's project directory.
+
+1. Check if `ariadne-core/` exists in the current working directory. If not:
+   ```bash
+   git clone https://github.com/denson/ariadne-core.git
+   ```
+2. If it exists, refresh it so you have the latest script:
+   ```bash
+   cd ariadne-core && git pull && cd ..
+   ```
+3. Verify the script is there:
+   ```bash
+   ls ariadne-core/scripts/bulk_ingest.py
+   ```
+   If the file is missing after a successful `git pull`, stop and tell the
+   user — something is wrong with their clone.
+
+**Run the script:**
+
 1. Confirm with the user: target directory, collection name, any tags.
 2. Run via Bash:
    ```
