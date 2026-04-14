@@ -1030,6 +1030,138 @@ def get_railway_token():
         print("  Token not valid. Check that you copied the full token.\n")
 
 
+def _time_ago(iso_str):
+    """Format an ISO 8601 timestamp as a relative time string ("2h ago")."""
+    if not iso_str:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - dt
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return f"{secs}s ago"
+        if secs < 3600:
+            return f"{secs // 60}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+    except Exception:
+        return ""
+
+
+def inspect_railway_project(token, project_id):
+    """Query Railway for a project's services, latest deployment, domain, health.
+
+    Returns a dict with keys: id, short_id, services, status, deployed_at,
+    url, health, stats. Best-effort — fields stay None on failure.
+    """
+    info = {
+        "id": project_id,
+        "short_id": project_id[:8],
+        "services": [],
+        "status": "unknown",
+        "deployed_at": None,
+        "url": None,
+        "health": None,
+        "stats": None,
+    }
+    query = """query($id: String!) {
+        project(id: $id) {
+            services {
+                edges {
+                    node {
+                        id
+                        name
+                        deployments(first: 1) {
+                            edges { node { status createdAt } }
+                        }
+                        serviceInstances {
+                            edges {
+                                node {
+                                    domains {
+                                        serviceDomains { domain }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }"""
+    result = railway_gql(token, query, {"id": project_id})
+    project = ((result or {}).get("data") or {}).get("project")
+    if not project:
+        return info
+
+    latest_status = None
+    latest_created = None
+    for edge in (project.get("services") or {}).get("edges") or []:
+        node = edge.get("node") or {}
+        svc_name = node.get("name") or ""
+        info["services"].append(svc_name)
+
+        is_app = "pgvector" not in svc_name.lower() and "postgres" not in svc_name.lower()
+
+        deploy_edges = ((node.get("deployments") or {}).get("edges")) or []
+        if deploy_edges and is_app:
+            dnode = deploy_edges[0].get("node") or {}
+            latest_status = (dnode.get("status") or "").lower()
+            latest_created = dnode.get("createdAt")
+
+        if is_app and not info["url"]:
+            for sie in ((node.get("serviceInstances") or {}).get("edges")) or []:
+                sinode = sie.get("node") or {}
+                domains = (sinode.get("domains") or {}).get("serviceDomains") or []
+                for d in domains:
+                    if d.get("domain"):
+                        info["url"] = d["domain"]
+                        break
+                if info["url"]:
+                    break
+
+    if latest_status:
+        if latest_status in ("success", "deployed"):
+            info["status"] = "running"
+        elif latest_status in ("building", "deploying", "initializing", "queued", "waiting"):
+            info["status"] = "deploying"
+        elif latest_status in ("failed", "crashed", "error"):
+            info["status"] = "failed"
+        elif latest_status == "removed":
+            info["status"] = "removed"
+        else:
+            info["status"] = latest_status
+        info["deployed_at"] = latest_created
+    elif info["services"]:
+        info["status"] = "empty"
+
+    if info["url"] and info["status"] == "running":
+        try:
+            req = urllib.request.Request(
+                f"https://{info['url']}/api/health",
+                headers={"User-Agent": "ariadne-core-setup/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                hdata = json.loads(resp.read())
+                info["health"] = "healthy" if hdata.get("status") == "healthy" else "unhealthy"
+        except Exception:
+            info["health"] = "unreachable"
+
+        if info["health"] == "healthy":
+            try:
+                req = urllib.request.Request(
+                    f"https://{info['url']}/api/stats",
+                    headers={"User-Agent": "ariadne-core-setup/1.0"},
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    info["stats"] = json.loads(resp.read())
+            except Exception:
+                pass
+
+    return info
+
+
 def deploy_railway(env_path, env_vars):
     """Deploy Ariadne Core to Railway via the GraphQL API.
 
@@ -1099,9 +1231,13 @@ def deploy_railway(env_path, env_vars):
     print(f"  Workspace: {team_name}\n")
 
     # --- Project name (optional), with collision check ---
-    # Build a lowercase-name -> project-id map so we can offer to update an
-    # existing project in place instead of creating a duplicate.
-    existing_by_name = {p["name"].lower(): p["id"] for p in existing_projects}
+    # Build a lowercase-name -> [project-ids] map so we can offer to update
+    # any of the matching projects instead of creating a duplicate. Multiple
+    # projects can share a name (Railway allows it), and the user needs to
+    # see *which* one they're about to update.
+    existing_by_name = {}
+    for p in existing_projects:
+        existing_by_name.setdefault(p["name"].lower(), []).append(p["id"])
     update_existing_id = None  # set if the user chooses "Update existing"
     print('  What would you like to name this project? (e.g. "my-ariadne", "ree-research")')
     print("  Press Enter for Railway's default:")
@@ -1109,22 +1245,75 @@ def deploy_railway(env_path, env_vars):
         project_name = input("\n  Name: ").strip()
         if not project_name:
             break
-        if project_name.lower() not in existing_by_name:
+        match_ids = existing_by_name.get(project_name.lower())
+        if not match_ids:
             break
         print()
         print(f'  A project named "{project_name}" already exists in this workspace.\n')
-        options = [
-            "Update the existing project (reuse it, re-upsert env vars, redeploy)",
-            "Use a different name",
-            "Deploy anyway (creates a second project with the same name)",
-        ]
-        choice = prompt_choice(options, default=0)
-        if choice == 0:
-            update_existing_id = existing_by_name[project_name.lower()]
+        print("  Looking up existing project(s)...", end="", flush=True)
+        infos = [inspect_railway_project(token, pid) for pid in match_ids]
+        print(" OK\n")
+        print("  Existing projects with this name:\n")
+        for i, info in enumerate(infos, 1):
+            status_line = info["status"]
+            if info["status"] == "running" and info["deployed_at"]:
+                ago = _time_ago(info["deployed_at"])
+                if ago:
+                    status_line = f"running (last deployed {ago})"
+            print(f"  {i}. {project_name} ({info['short_id']})")
+            print(f"     Status:   {status_line}")
+            if info["url"]:
+                print(f"     URL:      {info['url']}")
+            if info["services"]:
+                print(f"     Services: {', '.join(info['services'])}")
+            if info["health"]:
+                print(f"     Health:   {info['health']}")
+            if info["stats"]:
+                docs = (
+                    info["stats"].get("documents")
+                    or info["stats"].get("total_documents")
+                    or info["stats"].get("document_count")
+                )
+                cols = (
+                    info["stats"].get("collections")
+                    or info["stats"].get("total_collections")
+                    or info["stats"].get("collection_count")
+                )
+                if docs is not None:
+                    line = f"{docs} documents"
+                    if cols is not None:
+                        line += f" across {cols} collections"
+                    print(f"     Docs:     {line}")
+            print()
+
+        # Default to the first running+healthy match if any, else the first
+        # entry. prompt_choice expects a 1-based default.
+        default_pick = 1
+        for i, info in enumerate(infos, 1):
+            if info["status"] == "running" and info["health"] == "healthy":
+                default_pick = i
+                break
+
+        options = []
+        for i, info in enumerate(infos, 1):
+            label = f"Update project {i} ({info['short_id']}"
+            if info["status"] != "unknown":
+                label += f" — {info['status']}"
+            label += ")"
+            options.append(label)
+        rename_idx = len(options)  # 0-based index of "Use a different name"
+        options.append("Use a different name")
+        new_idx = len(options)
+        options.append(f'Deploy as a new project (creates another "{project_name}")')
+
+        choice = prompt_choice(options, default=default_pick)
+        if choice == rename_idx:
+            # loop and re-prompt for a name
+            continue
+        if choice == new_idx:
             break
-        if choice == 2:
-            break
-        # choice == 1: loop and re-prompt for a name
+        update_existing_id = infos[choice]["id"]
+        break
     print()
 
     if update_existing_id:
@@ -1450,18 +1639,25 @@ def show_connection(url, ariadne_key):
         project_dir = None
     else:
         scope = "project"
+        # The script lives at <user-project>/ariadne-core/scripts/setup.py.
+        # The user clones the repo into their own project directory, so the
+        # MCP config belongs in the parent of the ariadne-core checkout — not
+        # in cwd, which is usually inside the repo itself when the script runs.
+        script_dir = Path(__file__).resolve().parent
+        repo_dir = script_dir.parent
+        suggested_dir = repo_dir.parent
         print()
-        print("  Which project directory should this MCP connection be available in?")
+        print("  Where should this MCP connection be available in?")
         print("  (This is where you'll run Claude Code to work with your documents)")
         print()
-        print("  Press Enter for the current directory:")
-        print(f"    {Path.cwd()}")
+        print(f"  Suggested: {suggested_dir}")
+        print("  (parent of the ariadne-core repo you cloned into)")
         print()
-        print("  Or type a different path:")
+        print("  Press Enter to accept, or type a different path:")
         while True:
             raw = input("  Path: ").strip()
             if not raw:
-                project_dir = Path.cwd()
+                project_dir = suggested_dir
                 break
             candidate = Path(raw).expanduser()
             if candidate.is_dir():
