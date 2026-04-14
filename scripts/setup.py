@@ -34,7 +34,7 @@ PROVIDERS = {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "models_endpoint": "https://generativelanguage.googleapis.com/v1beta/models",
         "docs_url": "https://ai.google.dev/gemini-api/docs/models",
-        "default_embedding": "gemini-embedding-2-preview",
+        "default_embedding": "gemini-embedding-001",
         "default_vision": "gemini-3.1-flash-lite-preview",
     },
     "openai": {
@@ -62,7 +62,7 @@ PROVIDERS = {
 }
 
 # pgvector HNSW indexes support max 2000 dimensions.
-# gemini-embedding-2-preview supports up to 3072 but we cap at 1536
+# gemini-embedding-001 supports up to 3072 but we cap at 1536
 # to stay within pgvector's HNSW limit. Weaviate (Managed edition)
 # will support the full 3072.
 DIMENSION_OPTIONS = [
@@ -73,7 +73,7 @@ DIMENSION_OPTIONS = [
 DEFAULTS_TABLE = """
 Provider defaults:
   Google Gemini (recommended):
-    Embedding: gemini-embedding-2-preview
+    Embedding: gemini-embedding-001
     Vision:    gemini-3.1-flash-lite-preview
     Docs:      https://ai.google.dev/gemini-api/docs/models
 
@@ -710,7 +710,12 @@ def choose_models(provider_key, provider_config, api_key):
         print("  Embedding models:")
         display = []
         for m in embedding_models[:6]:
-            label = f"{m} (recommended)" if m == default_emb else m
+            if m == default_emb:
+                label = f"{m} (recommended)"
+            elif "preview" in m.lower():
+                label = f"{m} (experimental)"
+            else:
+                label = m
             display.append(label)
         display.append("Enter a model name manually")
         emb_idx = prompt_choice(display, default=1)
