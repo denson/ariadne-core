@@ -41,6 +41,7 @@ This repo is a Claude Code plugin. Skills are at `skills/`. Plugin manifest at `
 ```bash
 docker compose up -d          # start Postgres
 pip install -e src/           # install the app
+pip install -e client/        # install the client package
 ariadne-core serve            # start REST API (:8000)
 ```
 
