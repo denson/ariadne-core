@@ -1253,6 +1253,10 @@ def _process_single_document(
                 "is configured — image descriptions were not generated"
             )
 
+    # Merge encoding/language tags from extraction into the document's tag list
+    if hasattr(result, 'suggested_tags') and result.suggested_tags:
+        tags = list(tags or []) + result.suggested_tags
+
     stored_doc = StoredDocument(
         document_id=result.document_id,
         collection_id=collection,

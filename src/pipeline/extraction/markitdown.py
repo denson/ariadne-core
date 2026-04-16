@@ -15,6 +15,9 @@ from urllib.request import urlretrieve
 
 from markitdown import MarkItDown
 
+from pipeline.extraction.text_encoding import detect_and_decode, validate_language
+from pipeline.config import load_config
+
 
 @dataclass
 class ExtractionResult:
@@ -33,6 +36,7 @@ class ExtractionResult:
     processing_chain: list[dict[str, Any]]
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    suggested_tags: list[str] = field(default_factory=list)
 
 
 def _guess_file_type(source: str) -> str:
@@ -74,8 +78,32 @@ class MarkItDownExtractor:
         # Resolve URI to a local path for conversion
         local_path = self._resolve_uri(uri)
 
+        # For .txt files, decode with charset-normalizer first to handle
+        # non-UTF-8 encodings (cp1252, cp1251, latin-1, etc.)
+        encoding_info: dict[str, Any] | None = None
+        txt_temp_path: str | None = None
+        if file_type == "txt":
+            try:
+                decoded_text, detected_encoding, enc_confidence = detect_and_decode(
+                    Path(local_path)
+                )
+                encoding_info = {
+                    "detected_encoding": detected_encoding,
+                    "encoding_confidence": enc_confidence,
+                }
+                # Write decoded text as UTF-8 to a temp file for MarkItDown
+                fd, txt_temp_path = tempfile.mkstemp(suffix=".txt")
+                os.close(fd)
+                Path(txt_temp_path).write_text(decoded_text, encoding="utf-8")
+            except Exception as e:
+                errors.append(f"Encoding detection failed: {e}")
+                encoding_info = None
+                txt_temp_path = None
+
+        convert_path = txt_temp_path if txt_temp_path else local_path
+
         try:
-            result = self._md.convert(local_path)
+            result = self._md.convert(convert_path)
             markdown = result.markdown or ""
             title = result.title
         except Exception as e:
@@ -87,6 +115,12 @@ class MarkItDownExtractor:
             if local_path != uri and local_path != self._strip_file_scheme(uri):
                 try:
                     os.unlink(local_path)
+                except OSError:
+                    pass
+            # Clean up temp file from encoding re-write
+            if txt_temp_path:
+                try:
+                    os.unlink(txt_temp_path)
                 except OSError:
                     pass
 
@@ -111,6 +145,56 @@ class MarkItDownExtractor:
             }
         ]
 
+        # Encoding detection + LLM language validation for .txt files
+        suggested_tags: list[str] = []
+        if file_type == "txt" and encoding_info is not None:
+            detected_encoding = encoding_info["detected_encoding"]
+            enc_confidence = encoding_info["encoding_confidence"]
+
+            # LLM language validation
+            validation_start = time.perf_counter()
+            try:
+                config = load_config()
+                lang_result = validate_language(markdown, config.image_enrichment)
+            except Exception:
+                from pipeline.config import ImageEnrichmentConfig
+                lang_result = validate_language(markdown, ImageEnrichmentConfig())
+            validation_ms = int((time.perf_counter() - validation_start) * 1000)
+
+            processing_chain.append({
+                "step": "encoding_detection",
+                "detected_encoding": detected_encoding,
+                "encoding_confidence": enc_confidence,
+                "language": lang_result.language,
+                "language_script": lang_result.script,
+                "language_confidence": lang_result.confidence,
+                "coherent": lang_result.coherent,
+                "llm_model": lang_result.model,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "ms": validation_ms,
+            })
+
+            # Warnings
+            if detected_encoding.lower() not in ("utf-8", "ascii", "utf_8"):
+                warnings.append(
+                    f"Source file encoding: {detected_encoding} (not UTF-8)"
+                )
+            if lang_result.confidence == "low":
+                warnings.append("Encoding validation: low confidence")
+            if not lang_result.coherent:
+                warnings.append("Encoding validation: text may be garbled")
+
+            # Tags
+            if detected_encoding.lower() not in ("utf-8", "ascii", "utf_8"):
+                suggested_tags.append(f"encoding:{detected_encoding}")
+            if lang_result.language and lang_result.language != "unknown":
+                suggested_tags.append(f"language:{lang_result.language}")
+            if lang_result.confidence == "low":
+                suggested_tags.append("encoding:low-confidence")
+            if not lang_result.coherent:
+                suggested_tags.append("encoding:suspect")
+                suggested_tags.append("status:needs-review")
+
         return ExtractionResult(
             document_id=document_id,
             source_file=source_file,
@@ -125,6 +209,7 @@ class MarkItDownExtractor:
             processing_chain=processing_chain,
             warnings=warnings,
             errors=errors,
+            suggested_tags=suggested_tags,
         )
 
     def _resolve_uri(self, uri: str) -> str:
