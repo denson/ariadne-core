@@ -78,10 +78,11 @@ class MarkItDownExtractor:
         # Resolve URI to a local path for conversion
         local_path = self._resolve_uri(uri)
 
-        # For .txt files, decode with charset-normalizer first to handle
-        # non-UTF-8 encodings (cp1252, cp1251, latin-1, etc.)
+        # For .txt files, decode with charset-normalizer and use the decoded
+        # text directly as markdown. MarkItDown's content sniffer (Magika)
+        # misdetects valid UTF-8 as ASCII, crashing on multi-byte characters.
         encoding_info: dict[str, Any] | None = None
-        txt_temp_path: str | None = None
+        txt_decoded: str | None = None
         if file_type == "txt":
             try:
                 decoded_text, detected_encoding, enc_confidence = detect_and_decode(
@@ -91,38 +92,38 @@ class MarkItDownExtractor:
                     "detected_encoding": detected_encoding,
                     "encoding_confidence": enc_confidence,
                 }
-                # Write decoded text as UTF-8 to a temp file for MarkItDown
-                fd, txt_temp_path = tempfile.mkstemp(suffix=".txt")
-                os.close(fd)
-                Path(txt_temp_path).write_text(decoded_text, encoding="utf-8")
+                txt_decoded = decoded_text
             except Exception as e:
                 errors.append(f"Encoding detection failed: {e}")
                 encoding_info = None
-                txt_temp_path = None
 
-        convert_path = txt_temp_path if txt_temp_path else local_path
-
-        try:
-            result = self._md.convert(convert_path)
-            markdown = result.markdown or ""
-            title = result.title
-        except Exception as e:
-            errors.append(str(e))
-            markdown = ""
+        if txt_decoded is not None:
+            # .txt: use charset-normalizer output directly, skip MarkItDown
+            markdown = txt_decoded
             title = None
-        finally:
-            # Clean up temp files from URL downloads
+            # Still clean up URL download temp files if applicable
             if local_path != uri and local_path != self._strip_file_scheme(uri):
                 try:
                     os.unlink(local_path)
                 except OSError:
                     pass
-            # Clean up temp file from encoding re-write
-            if txt_temp_path:
-                try:
-                    os.unlink(txt_temp_path)
-                except OSError:
-                    pass
+        else:
+            # All non-.txt files (and .txt fallback if detection failed)
+            try:
+                result = self._md.convert(local_path)
+                markdown = result.markdown or ""
+                title = result.title
+            except Exception as e:
+                errors.append(str(e))
+                markdown = ""
+                title = None
+            finally:
+                # Clean up temp files from URL downloads
+                if local_path != uri and local_path != self._strip_file_scheme(uri):
+                    try:
+                        os.unlink(local_path)
+                    except OSError:
+                        pass
 
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         output_tokens = _estimate_tokens(markdown)
