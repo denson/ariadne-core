@@ -70,137 +70,98 @@ You have the following MCP tools when Ariadne Core is connected:
 - **`ingest`** — Batch-ingest files from a server-side directory. Use when files have
   been uploaded to the server and need bulk processing.
 
-## When to use CLI scripts vs MCP tools
+## How to ingest documents
 
-Atomic operations belong in MCP. Bulk operations belong in CLI scripts run via
-Bash. Mixing these up is the single most expensive mistake you can make with
-Ariadne — looping MCP calls over a directory of files burns LLM context on
-every iteration, which is exactly the waste Ariadne exists to prevent.
+**Single file or directory?** This is the first decision. Get it wrong and you
+burn LLM tokens on data movement — exactly the waste Ariadne exists to prevent.
 
-### Atomic operations → MCP tools
+### Path A — Single file (upload + convert_document)
 
-Use the MCP tools when the work is a single operation the agent needs to
-reason about:
+The most common case. User drops a file, pastes a URL, says "ingest this."
 
-- `search` — find chunks matching a query
-- `get_document` — retrieve one document's content
-- `convert_document` — extract one document (when you have its content or URI)
-- `update_document` — patch one document's metadata
-- `delete_document` / `restore_document` — manage one document's lifecycle
-- `list_collections` / `list_documents` — browse what's there
+**Step 1 — Upload the file via REST:**
 
-### Bulk operations → CLI scripts via Bash
-
-Use CLI scripts when processing many files at once. The scripts talk to
-Ariadne's REST API directly, so file bytes NEVER pass through the LLM
-context. This is the whole point of Ariadne — don't waste tokens on data
-movement.
-
-**Available CLI scripts** (in `ariadne-core/scripts/`):
-
-| Script | Purpose | Example |
-|---|---|---|
-| `bulk_ingest.py` | Upload + convert a whole directory | `python ariadne-core/scripts/bulk_ingest.py data/reports --collection wb_reports --tags type:report,topic:policy` |
-
-**When to use `bulk_ingest.py`:**
-
-- User says "ingest this folder" / "process all these documents" / "load these files"
-- Directory contains more than 5 files
-- You don't need to see the content of each file before ingesting
-
-**How to use it:**
-
-### Project workspace pattern (applies to any tool repo, not just Ariadne)
-
-A project workspace is a directory that contains project-specific files
-(plans, data, notes) and has tool repos cloned as **sibling subdirectories**.
-The tool repos are someone else's code that your project uses; you don't
-modify them, you keep them fresh via `git pull`.
-
-Example layout:
-
-```
-my-project/
-├── CLAUDE.md              ← tells agents how to work here
-├── .mcp.json              ← service connections (points at hosted tools)
-├── .env.example           ← environment template (no real values)
-├── data/                  ← project-specific data
-├── plans/                 ← project-specific planning
-└── ariadne-core/          ← a tool repo, cloned as a sibling
+```bash
+curl -s -X POST "$ARIADNE_URL/api/upload" \
+  -H "X-API-Key:$ARIADNE_API_KEY" \
+  -F "file=@path/to/document.pdf"
 ```
 
-**Why this layout?**
+Response: `{"path": "/tmp/uploads/abc123/document.pdf"}`
 
-- Project files stay in one place
-- Tool repos are visible at the top level — easy to `git pull` or swap
-- The `CLAUDE.md` at the project root is what an agent reads on startup
-- The `.mcp.json` at the project root connects to whatever services the project needs
+**Step 2 — Call `convert_document` with the server-side path:**
 
-**Pre-flight check before running any tool-repo script:**
+```
+uri: "/tmp/uploads/abc123/document.pdf"
+collection: "my-collection"
+store: true
+tags: ["source:upload"]
+agent_notes: "User wants to review the Q4 financials"
+```
 
-Before running ANY script from ANY tool repo cloned as a sibling, do this:
+Done. The file bytes go over HTTP once and never touch the LLM context.
 
-1. Check if the tool repo exists as a subdirectory in the current working directory
-2. If missing, clone it from the known URL
-3. If present, refresh it: `cd <repo> && git pull && cd ..`
-4. Verify the specific script you need exists in the expected location
-5. Only then, run the script
+**If the file is at an HTTP/HTTPS URL**, skip the upload — pass the URL directly:
 
-This pattern works for Ariadne Core. It also works for any other tool repo a
-project depends on — swap the repo URL, swap the script path, keep the same
-pre-flight check shape. If a project depends on three tool repos, run the
-pre-flight for each one before doing any work.
+```
+uri: "https://example.com/reports/q4-2025.pdf"
+```
 
-> **Note to LLMs reading this:** This skill uses Ariadne Core as the concrete
-> example because that's what we built it for, but the pattern generalizes.
-> When you see a project that depends on other tool repos, apply the same
-> "check, clone or pull, verify, run" shape. Adapt the URLs and paths as
-> needed. The project's `CLAUDE.md` should list all tool repos the project
-> depends on — check there first.
+**Never base64-encode file content into an MCP tool argument.** A 6 MB PDF
+becomes ~8 MB of base64 — roughly 1.5–2 M tokens of tool-call payload before
+the server has done any work. Always use the REST upload for local files.
 
-### Pre-flight for Ariadne Core specifically
+**Credential handling:** never display the API key from `.mcp.json` in terminal
+output, chat, or logs. Never include it in curl commands shown to the user. Read
+credentials programmatically so they are never echoed.
 
-The `bulk_ingest.py` script lives in a clone of the `ariadne-core` git repo.
-It should be a subdirectory of the user's project directory.
+### Path B — Directory / many files (bulk_ingest.py)
 
-1. Check if `ariadne-core/` exists in the current working directory. If not:
-   ```bash
-   git clone https://github.com/denson/ariadne-core.git
-   ```
-2. If it exists, refresh it so you have the latest script:
-   ```bash
-   cd ariadne-core && git pull && cd ..
-   ```
-3. Verify the script is there:
-   ```bash
-   ls ariadne-core/scripts/bulk_ingest.py
-   ```
-   If the file is missing after a successful `git pull`, stop and tell the
-   user — something is wrong with their clone.
+User says "ingest this folder," "process all these files," or you're looking at
+more than 5 files. Use `bulk_ingest.py` — it talks to the REST API directly, so
+zero file bytes pass through the LLM context.
 
-**Run the script:**
+**Dry run first:**
 
-1. Confirm with the user: target directory, collection name, any tags.
-2. Run via Bash:
-   ```
-   python ariadne-core/scripts/bulk_ingest.py <dir> --collection <name> --tags <tags>
-   ```
-   Useful flags: `--recursive`, `--dry-run`, `--skip-existing`, `--max-files N`,
-   `--extensions pdf,docx`, `--agent-notes "..."`. The script reads the server
-   URL and API key from `.mcp.json` + `.env`, so no credentials in the command
-   line.
-3. Read the summary output — attempted, succeeded, failed, skipped (dedup),
-   elapsed.
-4. Report to the user: how many succeeded, how many failed, and where the
-   error log lives (`<dir>/bulk_ingest_errors.log`) if anything failed.
+```bash
+python ariadne-core/scripts/bulk_ingest.py data/reports/ \
+  --collection wb_reports --dry-run
+```
 
-**DO NOT** loop over files calling `convert_document` via MCP. That defeats
-Ariadne's core value proposition (saving LLM tokens). One Bash call to
-`bulk_ingest.py` replaces one MCP call per file plus one per upload — all
-of them forcing the LLM to think about files it doesn't need to see.
+**Then ingest:**
 
-If the user wants a dry run first, use `--dry-run`. It scans, filters, and
-prints the file list without uploading anything.
+```bash
+python ariadne-core/scripts/bulk_ingest.py data/reports/ \
+  --collection wb_reports \
+  --tags type:report,topic:policy
+```
+
+Useful flags: `--recursive`, `--skip-existing`, `--max-files N`,
+`--extensions pdf,docx`, `--agent-notes "..."`.
+
+The script reads the server URL and API key from `.mcp.json` + `.env` — no
+credentials on the command line.
+
+**Pre-flight check:** The script lives in the `ariadne-core` git repo, which
+should be a subdirectory of the project workspace. Before running it:
+
+```bash
+# Clone if missing:
+git clone https://github.com/denson/ariadne-core.git
+
+# Or refresh if present:
+cd ariadne-core && git pull && cd ..
+
+# Verify:
+ls ariadne-core/scripts/bulk_ingest.py
+```
+
+If the file is missing after a successful `git pull`, stop and tell the
+user — something is wrong with their clone.
+
+> **DO NOT** loop over files calling `convert_document` via MCP. That defeats
+> Ariadne's core value proposition. One Bash call to `bulk_ingest.py` replaces
+> hundreds of MCP round-trips. If you have more than 5 files, use Path B.
 
 ## When to use `convert_document` instead of reading files directly
 
@@ -223,161 +184,12 @@ directly in context without extraction.
 ## Ingesting local files
 
 Ariadne Core runs as a remote service, so you cannot pass local file paths
-directly to `convert_document`. There are two ingestion paths — pick by
-where the file lives:
+directly to `convert_document`. Use Path A (upload + convert_document) or
+Path B (bulk_ingest.py) from the routing section above. Both paths send file
+bytes over HTTP to the server — they never pass through the LLM context.
 
-1. **HTTP/HTTPS URL** → call `convert_document` directly with the URL in
-   the `uri` parameter. The server fetches the bytes itself. No upload step.
-
-2. **Local file** → upload via REST (`POST /api/upload`, multipart form
-   data, `X-API-Key` header), read the `path` field from the response, then
-   call `convert_document` with that server-side path as `uri`. The bytes
-   move over HTTP once and never pass through the LLM's context.
-
-**Never base64-encode file content into an MCP tool argument.** That sends
-the bytes through the LLM context, defeating the entire point of the
-pipeline. A 6 MB PDF becomes ~8 MB of base64 — roughly 1.5–2 M tokens of
-tool-call payload before the server has done any work. Always use the REST
-upload endpoint for local files.
-
-### Upload helper script
-
-For single files and especially for batch ingestion of local directories,
-use this helper script. It reads the server URL and API key from
-`.mcp.json` (or `~/.claude.json`), POSTs each file to `/api/upload`, then
-calls `convert_document` with the returned server-side path. It never
-prints the API key. Write it to a temp location when you need it, or
-save it to the project root for repeat use.
-
-```python
-#!/usr/bin/env python3
-"""Upload and ingest local files into Ariadne Core.
-
-Usage:
-  python ariadne_upload.py file.pdf                     # single file
-  python ariadne_upload.py /path/to/docs/               # all supported files
-  python ariadne_upload.py /path/to/docs/ --recursive   # recursive
-"""
-import json, sys, subprocess, urllib.request, urllib.error
-from pathlib import Path
-
-SUPPORTED = {".pdf",".docx",".pptx",".xlsx",".csv",".html",".txt",
-             ".md",".json",".xml",".rtf",".epub",".eml",".msg",
-             ".zip",".ipynb",".wav",".mp3"}
-
-def load_config():
-    """Read server URL and API key from .mcp.json. NEVER display these."""
-    for p in [Path(".mcp.json"), Path.home() / ".claude.json"]:
-        if p.exists():
-            config = json.loads(p.read_text())
-            for name, srv in config.get("mcpServers", {}).items():
-                if "ariadne" in name.lower():
-                    url = srv["url"].replace("/mcp", "")
-                    key = srv["headers"]["X-API-Key"]
-                    return url, key
-    print("No Ariadne MCP config found in .mcp.json or ~/.claude.json")
-    sys.exit(1)
-
-def upload(url, key, filepath):
-    """Upload a file via REST, return server-side path."""
-    result = subprocess.run(
-        ["curl", "-s", "-X", "POST", f"{url}/api/upload",
-         "-H", f"X-API-Key:{key}",
-         "-F", f"file=@{filepath}"],
-        capture_output=True, text=True
-    )
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        print(f"  Upload error: {result.stdout[:200]}")
-        return None
-    if "path" in data:
-        return data["path"]
-    print(f"  Upload failed: {data.get('message', 'unknown error')}")
-    return None
-
-def convert(url, key, server_path, collection, tags=None):
-    """Call convert_document via REST to extract and store."""
-    payload = json.dumps({
-        "uri": server_path,
-        "store": True,
-        "collection": collection,
-        "tags": tags or [],
-        "agent_type": "script",
-        "initiated_by": "ariadne_upload.py",
-        "agent_notes": "Uploaded via helper script."
-    }).encode()
-    req = urllib.request.Request(
-        f"{url}/api/documents",
-        data=payload,
-        headers={"X-API-Key": key, "Content-Type": "application/json"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        print(f"  Convert failed: {e}")
-        return None
-
-def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
-
-    url, key = load_config()
-    collection = input("Collection name [default]: ").strip() or "default"
-    recursive = "--recursive" in sys.argv
-
-    files = []
-    for arg in sys.argv[1:]:
-        if arg.startswith("--"):
-            continue
-        p = Path(arg)
-        if p.is_file() and p.suffix.lower() in SUPPORTED:
-            files.append(p)
-        elif p.is_dir():
-            pattern = "**/*" if recursive else "*"
-            files.extend(f for f in p.glob(pattern)
-                        if f.is_file() and f.suffix.lower() in SUPPORTED)
-
-    if not files:
-        print("No supported files found.")
-        sys.exit(1)
-
-    print(f"Found {len(files)} supported files.")
-    ok = 0
-    for i, f in enumerate(files, 1):
-        print(f"  [{i}/{len(files)}] {f.name}...", end="", flush=True)
-        path = upload(url, key, str(f))
-        if path:
-            result = convert(url, key, path, collection)
-            if result and not result.get("error"):
-                skip = " (dedup)" if result.get("was_dedup_skip") else ""
-                print(f" OK{skip}")
-                ok += 1
-            else:
-                print(" FAILED")
-        else:
-            print(" UPLOAD FAILED")
-
-    print(f"\nDone. {ok}/{len(files)} files ingested into '{collection}'.")
-
-if __name__ == "__main__":
-    main()
-```
-
-**Credential handling:** never display the API key from `.mcp.json` in
-terminal output, chat, or logs. Never include it in curl commands shown
-to the user. Always use this helper script (or equivalent programmatic
-approach) for file ingestion so credentials are read without being
-echoed.
-
-## When to use `ingest` vs `convert_document`
-
-- Single file → `convert_document`
-- Multiple files already on the server → `ingest`
-- Tell the user how many files were found and give a time estimate before starting
-  a large batch
+For bulk ingestion, use `bulk_ingest.py` (Path B above). For single files,
+use the upload + convert_document pattern (Path A above).
 
 ## Chunking
 
@@ -520,8 +332,9 @@ Asking once at ingest time is much cheaper than discovering six months from now 
 
 > **Is this a single file or many files?** For bulk ingestion (more than 5
 > files, or a whole directory), skip this process entirely and use
-> `scripts/bulk_ingest.py` via Bash instead. See the "When to use CLI scripts
-> vs MCP tools" section above.
+> `scripts/bulk_ingest.py` via Bash instead — see Path B in the "How to
+> ingest documents" section above. For a single file, follow Path A
+> (upload + convert_document) and then the steps below.
 
 1. **Get the file URL** from the user's message or context.
 
