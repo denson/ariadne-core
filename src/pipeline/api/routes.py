@@ -731,7 +731,7 @@ async def ingest_directory(
                 "error": str(e),
             }
 
-    # Process files concurrently (up to 4 at a time), matching MCP ingest
+    # Process files concurrently, up to 4 at a time
     import asyncio as _asyncio
     semaphore = _asyncio.Semaphore(4)
     loop = _asyncio.get_event_loop()

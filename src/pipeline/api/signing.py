@@ -1,8 +1,8 @@
 """Presigned upload URL signing and verification.
 
-Agents never see the API key. Instead they call the MCP tool
-`request_upload_url`, which returns a time-limited HMAC-signed URL
-that the agent can POST a file to with no auth header.
+Agents never see the API key. Instead they call `request_upload_url`,
+which returns a time-limited HMAC-signed URL that the agent can POST
+a file to with no auth header.
 """
 
 from __future__ import annotations

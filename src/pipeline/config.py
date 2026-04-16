@@ -86,7 +86,6 @@ class ChunkingConfig:
 class APIConfig:
     host: str = "0.0.0.0"
     port: int = 8000
-    mcp_port: int = 8081
     require_auth: bool = False
 
 
@@ -327,10 +326,6 @@ def load_config(
     # Postgres URL (no egress fees), DATABASE_URL is the public fallback.
     if "PORT" in env:
         config.api.port = int(env["PORT"])
-    if env.get("MCP_PORT"):
-        config.api.mcp_port = int(env["MCP_PORT"])
-    elif env.get("PORT"):
-        config.api.mcp_port = int(env["PORT"])
     if "DATABASE_URL_PRIVATE" in env and not env.get("ARIADNE_DATABASE_URL"):
         config.database.url = env["DATABASE_URL_PRIVATE"]
     elif "DATABASE_URL" in env and not env.get("ARIADNE_DATABASE_URL"):

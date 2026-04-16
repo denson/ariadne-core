@@ -2,7 +2,7 @@
 
 ## What is Ariadne Core?
 
-Ariadne Core is an open-source document extraction and retrieval pipeline. It converts PDFs, DOCX, PPTX, XLSX, HTML, and 20+ other formats into clean Markdown + vector embeddings, then exposes them via MCP server and REST API.
+Ariadne Core is an open-source document extraction and retrieval pipeline. It converts PDFs, DOCX, PPTX, XLSX, HTML, and 20+ other formats into clean Markdown + vector embeddings, then exposes them via a REST API.
 
 The core value: a 4,500-word document is ~100,000 tokens as a raw PDF but only ~5,000 as clean Markdown — a **20x reduction per document**. Without a pipeline, a frontier model burns $3–$15/M tokens writing Python to extract documents itself. Ariadne replaces that with a deterministic pipeline that costs ~$0.002 per document and produces **better** results — more accurate tables, layout, and image semantics than a frontier model improvising extraction code.
 
@@ -41,15 +41,9 @@ This repo is a Claude Code plugin. Skills are at `skills/`. Plugin manifest at `
 ```bash
 docker compose up -d          # start Postgres
 pip install -e src/           # install the app
-ariadne-core serve            # start MCP (:8081) + REST API (:8000)
+ariadne-core serve            # start REST API (:8000)
 ```
 
 Deploy: `railway up` or `docker compose up -d` on any Docker host.
-
-### MCP client connection
-
-```bash
-claude mcp add ariadne-core https://your-deployment.up.railway.app/mcp --transport http --scope user --header "X-API-Key:your-api-key"
-```
 
 All endpoints require API key auth via `X-API-Key` header (except `/api/health`).
