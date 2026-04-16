@@ -1,8 +1,11 @@
-"""Embedding API client — any OpenAI-compatible endpoint.
+"""Embedding API client — Gemini native batchEmbedContents.
 
-Sends text chunks to an embedding model and returns vectors.
-Supports OpenAI, Together, Groq, or any endpoint that accepts
-the OpenAI embeddings API format.
+Sends text chunks to Google's native Gemini embedding endpoint and
+returns vectors. Uses the `x-goog-api-key` header (not OAuth).
+
+See SPEC.md → "Provider constraints" for the request/response contract
+and an explanation of why the OpenAI-compatible shim is not supported
+for Ariadne's bundled embedder.
 
 If no API key is configured, the embedder is disabled and chunks
 are stored without embeddings (search will not work).
@@ -49,9 +52,17 @@ class EmbeddingClient:
 
     def __init__(self, config: EmbeddingConfig | None = None) -> None:
         self._config = config
-        self._endpoint = (
-            f"{config.base_url.rstrip('/')}/embeddings" if config else ""
-        )
+        if config:
+            model_path = config.model
+            if not model_path.startswith("models/"):
+                model_path = f"models/{model_path}"
+            self._endpoint = (
+                f"{config.base_url.rstrip('/')}/{model_path}:batchEmbedContents"
+            )
+            self._model_path = model_path
+        else:
+            self._endpoint = ""
+            self._model_path = ""
 
     @property
     def enabled(self) -> bool:
@@ -99,12 +110,21 @@ class EmbeddingClient:
         start = time.perf_counter()
         assert self._config is not None
 
-        payload: dict[str, Any] = {
-            "model": self._config.model,
-            "input": texts,
+        # Native Gemini batch payload — one entry per text.
+        # See SPEC.md → "Provider constraints" → batchEmbedContents contract.
+        per_request: dict[str, Any] = {
+            "model": self._model_path,
+            "content": {"parts": [{"text": ""}]},
         }
         if self._config.dimensions:
-            payload["dimensions"] = self._config.dimensions
+            per_request["outputDimensionality"] = self._config.dimensions
+
+        payload: dict[str, Any] = {
+            "requests": [
+                {**per_request, "content": {"parts": [{"text": t}]}}
+                for t in texts
+            ]
+        }
 
         body = json.dumps(payload).encode("utf-8")
 
@@ -115,18 +135,22 @@ class EmbeddingClient:
                 req = Request(
                     self._endpoint,
                     data=body,
-                    # NOTE FOR FUTURE AGENTS — Provider-specific auth header.
-                    # This code targets Google's Gemini OpenAI-compatible endpoint and
-                    # uses `x-goog-api-key`, which is what new AQ.*-format Gemini API
-                    # keys require (the old Authorization: Bearer path returns
-                    # "Multiple authentication credentials received" with these keys).
+                    # NOTE FOR FUTURE AGENTS — native Gemini endpoint, not OpenAI-compat.
+                    # Ariadne's embedder calls Gemini's native `:batchEmbedContents` with
+                    # the `x-goog-api-key` header. The OpenAI-compatible shim at
+                    # `/v1beta/openai/embeddings` is NOT supported here — Google's
+                    # `AQ.*`-format keys reject every auth variant on that path
+                    # ("Missing or invalid Authorization header" with `x-goog-api-key`
+                    # alone, "Multiple authentication credentials received" with
+                    # `Authorization: Bearer`).
                     #
-                    # Other OpenAI-compatible providers (OpenAI, Together, Groq, etc.)
-                    # expect `Authorization: Bearer <key>` instead. If you're switching
-                    # providers, change the header below to match that provider's
-                    # convention. Don't build a provider abstraction here — let the
-                    # configuring agent read the provider's docs and pick the right
-                    # header.
+                    # If you swap to a different OpenAI-compatible provider (OpenAI
+                    # proper, Together, Groq, etc.), this whole module needs a rewrite
+                    # — endpoint construction, payload shape, response parser, and
+                    # auth header all differ. Don't build a provider abstraction here;
+                    # let the configuring agent read the provider's docs and pick a
+                    # concrete path. See SPEC.md → "Provider constraints" for the
+                    # current native contract.
                     headers={
                         "Content-Type": "application/json",
                         "x-goog-api-key": self._config.api_key,
@@ -196,18 +220,20 @@ class EmbeddingClient:
                 )
                 raise RuntimeError(f"Embedding API call failed: {e}") from e
 
-        # Extract embeddings in order (some providers like Gemini omit "index")
-        data = result["data"]
-        if data and "index" in data[0]:
-            data = sorted(data, key=lambda x: x["index"])
-        embeddings = [item["embedding"] for item in data]
+        # Native response shape: {"embeddings": [{"values": [...]}, ...]}
+        # Order matches the `requests` array we sent.
+        items = result.get("embeddings", [])
+        embeddings = [item["values"] for item in items]
 
-        total_tokens = result.get("usage", {}).get("total_tokens", 0)
+        # Native batchEmbedContents does not report token usage in the
+        # response body. Leave total_tokens at 0; callers should not rely
+        # on it for billing.
+        total_tokens = 0
         elapsed_ms = int((time.perf_counter() - start) * 1000)
 
         chain_entry = {
             "step": "embedding",
-            "tool": f"openai:{self._config.model}",
+            "tool": f"gemini:{self._config.model}",
             "ts": datetime.now(timezone.utc).isoformat(),
             "ms": elapsed_ms,
             "chunks_embedded": len(texts),
@@ -242,7 +268,7 @@ class EmbeddingClient:
         assert self._config is not None
         chain_entry = {
             "step": "embedding",
-            "tool": f"openai:{self._config.model}",
+            "tool": f"gemini:{self._config.model}",
             "ts": datetime.now(timezone.utc).isoformat(),
             "ms": elapsed_ms,
             "chunks_embedded": len(texts),
