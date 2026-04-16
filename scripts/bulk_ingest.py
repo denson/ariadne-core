@@ -231,11 +231,11 @@ def run(args: argparse.Namespace) -> int:
             attempted += 1
             rel = local_path.relative_to(directory)
             prefix = f"  [{idx:0{width}d}/{total}] {rel}"
-            logger.status(f"{prefix} → uploading...")
+            logger.status(f"{prefix} ->uploading...")
 
             try:
                 server_path = client.upload_file(local_path)
-                logger.status(f"{prefix} → converting...")
+                logger.status(f"{prefix} ->converting...")
                 result = client.convert_document(
                     uri=server_path,
                     collection=args.collection,
@@ -245,13 +245,13 @@ def run(args: argparse.Namespace) -> int:
             except AriadneClientError as e:
                 failed += 1
                 msg = str(e)
-                logger.event(f"{prefix} → FAILED: {msg}")
+                logger.event(f"{prefix} ->FAILED: {msg}")
                 logger.error_record(str(rel), msg)
                 continue
             except OSError as e:
                 failed += 1
                 msg = f"read error: {e}"
-                logger.event(f"{prefix} → FAILED: {msg}")
+                logger.event(f"{prefix} ->FAILED: {msg}")
                 logger.error_record(str(rel), msg)
                 continue
 
@@ -260,12 +260,12 @@ def run(args: argparse.Namespace) -> int:
 
             if dedup and args.skip_existing:
                 skipped += 1
-                logger.status(f"{prefix} → SKIPPED (dedup)")
-                logger.event(f"{prefix} → SKIPPED (dedup)")
+                logger.status(f"{prefix} ->SKIPPED (dedup)")
+                logger.event(f"{prefix} ->SKIPPED (dedup)")
             else:
                 succeeded += 1
                 tag = "OK (dedup)" if dedup else f"OK ({chunks} chunks)"
-                logger.status(f"{prefix} → {tag}")
+                logger.status(f"{prefix} ->{tag}")
 
     except _Interrupted:
         logger.event("")
