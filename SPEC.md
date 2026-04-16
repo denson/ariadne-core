@@ -144,26 +144,45 @@ Agents and scripts should set `ARIADNE_URL` and `ARIADNE_API_KEY` in their envir
 
 All configuration is controlled via environment variables. The config file (`config/ariadne.yaml`) interpolates them.
 
-```
-DB_PASSWORD=xxxxxxxxxxxx
+### Required
 
-VISION_API_KEY=sk-proj-your-key-here
-VISION_MODEL=gpt-4o-mini
-VISION_BASE_URL=https://api.openai.com/v1
+| Variable | Description |
+|----------|-------------|
+| `DB_PASSWORD` | Postgres password |
+| `ARIADNE_API_KEY` | API key for authenticating client requests. Stored as SHA-256 hash on the server. |
 
-EMBEDDING_API_KEY=sk-proj-your-key-here
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_BASE_URL=https://api.openai.com/v1
-```
+### Embedding
 
-Both API keys can use the same OpenAI key, or you can use different ones to track usage with finer granularity. You can also use any OpenAI-compatible endpoint, including open models — just change the `BASE_URL` and `MODEL` values to match your provider.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ARIADNE_EMBEDDING_API_KEY` | *(required for search)* | API key for the embedding provider |
+| `ARIADNE_EMBEDDING_MODEL` | `gemini-embedding-001` | Embedding model name |
+| `ARIADNE_EMBEDDING_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | OpenAI-compatible endpoint |
 
-### Port Configuration
+### Image enrichment
 
-- **`PORT`** — REST API port (default: `8000`). On Railway, this is set automatically.
-- **`MCP_PORT`** — MCP server port (default: `8081`). When `MCP_PORT` equals `PORT`, the server runs in **single-port mode**: MCP is mounted at `/mcp` inside the REST API server, one listener handles everything. When they differ, the server runs in **dual-port mode**: separate listeners on each port.
-- **Production (Railway/hosted):** `MCP_PORT` defaults to `PORT` automatically — single-port mode works out of the box. Do not set `MCP_PORT` unless you need dual-port mode. Railway injects `DATABASE_URL_PRIVATE` (internal network, no egress fees) and `DATABASE_URL` (public); the app prefers `DATABASE_URL_PRIVATE` when available.
-- **Local development:** Leave defaults (`PORT=8000`, `MCP_PORT=8081`) for dual-port mode. This lets you restart the MCP server independently without bouncing the REST API.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ARIADNE_IMAGE_ENRICHMENT_API_KEY` | *(optional)* | API key for vision model used to describe images found in extracted documents |
+| `ARIADNE_IMAGE_ENRICHMENT_MODEL` | `gemini-2.0-flash` | Vision model name |
+| `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | OpenAI-compatible endpoint |
+
+### Language validation
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ARIADNE_LANGUAGE_VALIDATION_API_KEY` | *(optional — falls back to embedding key)* | API key for the LLM that validates .txt file language/coherence |
+| `ARIADNE_LANGUAGE_VALIDATION_MODEL` | `gemini-2.0-flash-lite` | Lightweight model for language validation |
+| `ARIADNE_LANGUAGE_VALIDATION_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | OpenAI-compatible endpoint |
+
+### Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8000` | REST API port. On Railway, set automatically. |
+| `DATABASE_URL` | — | Postgres connection string. Railway injects `DATABASE_URL_PRIVATE` (internal network, no egress fees) and `DATABASE_URL` (public); the server prefers `DATABASE_URL_PRIVATE` when available. |
+
+All three API subsystems (embedding, image enrichment, language validation) use OpenAI-compatible endpoints. You can point them at any provider — Google Gemini (default), OpenAI, Anthropic via proxy, local models, etc. — by changing the `BASE_URL`, `MODEL`, and `API_KEY` for each.
 
 ---
 
@@ -998,15 +1017,18 @@ Collections are cheap. Use them to organize by project, topic, or workflow. A me
 
 ## Pipeline order
 
-This is the processing sequence for each document. The order matters.
+Processing sequence for each document. The order matters.
 
-1. Extract document to Markdown (MarkItDown)
-2. Content fingerprint (SHA-256 on normalized text) — skip to step 7 on collision (unless `force`)
-3. Image enrichment (vision API describes images found in the extracted Markdown)
-4. Chunk (auto-selected by file type, configurable)
-5. Embed (configurable API)
-6. Store in vector DB
-7. Record `document_interactions` row (always, even on dedup skip)
+1. **Receive** — document arrives via URL (`POST /api/documents`), file upload (`POST /api/upload` → `POST /api/documents`), or batch path (`POST /api/ingest`)
+2. **Encoding detection** *(text files only)* — charset-normalizer decodes the file; detects encoding, confidence, and language. If confidence is low or encoding is not UTF-8, adds warning tags (e.g., `encoding:windows-1252`, `encoding:low-confidence`)
+3. **Extract to Markdown** — MarkItDown converts the document to clean Markdown. For .txt files, the charset-normalizer output from step 2 is used directly (MarkItDown is skipped to avoid re-detection errors)
+4. **Language validation** *(text files only)* — a lightweight LLM (default: gemini-2.0-flash-lite) reads a sample of the extracted text and validates: is this coherent human-language text? Records language, script, confidence. Adds tags if the text appears to be binary data, encoding artifacts, or a non-target language
+5. **Content fingerprint** — SHA-256 on normalized text. If the fingerprint already exists in the target collection, skip to step 10 (unless `force` flag is set)
+6. **Image enrichment** *(optional)* — vision API describes images found in the extracted Markdown, replacing `![image](...)` placeholders with semantic descriptions
+7. **Chunk** — split Markdown into chunks. Strategy is auto-selected by file type (configurable)
+8. **Embed** — compute vector embeddings for each chunk. Model tracked per chunk so mixed-model corpora are handled correctly
+9. **Store** — write document, chunks, and embeddings to Postgres + pgvector
+10. **Record interaction** — create a `document_interactions` row (always, even on dedup skip). Records who, when, what action, and all caller metadata
 
 ---
 
