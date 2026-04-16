@@ -45,6 +45,18 @@ The client resolves the server URL and API key automatically from:
 2. `.env` file in current directory or parent directories
 3. `.mcp.json` file (legacy support)
 
+If no credentials are configured yet, the client CLI can create a `.env` from the
+project's `.env.example` template:
+
+```bash
+ariadne setup
+```
+
+This copies `.env.example` to `.env` in the current directory. Edit it to fill in
+your `ARIADNE_URL` and `ARIADNE_API_KEY`. The full `.env.example` also includes
+server-side configuration (embedding provider, vision provider, database) for
+users running their own Ariadne Core deployment.
+
 Do not attempt to use the client until you've confirmed the connection works.
 
 ## Client setup

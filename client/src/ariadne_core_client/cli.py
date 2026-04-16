@@ -10,6 +10,7 @@ Subcommands
 - ``ariadne list-collections``     — GET /api/collections.
 - ``ariadne stats``                — GET /api/stats.
 - ``ariadne health``               — GET /api/health (no auth).
+- ``ariadne setup``                — Create .env from template.
 
 Every subcommand supports ``--json`` for raw machine-readable output.
 Each subcommand instantiates ``AriadneClient()`` with no args, so the usual
@@ -34,6 +35,32 @@ from ariadne_core_client.models import (
     SearchResponse,
     Stats,
 )
+
+
+_ENV_TEMPLATE = """\
+# Database (local development only -- for docker compose)
+# Railway users: skip this. Railway injects DATABASE_URL automatically.
+DB_PASSWORD=local-dev-only
+
+# --- Embedding Provider ---
+ARIADNE_EMBEDDING_API_KEY=<your api key here>
+ARIADNE_EMBEDDING_MODEL=gemini-embedding-001
+ARIADNE_EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+ARIADNE_EMBEDDING_DIMENSIONS=1536
+
+# --- Vision Provider (for image descriptions in documents) ---
+ARIADNE_IMAGE_ENRICHMENT_API_KEY=<your api key here>
+ARIADNE_IMAGE_ENRICHMENT_MODEL=gemini-3.1-flash-lite-preview
+ARIADNE_IMAGE_ENRICHMENT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+
+# --- Client Authentication ---
+# Auto-generated. Clients connect with this key via X-API-Key header.
+ARIADNE_API_KEY=<your api key here>
+
+
+# --- Railway Deployment ---
+ARIADNE_URL=https://your-deployment.up.railway.app
+"""
 
 
 # --------------------------------------------------------------------- helpers
@@ -395,6 +422,35 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     raise AriadneClientError(f"Unsupported target: {path}")
 
 
+def _cmd_setup(args: argparse.Namespace) -> int:
+    env_path = Path(".env")
+
+    if env_path.exists() and not args.force:
+        print(f".env already exists at {env_path.resolve()}", file=sys.stderr)
+        print("Use --force to overwrite.", file=sys.stderr)
+        return 1
+
+    example_path = None
+    current = Path.cwd().resolve()
+    for candidate in [current, *current.parents]:
+        check = candidate / ".env.example"
+        if check.is_file():
+            example_path = check
+            break
+
+    if example_path:
+        content = example_path.read_text(encoding="utf-8")
+        print(f"Using template: {example_path}")
+    else:
+        content = _ENV_TEMPLATE
+        print("No .env.example found — using built-in template.")
+
+    env_path.write_text(content, encoding="utf-8")
+    print(f"Created {env_path.resolve()}")
+    print("Edit the file to fill in your credentials (look for placeholder values).")
+    return 0
+
+
 # --------------------------------------------------------------------- parser
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -462,6 +518,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_health = sub.add_parser("health", help="Check server health.")
     add_json_flag(p_health)
     p_health.set_defaults(func=_cmd_health)
+
+    # setup
+    p_setup = sub.add_parser(
+        "setup",
+        help="Create a .env file from .env.example template.",
+        description=(
+            "Creates a .env file in the current directory from the nearest "
+            ".env.example template. Edit the file to fill in your credentials."
+        ),
+    )
+    p_setup.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing .env file.",
+    )
+    p_setup.set_defaults(func=_cmd_setup)
 
     return parser
 
