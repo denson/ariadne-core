@@ -504,6 +504,127 @@ System statistics.
 
 ---
 
+## Client package
+
+`ariadne-core-client` is a pip-installable Python package that wraps the REST API. Agents, scripts, and CI pipelines use this to talk to an Ariadne Core server. It lives in the same monorepo as the server (`ariadne-core/client/`).
+
+- **PyPI package:** `ariadne-core-client`
+- **Python import:** `from ariadne_core_client import AriadneClient`
+- **Zero dependencies** beyond Python stdlib (uses `urllib.request`)
+- **Provides both** a Python API and a CLI (`ariadne` command)
+
+### Installation
+
+```bash
+pip install ariadne-core-client
+# or
+uv add ariadne-core-client
+# or from the monorepo
+pip install git+https://github.com/denson/ariadne-core.git#subdirectory=client
+```
+
+### Credential resolution
+
+The client resolves server URL and API key in this order:
+
+1. Explicit params: `AriadneClient(url="...", api_key="...")`
+2. Environment variables: `ARIADNE_URL`, `ARIADNE_API_KEY`
+3. `.env` file in current directory or parent directories
+4. `.mcp.json` file (legacy — extracts URL from ariadne server config)
+
+Never prints, logs, or exposes credentials.
+
+### Default caller metadata
+
+The constructor accepts `agent_type`, `initiated_by`, `model` — applied to every call automatically. Individual calls can override.
+
+```python
+client = AriadneClient(
+    agent_type="claude-code",
+    initiated_by="user:denson",
+    model="claude-opus-4-6"
+)
+```
+
+### Ingestion methods (preference order)
+
+| Priority | Method | Token cost | When to use |
+|----------|--------|-----------|-------------|
+| 1st | `ingest_url(url)` | Zero — server fetches | Document at an HTTP/HTTPS URL |
+| 2nd | `ingest_file(path)` | Zero — client uploads via HTTP | Local file |
+| 3rd | `ingest_bytes(content, filename)` | Already paid | File dropped in chat UI |
+
+- `ingest_url()` auto-sets `source` to the URL if not explicitly provided
+- `ingest_file()` and `ingest_bytes()` do NOT auto-set source — the file path is not provenance
+- After using `ingest_bytes()`, the agent should tell the user: "Next time, give me the file path instead of dropping it — I'll ingest it directly without loading it into our conversation."
+
+### Source convenience parameter
+
+All ingest methods accept an optional `source` string — shortcut for `agent_metadata["source_reference"]`.
+
+```python
+client.ingest_file("report.pdf", source="https://documents.worldbank.org/...")
+client.ingest_bytes(content, filename="report.pdf", source="gdrive:1BxiMVs...")
+```
+
+Provenance hierarchy: DOI > URL > database/API ref > file path > "unknown".
+
+### Method summary
+
+| Method | REST endpoint | Description |
+|--------|--------------|-------------|
+| `ingest_url(url, ...)` | `POST /api/documents` | Ingest from URL (server fetches) |
+| `ingest_file(path, ...)` | `POST /api/upload` + `POST /api/documents` | Upload + convert in one call |
+| `ingest_bytes(content, filename, ...)` | `POST /api/upload` + `POST /api/documents` | Store content already in context |
+| `search(query, ...)` | `POST /api/search` | Semantic search |
+| `get_document(document_id, ...)` | `GET /api/documents/{id}` | Full document retrieval |
+| `list_documents(...)` | `GET /api/documents` | Browse documents |
+| `list_collections()` | `GET /api/collections` | List collections |
+| `create_collection(name, ...)` | `POST /api/collections` | Create a collection |
+| `update_document(document_id, ...)` | `PATCH /api/documents/{id}` | Update metadata |
+| `delete_document(document_id)` | `DELETE /api/documents/{id}` | Soft-delete |
+| `restore_document(document_id)` | `POST /api/documents/{id}/restore` | Undo soft-delete |
+| `delete_collection(name)` | `DELETE /api/collections/{name}` | Soft-delete collection |
+| `restore_collection(name)` | `POST /api/collections/{name}/restore` | Restore collection |
+| `stats()` | `GET /api/stats` | System statistics |
+| `health()` | `GET /api/health` | Health check |
+
+### Return types
+
+Return types are dataclasses, not dicts: `Document`, `SearchResult`, `Collection`, `Stats`, `Health`. Sensible `__repr__` that doesn't dump 50KB of markdown.
+
+### Error handling
+
+Errors are exceptions, not error dicts:
+
+- `AriadneClientError` — base exception
+- `AriadneAuthError` — 401/403
+- `AriadneNotFoundError` — 404
+- `AriadneServerError` — 5xx
+
+Each includes the HTTP status code, the server's error message, and the request that caused it.
+
+### CLI
+
+```bash
+ariadne ingest report.pdf --collection reports
+ariadne ingest data/reports/ --collection reports --recursive
+ariadne ingest data/reports/ --collection reports --manifest manifest.jsonl
+ariadne search "rare earth mining" --collection world-bank-ree --top-k 10
+ariadne list-documents --collection world-bank-ree
+ariadne list-collections
+ariadne stats
+ariadne health
+```
+
+### Manifest-based ingestion
+
+For corpora with existing metadata (World Bank reports, academic papers, regulatory documents), the CLI's `--manifest` flag attaches per-file provenance during ingestion. Each file is matched to its manifest entry and ingested with the entry's metadata as `agent_metadata`.
+
+Manifest format is adapter-based — each corpus type has its own adapter that reads the native format and produces per-file metadata. The client doesn't enforce a fixed schema on the metadata dict.
+
+---
+
 ## Ingesting local files
 
 The MCP `convert_document` tool accepts URIs — HTTP/HTTPS URLs and server-side file paths. For files on the user's local machine:
