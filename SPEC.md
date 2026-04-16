@@ -159,7 +159,7 @@ All configuration is controlled via environment variables. The config file (`con
 |----------|---------|-------------|
 | `ARIADNE_EMBEDDING_API_KEY` | *(required for search)* | API key for the embedding provider |
 | `ARIADNE_EMBEDDING_MODEL` | `gemini-embedding-001` | Embedding model name |
-| `ARIADNE_EMBEDDING_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | OpenAI-compatible endpoint |
+| `ARIADNE_EMBEDDING_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | Gemini native API root. See "Provider constraints" below. |
 | `ARIADNE_EMBEDDING_EXTRA_PARAMS` | `{}` | JSON string of provider-specific options passed to the embedding API (planned — not yet implemented) |
 
 ### Image enrichment
@@ -168,7 +168,7 @@ All configuration is controlled via environment variables. The config file (`con
 |----------|---------|-------------|
 | `ARIADNE_IMAGE_ENRICHMENT_API_KEY` | *(optional)* | API key for vision model used to describe images found in extracted documents |
 | `ARIADNE_IMAGE_ENRICHMENT_MODEL` | `gemini-2.0-flash` | Vision model name |
-| `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | OpenAI-compatible endpoint |
+| `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | Gemini native API root. See "Provider constraints" below. |
 
 ### Language validation
 
@@ -176,7 +176,7 @@ All configuration is controlled via environment variables. The config file (`con
 |----------|---------|-------------|
 | `ARIADNE_LANGUAGE_VALIDATION_API_KEY` | *(optional — falls back to embedding key)* | API key for the LLM that validates .txt file language/coherence |
 | `ARIADNE_LANGUAGE_VALIDATION_MODEL` | `gemini-2.0-flash-lite` | Lightweight model for language validation |
-| `ARIADNE_LANGUAGE_VALIDATION_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | OpenAI-compatible endpoint |
+| `ARIADNE_LANGUAGE_VALIDATION_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | Gemini native API root. See "Provider constraints" below. |
 
 ### Server
 
@@ -185,7 +185,86 @@ All configuration is controlled via environment variables. The config file (`con
 | `PORT` | `8000` | REST API port. On Railway, set automatically. |
 | `DATABASE_URL` | — | Postgres connection string. Railway injects `DATABASE_URL_PRIVATE` (internal network, no egress fees) and `DATABASE_URL` (public); the server prefers `DATABASE_URL_PRIVATE` when available. |
 
-All three API subsystems (embedding, image enrichment, language validation) use OpenAI-compatible endpoints. You can point them at any provider — Google Gemini (default), OpenAI, Anthropic via proxy, local models, etc. — by changing the `BASE_URL`, `MODEL`, and `API_KEY` for each.
+### Provider constraints
+
+Ariadne's bundled embedding, image enrichment, and language validation clients call **Gemini native endpoints** directly:
+
+| Subsystem | Endpoint | Method |
+|---|---|---|
+| Embedding | `{base}/models/{model}:batchEmbedContents` | `POST` |
+| Image enrichment | `{base}/models/{model}:generateContent` | `POST` |
+| Language validation | `{base}/models/{model}:generateContent` | `POST` |
+
+All three authenticate with the `x-goog-api-key: <key>` header. The OpenAI-compat shim at `{base}/openai/*` is **not** supported in v1 — Google's new `AQ.*`-format API keys (April 2026) reject every auth variant on the shim ("Missing or invalid Authorization header" with `x-goog-api-key` alone, "Multiple authentication credentials received" with `Authorization: Bearer`). Use the native paths only.
+
+#### Embedding — `batchEmbedContents` contract
+
+Request body:
+
+```json
+{
+  "requests": [
+    {
+      "model": "models/{model}",
+      "content": {"parts": [{"text": "<chunk text>"}]},
+      "outputDimensionality": 1536
+    }
+  ]
+}
+```
+
+Response body:
+
+```json
+{
+  "embeddings": [
+    {"values": [0.01, -0.02, ...]}
+  ]
+}
+```
+
+`outputDimensionality` is optional; omit to get the model's native dimension. Batch size up to 100 requests per call.
+
+#### Image enrichment / language validation — `generateContent` contract
+
+Request body (vision — inline image):
+
+```json
+{
+  "contents": [{
+    "parts": [
+      {"inlineData": {"mimeType": "image/png", "data": "<base64>"}},
+      {"text": "<prompt>"}
+    ]
+  }]
+}
+```
+
+Request body (text-only — language validation):
+
+```json
+{
+  "contents": [{
+    "parts": [{"text": "<prompt>"}]
+  }]
+}
+```
+
+Response body:
+
+```json
+{
+  "candidates": [{
+    "content": {
+      "parts": [{"text": "<reply>"}]
+    }
+  }]
+}
+```
+
+#### Swapping providers later
+
+Pointing the embedder or vision client at a non-Gemini OpenAI-compatible provider (OpenAI proper, Together, Groq, etc.) is a deliberate out-of-scope change for v1. It would require changing the endpoint construction, payload shape, response parser, and auth header. A future configuring agent can make that change per-provider — Ariadne does not maintain a provider abstraction.
 
 ---
 
