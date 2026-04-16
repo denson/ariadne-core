@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ariadne-core-client"
+version = "0.1.0"
+description = "Python client for Ariadne Core document extraction and retrieval API"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    {name = "Denson Smith"},
+]
+dependencies = []
+
+[project.scripts]
+ariadne = "ariadne_core_client.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ariadne_core_client"]
