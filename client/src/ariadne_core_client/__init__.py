@@ -1,5 +1,6 @@
 """Ariadne Core client — Python SDK for the Ariadne Core REST API."""
 
+from ariadne_core_client.client import AriadneClient
 from ariadne_core_client.exceptions import (
     AriadneAuthError,
     AriadneClientError,
@@ -19,8 +20,8 @@ from ariadne_core_client.models import (
 )
 
 __all__ = [
-    # Client (added in step 3)
-    # "AriadneClient",
+    # Client
+    "AriadneClient",
     # Exceptions
     "AriadneClientError",
     "AriadneAuthError",

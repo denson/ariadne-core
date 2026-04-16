@@ -1,0 +1,592 @@
+"""High-level client for the Ariadne Core REST API.
+
+Wraps the endpoints documented in SPEC.md. Uses stdlib-only transport
+via _http.py. Returns dataclass models from models.py and raises the
+exceptions from exceptions.py.
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote, urlencode
+
+from ariadne_core_client import _http
+from ariadne_core_client.credentials import resolve_credentials
+from ariadne_core_client.exceptions import AriadneClientError
+from ariadne_core_client.models import (
+    Collection,
+    Document,
+    Health,
+    Interaction,
+    SearchResponse,
+    SearchResult,
+    Stats,
+)
+
+
+class AriadneClient:
+    """Python client for an Ariadne Core server."""
+
+    def __init__(
+        self,
+        url: str | None = None,
+        api_key: str | None = None,
+        agent_type: str | None = None,
+        initiated_by: str | None = None,
+        model: str | None = None,
+        timeout: int = 60,
+    ) -> None:
+        resolved_url, resolved_key = resolve_credentials(url=url, api_key=api_key)
+        self.url = resolved_url
+        self.api_key = resolved_key
+        self.agent_type = agent_type
+        self.initiated_by = initiated_by
+        self.model = model
+        self.timeout = timeout
+
+    # ------------------------------------------------------------------ helpers
+
+    def _headers(self, *, authed: bool = True) -> dict[str, str]:
+        if authed and self.api_key:
+            return {"X-API-Key": self.api_key}
+        return {}
+
+    def _endpoint(self, path: str, **query: Any) -> str:
+        params = {k: v for k, v in query.items() if v is not None}
+        if isinstance(params.get("include_deleted"), bool):
+            params["include_deleted"] = "true" if params["include_deleted"] else "false"
+        if isinstance(params.get("include_chunks"), bool):
+            params["include_chunks"] = "true" if params["include_chunks"] else "false"
+        if isinstance(params.get("include_interactions"), bool):
+            params["include_interactions"] = "true" if params["include_interactions"] else "false"
+        qs = urlencode(params) if params else ""
+        base = f"{self.url}{path}"
+        return f"{base}?{qs}" if qs else base
+
+    def _caller_metadata(
+        self,
+        *,
+        agent_type: str | None = None,
+        initiated_by: str | None = None,
+        model: str | None = None,
+        agent_notes: str | None = None,
+        agent_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Merge instance defaults with per-call overrides."""
+        out: dict[str, Any] = {}
+        at = agent_type if agent_type is not None else self.agent_type
+        ib = initiated_by if initiated_by is not None else self.initiated_by
+        md = model if model is not None else self.model
+        if at is not None:
+            out["agent_type"] = at
+        if ib is not None:
+            out["initiated_by"] = ib
+        if md is not None:
+            out["model"] = md
+        if agent_notes is not None:
+            out["agent_notes"] = agent_notes
+        if agent_metadata is not None:
+            out["agent_metadata"] = agent_metadata
+        return out
+
+    @staticmethod
+    def _handle_source(
+        source: str | None,
+        agent_metadata: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Inject `source` into agent_metadata['source_reference'] if provided."""
+        if source is None:
+            return agent_metadata
+        merged = dict(agent_metadata) if agent_metadata else {}
+        merged["source_reference"] = source
+        return merged
+
+    # ---------------------------------------------------------- parsing helpers
+
+    @staticmethod
+    def _parse_interaction(data: dict[str, Any]) -> Interaction:
+        return Interaction(
+            agent_id=data.get("agent_id"),
+            agent_type=data.get("agent_type"),
+            model=data.get("model"),
+            initiated_by=data.get("initiated_by"),
+            agent_notes=data.get("agent_notes"),
+            agent_metadata=data.get("agent_metadata"),
+            action=data.get("action"),
+            was_dedup_skip=bool(data.get("was_dedup_skip", False)),
+            created_at=data.get("created_at"),
+        )
+
+    @classmethod
+    def _parse_document(cls, data: dict[str, Any]) -> Document:
+        markdown = data.get("markdown")
+        if markdown is None:
+            markdown = data.get("content_markdown")
+        interactions = [
+            cls._parse_interaction(item)
+            for item in data.get("interactions", []) or []
+            if isinstance(item, dict)
+        ]
+        return Document(
+            document_id=data.get("document_id", "") or "",
+            source_file=data.get("source_file", "") or "",
+            title=data.get("title"),
+            file_type=data.get("file_type"),
+            engine=data.get("engine"),
+            content_fingerprint=data.get("content_fingerprint"),
+            collection=data.get("collection"),
+            markdown=markdown,
+            chunks_count=int(data.get("chunks_count") or 0),
+            was_dedup_skip=bool(data.get("was_dedup_skip", False)),
+            warnings=list(data.get("warnings") or []),
+            processing_time_ms=data.get("processing_time_ms"),
+            output_tokens_estimate=data.get("output_tokens_estimate"),
+            token_savings_ratio=data.get("token_savings_ratio"),
+            token_savings=data.get("token_savings"),
+            embedding_model=data.get("embedding_model"),
+            store_status=data.get("store_status"),
+            interactions=interactions,
+            provenance=data.get("provenance"),
+            tags=list(data.get("tags") or []),
+            chunk_count=data.get("chunk_count"),
+            interaction_count=data.get("interaction_count"),
+            created_at=data.get("created_at"),
+        )
+
+    @classmethod
+    def _parse_search_result(cls, data: dict[str, Any]) -> SearchResult:
+        interactions = [
+            cls._parse_interaction(item)
+            for item in data.get("interactions", []) or []
+            if isinstance(item, dict)
+        ]
+        return SearchResult(
+            chunk_id=data.get("chunk_id", "") or "",
+            document_id=data.get("document_id", "") or "",
+            collection=data.get("collection"),
+            text=data.get("text", "") or "",
+            section=data.get("section"),
+            page=data.get("page"),
+            token_count=int(data.get("token_count") or 0),
+            relevance_score=float(data.get("relevance_score") or 0.0),
+            embedding_model=data.get("embedding_model"),
+            interactions=interactions,
+        )
+
+    @staticmethod
+    def _parse_collection(data: dict[str, Any]) -> Collection:
+        return Collection(
+            name=data.get("name", "") or "",
+            description=data.get("description"),
+            document_count=int(data.get("document_count") or 0),
+        )
+
+    # ------------------------------------------------------------- upload util
+
+    def _upload(self, path: Path) -> dict[str, Any]:
+        response = _http.multipart_upload(
+            self._endpoint("/api/upload"),
+            headers=self._headers(),
+            filepath=path,
+            field_name="file",
+            timeout=max(self.timeout, 120),
+        )
+        if not isinstance(response, dict) or "path" not in response:
+            raise AriadneClientError(
+                "Upload response missing 'path' field",
+                request_info=f"POST {self.url}/api/upload",
+            )
+        return response
+
+    def _create_document(
+        self,
+        *,
+        uri: str,
+        collection: str,
+        tags: list[str] | None,
+        agent_notes: str | None,
+        agent_metadata: dict[str, Any] | None,
+        chunking_config: dict[str, Any] | None,
+        force: bool,
+    ) -> Document:
+        body: dict[str, Any] = {
+            "uri": uri,
+            "collection": collection,
+            "force": force,
+        }
+        if tags:
+            body["tags"] = list(tags)
+        if chunking_config is not None:
+            body["chunking_config"] = chunking_config
+        body.update(
+            self._caller_metadata(
+                agent_notes=agent_notes,
+                agent_metadata=agent_metadata,
+            )
+        )
+        response = _http.json_request(
+            "POST",
+            self._endpoint("/api/documents"),
+            headers=self._headers(),
+            json_body=body,
+            timeout=self.timeout,
+        )
+        if not isinstance(response, dict):
+            raise AriadneClientError(
+                "Ingest response was not a JSON object",
+                request_info=f"POST {self.url}/api/documents",
+            )
+        return self._parse_document(response)
+
+    # ======================================================== public methods
+
+    def health(self) -> Health:
+        response = _http.json_request(
+            "GET",
+            self._endpoint("/api/health"),
+            headers=self._headers(authed=False),
+            timeout=self.timeout,
+        )
+        data = response if isinstance(response, dict) else {}
+        return Health(
+            status=data.get("status", "") or "",
+            version=data.get("version", "") or "",
+            engine=data.get("engine", "") or "",
+            embedding_enabled=bool(data.get("embedding_enabled", False)),
+        )
+
+    def ingest_url(
+        self,
+        url: str,
+        *,
+        collection: str = "default",
+        tags: list[str] | None = None,
+        source: str | None = None,
+        agent_notes: str | None = None,
+        agent_metadata: dict[str, Any] | None = None,
+        chunking_config: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> Document:
+        effective_source = source if source is not None else url
+        merged_metadata = self._handle_source(effective_source, agent_metadata)
+        return self._create_document(
+            uri=url,
+            collection=collection,
+            tags=tags,
+            agent_notes=agent_notes,
+            agent_metadata=merged_metadata,
+            chunking_config=chunking_config,
+            force=force,
+        )
+
+    def ingest_file(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        collection: str = "default",
+        tags: list[str] | None = None,
+        source: str | None = None,
+        agent_notes: str | None = None,
+        agent_metadata: dict[str, Any] | None = None,
+        chunking_config: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> Document:
+        local_path = Path(path)
+        if not local_path.is_file():
+            raise AriadneClientError(f"File not found: {local_path}")
+        upload = self._upload(local_path)
+        merged_metadata = self._handle_source(source, agent_metadata)
+        return self._create_document(
+            uri=upload["path"],
+            collection=collection,
+            tags=tags,
+            agent_notes=agent_notes,
+            agent_metadata=merged_metadata,
+            chunking_config=chunking_config,
+            force=force,
+        )
+
+    def ingest_bytes(
+        self,
+        content: bytes,
+        filename: str,
+        *,
+        collection: str = "default",
+        tags: list[str] | None = None,
+        source: str | None = None,
+        agent_notes: str | None = None,
+        agent_metadata: dict[str, Any] | None = None,
+        chunking_config: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> Document:
+        if not isinstance(content, (bytes, bytearray)):
+            raise AriadneClientError("ingest_bytes requires bytes content")
+        safe_name = Path(filename).name or "upload.bin"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp) / safe_name
+            tmp_path.write_bytes(bytes(content))
+            upload = self._upload(tmp_path)
+        merged_metadata = self._handle_source(source, agent_metadata)
+        return self._create_document(
+            uri=upload["path"],
+            collection=collection,
+            tags=tags,
+            agent_notes=agent_notes,
+            agent_metadata=merged_metadata,
+            chunking_config=chunking_config,
+            force=force,
+        )
+
+    def search(
+        self,
+        query: str,
+        *,
+        collection: str | None = None,
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+        include_deleted: bool = False,
+        agent_notes: str | None = None,
+        agent_metadata: dict[str, Any] | None = None,
+    ) -> SearchResponse:
+        body: dict[str, Any] = {
+            "query": query,
+            "top_k": top_k,
+            "include_deleted": include_deleted,
+        }
+        if collection is not None:
+            body["collection"] = collection
+        if filters is not None:
+            body["filters"] = filters
+        body.update(
+            self._caller_metadata(
+                agent_notes=agent_notes,
+                agent_metadata=agent_metadata,
+            )
+        )
+        response = _http.json_request(
+            "POST",
+            self._endpoint("/api/search"),
+            headers=self._headers(),
+            json_body=body,
+            timeout=self.timeout,
+        )
+        data = response if isinstance(response, dict) else {}
+        results = [
+            self._parse_search_result(item)
+            for item in data.get("results") or []
+            if isinstance(item, dict)
+        ]
+        return SearchResponse(
+            query=data.get("query", query) or query,
+            top_k=int(data.get("top_k") or top_k),
+            collection=data.get("collection"),
+            results_count=int(data.get("results_count") or len(results)),
+            results=results,
+        )
+
+    def get_document(
+        self,
+        document_id: str,
+        *,
+        include_chunks: bool = True,
+        include_interactions: bool = True,
+    ) -> Document:
+        response = _http.json_request(
+            "GET",
+            self._endpoint(
+                f"/api/documents/{quote(document_id, safe='')}",
+                include_chunks=include_chunks,
+                include_interactions=include_interactions,
+            ),
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if not isinstance(response, dict):
+            raise AriadneClientError(
+                "get_document response was not a JSON object",
+                request_info=f"GET {self.url}/api/documents/{document_id}",
+            )
+        return self._parse_document(response)
+
+    def list_documents(
+        self,
+        *,
+        collection: str | None = None,
+        file_type: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        include_deleted: bool = False,
+    ) -> list[Document]:
+        response = _http.json_request(
+            "GET",
+            self._endpoint(
+                "/api/documents",
+                collection=collection,
+                file_type=file_type,
+                limit=limit,
+                offset=offset,
+                include_deleted=include_deleted,
+            ),
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        data = response if isinstance(response, dict) else {}
+        return [
+            self._parse_document(item)
+            for item in data.get("documents") or []
+            if isinstance(item, dict)
+        ]
+
+    def list_collections(self) -> list[Collection]:
+        response = _http.json_request(
+            "GET",
+            self._endpoint("/api/collections"),
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        data = response if isinstance(response, dict) else {}
+        return [
+            self._parse_collection(item)
+            for item in data.get("collections") or []
+            if isinstance(item, dict)
+        ]
+
+    def create_collection(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+    ) -> Collection:
+        body: dict[str, Any] = {"name": name}
+        if description is not None:
+            body["description"] = description
+        if self.initiated_by is not None:
+            body["initiated_by"] = self.initiated_by
+        response = _http.json_request(
+            "POST",
+            self._endpoint("/api/collections"),
+            headers=self._headers(),
+            json_body=body,
+            timeout=self.timeout,
+        )
+        data = response if isinstance(response, dict) else {}
+        return Collection(
+            name=data.get("name", name) or name,
+            description=data.get("description", description),
+            document_count=int(data.get("document_count") or 0),
+        )
+
+    def update_document(
+        self,
+        document_id: str,
+        *,
+        tags: list[str] | None = None,
+        collection: str | None = None,
+        agent_metadata: dict[str, Any] | None = None,
+        agent_notes: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if tags is not None:
+            body["tags"] = list(tags)
+        if collection is not None:
+            body["collection"] = collection
+        body.update(
+            self._caller_metadata(
+                agent_notes=agent_notes,
+                agent_metadata=agent_metadata,
+            )
+        )
+        response = _http.json_request(
+            "PATCH",
+            self._endpoint(f"/api/documents/{quote(document_id, safe='')}"),
+            headers=self._headers(),
+            json_body=body,
+            timeout=self.timeout,
+        )
+        return response if isinstance(response, dict) else {}
+
+    def delete_document(
+        self,
+        document_id: str,
+        *,
+        agent_notes: str | None = None,
+    ) -> dict[str, Any]:
+        body = self._caller_metadata(agent_notes=agent_notes)
+        response = _http.json_request(
+            "DELETE",
+            self._endpoint(f"/api/documents/{quote(document_id, safe='')}"),
+            headers=self._headers(),
+            json_body=body or None,
+            timeout=self.timeout,
+        )
+        return response if isinstance(response, dict) else {}
+
+    def restore_document(
+        self,
+        document_id: str,
+        *,
+        agent_notes: str | None = None,
+    ) -> dict[str, Any]:
+        body = self._caller_metadata(agent_notes=agent_notes)
+        response = _http.json_request(
+            "POST",
+            self._endpoint(f"/api/documents/{quote(document_id, safe='')}/restore"),
+            headers=self._headers(),
+            json_body=body or None,
+            timeout=self.timeout,
+        )
+        return response if isinstance(response, dict) else {}
+
+    def delete_collection(
+        self,
+        name: str,
+        *,
+        agent_notes: str | None = None,
+    ) -> dict[str, Any]:
+        body = self._caller_metadata(agent_notes=agent_notes)
+        response = _http.json_request(
+            "DELETE",
+            self._endpoint(f"/api/collections/{quote(name, safe='')}"),
+            headers=self._headers(),
+            json_body=body or None,
+            timeout=self.timeout,
+        )
+        return response if isinstance(response, dict) else {}
+
+    def restore_collection(
+        self,
+        name: str,
+        *,
+        agent_notes: str | None = None,
+    ) -> dict[str, Any]:
+        body = self._caller_metadata(agent_notes=agent_notes)
+        response = _http.json_request(
+            "POST",
+            self._endpoint(f"/api/collections/{quote(name, safe='')}/restore"),
+            headers=self._headers(),
+            json_body=body or None,
+            timeout=self.timeout,
+        )
+        return response if isinstance(response, dict) else {}
+
+    def stats(self) -> Stats:
+        response = _http.json_request(
+            "GET",
+            self._endpoint("/api/stats"),
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        data = response if isinstance(response, dict) else {}
+        collections = data.get("collections") or {}
+        if not isinstance(collections, dict):
+            collections = {}
+        return Stats(
+            total_documents=int(data.get("total_documents") or 0),
+            total_chunks=int(data.get("total_chunks") or 0),
+            total_collections=int(data.get("total_collections") or 0),
+            embedding_enabled=bool(data.get("embedding_enabled", False)),
+            collections={str(k): int(v or 0) for k, v in collections.items()},
+        )
