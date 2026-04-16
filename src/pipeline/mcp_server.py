@@ -646,6 +646,10 @@ async def ingest(
 ) -> str:
     """Batch-ingest a directory of documents. Processes all supported files and returns a summary.
 
+    This tool processes directories already on the server. For local files
+    on the agent's machine, the tool returns specific routing instructions
+    when the path is not found.
+
     Args:
         path: Directory path to scan for documents.
         collection: Collection name — use a project or topic name, not 'default'. See SPEC Metadata Conventions.
@@ -665,18 +669,49 @@ async def ingest(
     """
     dir_path = Path(path)
     if not dir_path.is_dir():
-        return json.dumps(
-            {
-                "error": True,
-                "message": (
-                    f"Path not found on server: {path}. "
-                    "The ingest tool only works with server-side directories. "
-                    "For local files, upload each file via POST /api/upload first, "
-                    "then call convert_document with the returned server-side path."
-                ),
-            },
-            indent=2,
-        )
+        # Detect single file vs directory from the path string.
+        # If the path has a recognized file extension, treat it as a single file.
+        path_ext = Path(path).suffix.lower().lstrip(".")
+        if path_ext in SUPPORTED_EXTENSIONS:
+            return json.dumps(
+                {
+                    "error": True,
+                    "message": (
+                        f"Path not found on server: {path}\n\n"
+                        "This looks like a single file. The ingest tool only works "
+                        "with server-side directories.\n\n"
+                        "For a single local file, use convert_document:\n\n"
+                        "1. Upload via REST:\n"
+                        "   curl -s -X POST $ARIADNE_URL/api/upload \\\n"
+                        '     -H "X-API-Key:$ARIADNE_API_KEY" \\\n'
+                        f'     -F "file=@{path}"\n'
+                        '2. Read the "path" field from the JSON response.\n'
+                        "3. Call the convert_document MCP tool with that server-side "
+                        f'path as the uri parameter, collection="{collection}".\n\n'
+                        "The upload sends bytes directly over HTTP -- they never "
+                        "pass through your context window."
+                    ),
+                },
+                indent=2,
+            )
+        else:
+            return json.dumps(
+                {
+                    "error": True,
+                    "message": (
+                        f"Path not found on server: {path}\n\n"
+                        "This looks like a local directory. The ingest tool only "
+                        "works with server-side directories.\n\n"
+                        "For a local directory, use the bulk_ingest CLI script:\n\n"
+                        f'  python ariadne-core/scripts/bulk_ingest.py "{path}" \\\n'
+                        f"    --collection {collection} --dry-run\n\n"
+                        "Remove --dry-run after confirming the file list looks right.\n"
+                        "The script uploads files directly via REST -- file bytes "
+                        "never pass through your context window."
+                    ),
+                },
+                indent=2,
+            )
 
     # Determine which extensions to accept
     allowed_exts = SUPPORTED_EXTENSIONS
