@@ -1,8 +1,6 @@
 """FastAPI application setup.
 
 Creates the FastAPI app with CORS, lifespan, and route mounting.
-The app uses the same shared services (dedup store, vector store,
-embedding client) as the MCP server.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from pipeline.api.auth import get_key_store, set_require_auth
 from pipeline.api.routes import router
 from pipeline.config import load_config
 from pipeline.embedding.embedder import EmbeddingConfig
-from pipeline.mcp_server import configure_embedding, configure_image_enrichment, configure_stores
+from pipeline.services import configure_embedding, configure_image_enrichment, configure_stores
 from pipeline.stores import create_stores, close_pool
 
 logger = logging.getLogger("ariadne.app")
@@ -84,32 +82,6 @@ async def lifespan(app: FastAPI):
     close_pool()
 
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
-
-
-class MCPAuthMiddleware(BaseHTTPMiddleware):
-    """Gate /mcp requests with the same API key auth as REST endpoints."""
-
-    async def dispatch(self, request, call_next):
-        from pipeline.api.auth import _require_auth, hash_api_key, _key_store
-
-        if _require_auth and request.url.path.startswith("/mcp"):
-            api_key = request.headers.get("x-api-key")
-            if not api_key:
-                return JSONResponse(
-                    status_code=401,
-                    content={"error": "Missing API key. Provide X-API-Key header."},
-                )
-            stored = _key_store.find_by_hash(hash_api_key(api_key))
-            if stored is None:
-                return JSONResponse(
-                    status_code=403,
-                    content={"error": "Invalid or revoked API key."},
-                )
-        return await call_next(request)
-
-
 app = FastAPI(
     title="Ariadne Core",
     description=(
@@ -121,5 +93,4 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(MCPAuthMiddleware)
 app.include_router(router, prefix="/api")
