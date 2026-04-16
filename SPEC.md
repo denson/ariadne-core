@@ -140,6 +140,8 @@ API keys are stored as SHA-256 hashes on the server. `/api/health` is the only u
 
 Agents and scripts should set `ARIADNE_URL` and `ARIADNE_API_KEY` in their environment or `.env` file. The client never prints, logs, or exposes credentials.
 
+**OAuth:** Partially implemented. OAuth token validation is supported but not yet documented or exposed in the client package. API key auth is the primary authentication method.
+
 ## Configuration
 
 All configuration is controlled via environment variables. The config file (`config/ariadne.yaml`) interpolates them.
@@ -158,6 +160,7 @@ All configuration is controlled via environment variables. The config file (`con
 | `ARIADNE_EMBEDDING_API_KEY` | *(required for search)* | API key for the embedding provider |
 | `ARIADNE_EMBEDDING_MODEL` | `gemini-embedding-001` | Embedding model name |
 | `ARIADNE_EMBEDDING_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | OpenAI-compatible endpoint |
+| `ARIADNE_EMBEDDING_EXTRA_PARAMS` | `{}` | JSON string of provider-specific options passed to the embedding API (planned — not yet implemented) |
 
 ### Image enrichment
 
@@ -296,6 +299,8 @@ Convert a document to clean Markdown. By default, also chunks, embeds, and store
 **Chunking auto-selection:** If no `chunking_config` is provided, the strategy is chosen by file type: `.pptx` -> `by_page`, `.csv`/`.xlsx` -> `fixed_size`, `.txt` with no headings -> `fixed_size` with high overlap, everything else -> `by_title`.
 
 **Image handling:** If the file is an image format and no vision API key is configured, a warning is returned explaining that a vision API key is needed for image content extraction.
+
+The response also includes `token_savings` — a dict with `original_size` (bytes), `markdown_size` (bytes), and `reduction_ratio` (e.g., `15.2` means 15.2x smaller). This quantifies the extraction efficiency per document.
 
 ---
 
@@ -809,7 +814,7 @@ All document and search endpoints accept these optional fields for provenance tr
 | Field | Type | Description |
 |-------|------|-------------|
 | `agent_id` | string | Caller's session or workflow identifier (e.g., `"cowork-session-abc"`) |
-| `agent_type` | string | Client type: `"claude-cowork"`, `"claude-code"`, `"ob1"`, `"api"`, etc. |
+| `agent_type` | string | Client type: `"claude-code"`, `"cursor"`, `"api"`, `"ci"`, etc. |
 | `model` | string | LLM model powering this session (e.g., `"claude-sonnet-4-6"`) |
 | `initiated_by` | string | Human or system identity (e.g., `"user:denson"`) |
 | `agent_notes` | string | Free-text context (e.g., the user's prompt that triggered the call) |
@@ -1120,8 +1125,11 @@ Processing sequence for each document. The order matters.
 
 1. **Receive** — document arrives via URL (`POST /api/documents`), file upload (`POST /api/upload` → `POST /api/documents`), or batch path (`POST /api/ingest`)
 2. **Encoding detection** *(text files only)* — charset-normalizer decodes the file; detects encoding, confidence, and language. If confidence is low or encoding is not UTF-8, adds warning tags (e.g., `encoding:windows-1252`, `encoding:low-confidence`)
-3. **Extract to Markdown** — MarkItDown converts the document to clean Markdown. For .txt files, the charset-normalizer output from step 2 is used directly (MarkItDown is skipped to avoid re-detection errors)
+3. **Extract to Markdown** — MarkItDown converts the document to clean Markdown. For .txt files, the charset-normalizer output from step 2 is used directly (MarkItDown is skipped to avoid re-detection errors). If extraction produces empty content, the document is still stored but tagged `content:empty` and a warning is included in the response.
 4. **Language validation** *(text files only)* — a lightweight LLM (default: gemini-2.0-flash-lite) reads a sample of the extracted text and validates: is this coherent human-language text? Records language, script, confidence. Adds tags if the text appears to be binary data, encoding artifacts, or a non-target language
+
+Extraction may add suggested tags to the document (e.g., `encoding:windows-1252`, `language:french`, `content:binary-data`). These are informational — they help agents and users filter or review documents but do not affect processing.
+
 5. **Content fingerprint** — SHA-256 on normalized text. If the fingerprint already exists in the target collection, skip to step 10 (unless `force` flag is set)
 6. **Image enrichment** *(optional)* — vision API describes images found in the extracted Markdown, replacing `![image](...)` placeholders with semantic descriptions
 7. **Chunk** — split Markdown into chunks. Strategy is auto-selected by file type (configurable)
