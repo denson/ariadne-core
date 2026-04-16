@@ -1,112 +1,44 @@
-# DAVE_TEXT_ENCODING_FIX — Done (uncommitted)
+# DAVE_DONE — SPEC.md REST API Fixes Complete
 
-Hotfix for Step 3: skip MarkItDown entirely for `.txt` files, use
-charset-normalizer's decoded text directly as markdown output.
+**Task:** DAVE_SPEC_REST_API_FIXES.md
+**File edited:** `ariadne-core/SPEC.md`
+**Status:** All 7 fixes + 1 note fix applied. Not committed (left for Bob).
 
-## File touched
+---
 
-- `src/pipeline/extraction/markitdown.py` — modified
+## What was done
 
-## What changed
+### Problem #2 — PATCH response vague
+- Added `agent_metadata` (dict, shallow-merged) and typed `updated_fields` as list of field names with example.
 
-In the `extract()` method, the `.txt` file path was restructured:
+### Problem #3 — DELETE/restore collection response types ambiguous
+- DELETE /api/collections/{name}: `documents_marked` now typed as `(int — count of documents soft-deleted)`, added `message`.
+- POST /api/collections/{name}/restore: `documents_restored` now typed as `(int — count of documents restored)`.
 
-**Before (Step 3 original):**
-1. `detect_and_decode()` → decoded text
-2. Write decoded text to UTF-8 temp file
-3. Pass temp file to `self._md.convert()` → crashes (Magika misdetects UTF-8 as ASCII)
+### Problem #4 — No error response format
+- Added `### Error responses` subsection after the endpoint summary table, before `GET /api/health`.
+- Documents JSON error structure and all 8 common HTTP status codes (400, 401, 403, 404, 410, 413, 422, 503).
 
-**After (this fix):**
-1. `detect_and_decode()` → decoded text
-2. Use decoded text directly as `markdown` output, set `title = None`
-3. Do NOT call `self._md.convert()` for `.txt` files
+### Problem #11 — Nested metadata filter ambiguity
+- Expanded `metadata` row in planned filters table to explain nested key matching with example.
 
-### Removed
-- Temp file creation for `.txt` files (`tempfile.mkstemp`, `write_text`)
-- `txt_temp_path` variable and its cleanup block
-- `convert_path` variable (no longer needed — the branch is now explicit)
+### Problem #13 — Caller metadata inconsistent across endpoints
+- Added `model` and `agent_metadata` to PATCH request body table.
+- Expanded all 4 endpoints (DELETE doc, restore doc, DELETE collection, restore collection) to explicitly list all 6 caller metadata fields: `agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`.
 
-### Kept unchanged
-- `detect_and_decode()` call — still runs
-- `validate_language()` call — still runs on the decoded text
-- All encoding metadata, warnings, and `suggested_tags` logic
-- `self._md.convert()` path for non-`.txt` files
-- Processing chain with `encoding_detection` step
-- URL download cleanup logic
-- `text_encoding.py` — untouched
-- `mcp_server.py` tag merge — untouched
+### Problem #14 — created_by vs initiated_by
+- Changed `created_by` to `initiated_by` in POST /api/collections request body, with description "Who created this collection".
 
-### Structural change
+### Problem #16 — No client method references
+- Added `**Client method:**` one-liner to 8 endpoints: health, PATCH, DELETE doc, restore doc, DELETE collection, restore collection, stats, create collection.
 
-The old code used a single `try/except/finally` block with `convert_path`
-selecting between the temp file and the original. The new code uses an
-explicit `if/else` branch:
+### NOTE #17 — collection filter precedence
+- Added note to `collection` row in search current filters table: same as top-level parameter, filter value takes precedence if both provided.
 
-```python
-if txt_decoded is not None:
-    # .txt: use charset-normalizer output directly, skip MarkItDown
-    markdown = txt_decoded
-    title = None
-    # URL download cleanup if applicable
-else:
-    # All non-.txt files (and .txt fallback if detection failed)
-    result = self._md.convert(local_path)
-    ...
-```
+---
 
-If `.txt` encoding detection fails (exception), `txt_decoded` stays `None`
-and the file falls through to the MarkItDown path as a last resort.
-
-## Test results
-
-```
-World Bank file: sha1_0059c941360fd39d1f262005dca764aa0c339aae.txt
-Errors: []
-Markdown len: 62606
-First 200: Page  1\n1\nLAND ACQUISITION POLICY FRAMEWORK...
-Tags: ['encoding:cp1250', 'encoding:low-confidence']
-Chain: ['extraction', 'encoding_detection']
-```
-
-Non-.txt file (`.py`):
-```
-file_type: py
-Errors: []
-Markdown len: 65
-suggested_tags: []
-Chain: ['extraction']
-```
-
-## Acceptance criteria check
-
-1. ✓ A cp1250 .txt file extracts successfully (no crash)
-2. ✓ The extracted markdown is the charset-normalizer decoded text (62,606 chars, not empty)
-3. ✓ Processing chain has `['extraction', 'encoding_detection']`
-4. ✓ Non-.txt files still go through MarkItDown (tested with `.py` file)
-5. ✓ No temp file is created for .txt files
-
-## Not committed
-
-Left for Bob. After review, amend the Step 3 commit or create a fixup commit.
-
-## Review summary for Bob
-
-**What changed:** For `.txt` files, the extractor now uses charset-normalizer's
-decoded text directly as markdown output instead of writing a temp file and
-passing it to MarkItDown. The `if/else` branch replaces the old `convert_path`
-approach — `.txt` skips MarkItDown entirely, everything else is unchanged.
-
-**Why:** MarkItDown v0.1.5's upstream Magika detection sets `charset='ascii'`
-on files that are valid UTF-8, causing PlainTextConverter to crash on em-dashes,
-curly quotes, and all non-Latin scripts. We can't fix MarkItDown, and we don't
-need it for plain text — charset-normalizer already did the work.
-
-**What to verify:**
-- `.txt` files produce markdown output (62,606 chars for the test file, not empty)
-- Non-`.txt` files still go through MarkItDown (tested — works)
-- No temp file creation for `.txt` files
-- Encoding metadata and LLM validation still run and appear in processing chain
-- The fallback path works: if `detect_and_decode()` throws, `.txt` falls through
-  to MarkItDown (same as any other file type)
-- `text_encoding.py` is untouched
-- `mcp_server.py` tag merge is untouched
+## What was NOT changed
+- Sections 1-3 (already approved)
+- Configuration section
+- Ingesting local files section
+- Anything after the REST API section

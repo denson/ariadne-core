@@ -89,14 +89,32 @@ curl -s -X POST "$ARIADNE_URL/api/upload" \
 
 Response: `{"path": "/tmp/uploads/abc123/document.pdf"}`
 
-**Step 2 — Call `convert_document` with the server-side path:**
+**Step 2 — Convert and store the document:**
 
+Via MCP tool:
 ```
-uri: "/tmp/uploads/abc123/document.pdf"
-collection: "my-collection"
-store: true
-tags: ["source:upload"]
-agent_notes: "User wants to review the Q4 financials"
+convert_document(
+  uri: "/tmp/uploads/abc123/document.pdf",
+  collection: "my-collection",
+  store: true,
+  tags: ["source:upload"],
+  agent_notes: "User wants to review the Q4 financials"
+)
+```
+
+Via REST (for scripts — same endpoint, same parameters):
+```bash
+curl -s -X POST "$ARIADNE_URL/api/documents" \
+  -H "X-API-Key:$ARIADNE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uri": "/tmp/uploads/abc123/document.pdf",
+    "collection": "my-collection",
+    "store": true,
+    "tags": ["source:upload"],
+    "agent_notes": "User wants to review the Q4 financials",
+    "agent_metadata": {"source_url": "https://example.com/report.pdf"}
+  }'
 ```
 
 Done. The file bytes go over HTTP once and never touch the LLM context.

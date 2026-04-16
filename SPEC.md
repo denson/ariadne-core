@@ -1,57 +1,54 @@
 # Ariadne Core — Specification
 
-This document describes how Ariadne Core works. It is the source of truth for the README, skills, MCP tool behavior, and Claude Code instructions. If the code doesn't match this doc, the code is wrong.
+This document describes how Ariadne Core works. It is the source of truth for the README, skills, client package, and all agent instructions. If the code doesn't match this doc, the code is wrong.
 
 ---
 
 ## What it is
 
-Ariadne Core is an open source document extraction and retrieval pipeline for personal use. It takes documents in, produces clean Markdown and vector embeddings, and exposes them via MCP server and REST API.
+Ariadne Core is an open source document extraction and retrieval pipeline. It takes documents in 20+ formats, produces clean Markdown and vector embeddings, and exposes them via a REST API. Agents and scripts interact with it through the `ariadne-core-client` Python package, which wraps the REST API.
+
+The core value: a 100-page PDF that would consume 50,000-100,000 tokens as raw content becomes 5,000 tokens of clean, searchable Markdown. Documents are chunked, embedded, and stored with full provenance metadata so any agent can find them later.
 
 ## Supported formats
 
-Over 20 formats, including: PDF, DOCX, PPTX, XLSX, XLS, CSV, TSV, HTML, TXT, Markdown, JSON, XML, RTF, EPUB, EML, MSG, ZIP (recursive extraction), Jupyter notebooks (.ipynb), RST, ORG, WAV, MP3, M4A.
+Over 20 formats: PDF, DOCX, PPTX, XLSX, XLS, CSV, TSV, HTML, TXT, Markdown, JSON, XML, RTF, EPUB, EML, MSG, ZIP (recursive extraction), Jupyter notebooks (.ipynb), RST, ORG, WAV, MP3, M4A.
 
-Images (JPG, PNG, GIF, JPEG) are supported but require a vision API key (`VISION_API_KEY`) for content extraction. Without it, image files are accepted but produce empty output — the tool returns a warning explaining that a vision API key is needed.
+Images (JPG, PNG, GIF, JPEG, WEBP) are supported but require a vision API key (`ARIADNE_IMAGE_ENRICHMENT_API_KEY`) for content extraction. Without it, image files are accepted but produce empty output with a warning.
 
-Not supported in the Personal Edition: scanned PDFs (no text layer), legacy Office (.doc, .ppt), complex layouts with merged cells, BMP, TIFF, HEIC.
+Not supported: scanned PDFs (no text layer), legacy Office (.doc, .ppt), complex layouts with merged cells, BMP, TIFF, HEIC.
 
-## Deployment
+## Architecture
 
-Ariadne Core runs as a hosted service. One deployment serves all clients over HTTPS.
+Ariadne Core has two components:
+
+1. **Server** — a REST API backed by Postgres + pgvector. Runs on Railway, Fly.io, any Docker host, or any VPS. Handles extraction, chunking, embedding, storage, search, and document lifecycle.
+
+2. **Client** (`ariadne-core-client`) — a pip-installable Python package that wraps the REST API. Agents, scripts, and CI pipelines use this. Zero dependencies beyond stdlib. Provides both a Python API and a CLI (`ariadne` command).
 
 ```
 Railway / Fly.io / VPS
 ┌─────────────────────────┐
-│  ariadne-core         │
-│  ├── MCP Server         │
-│  ├── REST API           │
-│  ├── Postgres + pgvec   │
-│  ├── MarkItDown         │
-│  └── Chunking/Embed     │
+│  ariadne-core server    │
+│  ├── REST API            │
+│  ├── Postgres + pgvector │
+│  ├── MarkItDown          │
+│  └── Chunking/Embedding  │
 └─────────────────────────┘
-  MCP Server
-     ▲  ▲  ▲  ▲
-     │  │  │  └── Claude Cowork (Managed edition or roll your own OAuth)
-     │  │  └───── OpenClaw
-     │  └──────── Open Brain
-     └─────────── Claude Code
-
-Authentication is by API key for Personal edition and OAuth for Managed and higher
-editions. You can also create your own OAuth for the Personal edition.
+         ▲
+         │  HTTPS + X-API-Key
+         │
+┌────────┴─────────────────┐
+│  Clients                 │
+│  ├── ariadne-core-client │  pip install ariadne-core-client
+│  │   ├── Python API      │  from ariadne_core_client import AriadneClient
+│  │   └── CLI             │  ariadne ingest, ariadne search, ...
+│  ├── Any HTTP client     │  curl, requests, urllib
+│  └── Any LLM agent      │  via client package or direct REST
+└──────────────────────────┘
 ```
 
-| Client | How it connects |
-|--------|----------------|
-| Claude Code | MCP with API key |
-| Claude Cowork | MCP + OAuth (Managed edition or roll your own) |
-| Open Brain | MCP with API key |
-| OpenClaw | MCP with API key |
-| Cursor | MCP with API key |
-| Any MCP client | MCP over HTTPS with API key |
-| Any HTTP client | REST API over HTTPS with `X-API-Key` header |
-
-No local installation required. No Docker on the user's machine. No STDIO. One HTTPS URL for everything.
+The server and client live in the same monorepo (`denson/ariadne-core`) as separate Python packages. They never import each other — the REST API is the contract between them.
 
 ### Connecting clients
 
@@ -59,32 +56,54 @@ All clients connect to the same HTTPS endpoint. The URL depends on where you dep
 
 All endpoints except `/api/health` require authentication via `X-API-Key` header.
 
-**Claude Code** — connect via MCP. Add via CLI:
+**LLM agents (Claude Code, Cursor, etc.):** Install the client package and use the Python API. The client reads server URL and API key from environment variables or `.env` file.
 
 ```bash
-claude mcp add ariadne-core https://your-deployment.up.railway.app/mcp \
-  --transport http --scope user \
-  --header "X-API-Key:your-api-key"
+pip install ariadne-core-client
+# or
+uv add ariadne-core-client
 ```
 
-**Reference:** https://code.claude.com/docs/en/mcp
+**Scripts and CI:** Use the client package or call the REST API directly.
 
-**Cursor** — supports Streamable HTTP. Same `"url"` + `"headers"` config format as Claude Code.
+**Any HTTP client:** Call the REST API endpoints with `X-API-Key` header. See the REST API section for full endpoint documentation.
 
-**Open Brain, OpenClaw, and other agents** — connect via MCP the same way as Claude Code. REST API is also available for scripts and automation.
+### Document input — three paths
 
-**Reference:** MCP transport specification: https://modelcontextprotocol.io/docs/concepts/transports
+The server runs remotely. Local file bytes must be sent over HTTP. There are three ingestion paths, in order of preference:
 
-### Document input
+| Priority | Method | Token cost | When to use |
+|----------|--------|-----------|-------------|
+| 1st | URL | Zero — server fetches directly | Document is at an HTTP/HTTPS URL |
+| 2nd | File path | Zero — client uploads via HTTP | Document is a local file |
+| 3rd | Bytes from context | Already paid | File was dropped in chat UI, content already in LLM context |
 
-Since the server runs remotely, clients cannot pass local file paths. Documents must be provided as:
+**Via the client package:**
+```python
+client = AriadneClient()
 
-- **HTTP/HTTPS URLs** — the server downloads them directly via `convert_document`
-- **REST upload endpoint** — `POST /api/upload` accepts file uploads and returns a server-side path for use with `convert_document`. This is the canonical path for local files: the bytes move once, over HTTP, without passing through the LLM's context
+# From URL (preferred — server fetches, zero tokens)
+doc = client.ingest_url("https://example.com/report.pdf", collection="reports")
 
-The MCP `convert_document` tool accepts URLs and server-side paths in the `uri` parameter. For local files, the canonical flow is: upload via `POST /api/upload`, get the `path` back, then call `convert_document` (via MCP or REST) with that path. Never base64-encode file content into an MCP tool call — the bytes would pass through the LLM's context, defeating the entire point of the pipeline.
+# From local file (client uploads, zero tokens)
+doc = client.ingest_file("path/to/report.pdf", collection="reports")
 
-The `ingest` tool (batch directory ingestion) only works with server-side paths. To batch-ingest local files, upload them first or make them available via URL.
+# From bytes already in context (tokens already spent)
+doc = client.ingest_bytes(content, filename="report.pdf", collection="reports")
+```
+
+**Via REST directly** (two-step — prefer the client package which handles this in one call):
+1. Upload: `POST /api/upload` with multipart form data, get back a server-side path
+2. Convert: `POST /api/documents` with the server-side path as `uri`
+
+**Via CLI:**
+```bash
+ariadne ingest report.pdf --collection reports
+ariadne ingest data/reports/ --collection reports --recursive
+ariadne ingest data/reports/ --collection reports --manifest manifest.jsonl
+```
+
+Never pass raw file bytes through an LLM's context window when you can avoid it. A 6 MB PDF as base64 is ~8 MB, roughly 1.5-2M tokens of payload before any processing. Use `ingest_url` or `ingest_file` instead.
 
 ### Self-hosting
 
@@ -110,7 +129,16 @@ api:
   require_auth: true
 ```
 
-API keys are stored as SHA-256 hashes. `/api/health` is the only unauthenticated endpoint — all other endpoints require an `X-API-Key` header when auth is enabled.
+API keys are stored as SHA-256 hashes on the server. `/api/health` is the only unauthenticated endpoint — all other endpoints require an `X-API-Key` header when auth is enabled.
+
+**Client-side authentication:** The client package resolves credentials in this order:
+
+1. Explicit parameters: `AriadneClient(url="...", api_key="...")`
+2. Environment variables: `ARIADNE_URL`, `ARIADNE_API_KEY`
+3. `.env` file in current directory or parent directories
+4. `.mcp.json` file (extracts URL from ariadne server config — legacy support)
+
+Agents and scripts should set `ARIADNE_URL` and `ARIADNE_API_KEY` in their environment or `.env` file. The client never prints, logs, or exposes credentials.
 
 ## Configuration
 
@@ -139,111 +167,340 @@ Both API keys can use the same OpenAI key, or you can use different ones to trac
 
 ---
 
-## MCP tools
+## REST API
 
-The following tools are available to any connected MCP client. All processing is synchronous — the tool returns the full result when it completes.
+The REST API is the server's only interface. All endpoints are under `/api/`. All processing is synchronous — the endpoint returns the full result when it completes.
 
-### `convert_document`
+When `require_auth` is enabled, all endpoints except `/api/health` require an `X-API-Key` header. API keys are stored as SHA-256 hashes.
+
+### Endpoint summary
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/health` | Health check (no auth) |
+| `POST` | `/api/upload` | Upload a file, returns server-side path |
+| `POST` | `/api/documents` | Convert and store a document |
+| `GET` | `/api/documents` | List documents (paginated) |
+| `GET` | `/api/documents/{id}` | Get full document by ID |
+| `PATCH` | `/api/documents/{id}` | Update document metadata (tags, collection) |
+| `DELETE` | `/api/documents/{id}` | Soft-delete a document (48h recovery window) |
+| `POST` | `/api/documents/{id}/restore` | Restore a soft-deleted document |
+| `POST` | `/api/search` | Semantic search over stored chunks |
+| `POST` | `/api/ingest` | Batch directory ingestion (server-side paths) |
+| `GET` | `/api/collections` | List all collections |
+| `POST` | `/api/collections` | Create a new collection |
+| `DELETE` | `/api/collections/{name}` | Soft-delete all documents in a collection |
+| `POST` | `/api/collections/{name}/restore` | Restore a soft-deleted collection |
+| `GET` | `/api/stats` | System statistics |
+
+---
+
+### Error responses
+
+All endpoints return errors as JSON with this structure:
+
+```json
+{"detail": {"message": "Human-readable error description", "document_id": "uuid-if-applicable"}}
+```
+
+Common HTTP status codes:
+- `400` — Invalid request (missing required fields, malformed JSON)
+- `401` — Missing API key
+- `403` — Invalid API key
+- `404` — Document or collection not found
+- `410` — Soft-delete window expired (restore too late)
+- `413` — File too large
+- `422` — Extraction failed (encoding error, unsupported format, corrupt file)
+- `503` — Embedding not configured (search endpoint only)
+
+---
+
+### `GET /api/health`
+
+Health check. No authentication required.
+
+**Response:**
+```json
+{"status": "healthy", "version": "0.1.0", "engine": "markitdown", "embedding_enabled": true}
+```
+
+**Client method:** `client.health()`
+
+---
+
+### `POST /api/upload`
+
+Upload a local file to the server. Returns a server-side path for use with `POST /api/documents`.
+
+**Request:** Multipart form data with `file` field.
+
+```bash
+curl -s -X POST "$ARIADNE_URL/api/upload" \
+  -H "X-API-Key:$ARIADNE_API_KEY" \
+  -F "file=@path/to/document.pdf"
+```
+
+**Response:**
+```json
+{"path": "data/uploads/document.pdf", "filename": "document.pdf", "size_bytes": 38560}
+```
+
+Use the `path` value as `uri` in `POST /api/documents`.
+
+---
+
+### `POST /api/documents`
 
 Convert a document to clean Markdown. By default, also chunks, embeds, and stores the result for future search.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `uri` | string | (required) | `http(s)://` URL or server-side path from upload endpoint |
-| `store` | bool | `true` | Chunk, embed, and store in vector DB. Set `false` for one-time extraction without persistence |
-| `collection` | string | `"default"` | Logical namespace for the document. Dedup is scoped per collection |
-| `tags` | list[str] | `[]` | Tags applied to the document. Searchable via the `tags` filter |
-| `force` | bool | `false` | Re-process even if the document fingerprint already exists in this collection |
-| `chunking_config` | dict | `null` | Override chunking strategy. Keys: `strategy` (`"by_title"`, `"by_page"`, `"fixed_size"`), `max_characters`, `overlap` |
+**Request body (JSON):**
 
-Returns JSON with: `document_id`, `source_file`, `title`, `markdown` (the full extracted text), `file_type`, `engine` (extraction engine used, e.g. `"markitdown"`), `content_fingerprint`, `collection`, `chunks_count`, `was_dedup_skip`, `provenance`, `warnings`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio` (ratio of input size to output tokens), `embedding_model` (model used for chunk embeddings), `store_status` (`"stored"`, `"not_stored"`, or `"skipped"`), and `interactions` (if dedup hit).
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `uri` | string | (required) | HTTP/HTTPS URL or server-side path from `/api/upload` |
+| `store` | bool | `true` | Chunk, embed, and store in vector DB. `false` for one-time extraction |
+| `collection` | string | `"default"` | Logical namespace. Dedup is scoped per collection |
+| `tags` | list[str] | `[]` | Tags applied to the document. Searchable via the `tags` filter |
+| `force` | bool | `false` | Re-process even if fingerprint already exists in this collection |
+| `chunking_config` | dict | `null` | Override chunking. Keys: `strategy` (`"by_title"`, `"by_page"`, `"fixed_size"`), `max_characters`, `overlap` |
+| `agent_id` | string | `null` | Caller identity |
+| `agent_type` | string | `null` | Client type (e.g. `"claude-code"`, `"script"`) |
+| `model` | string | `null` | LLM model the caller is running |
+| `initiated_by` | string | `null` | Human or system identity (e.g. `"user:denson"`) |
+| `agent_notes` | string | `null` | Why this action is being taken |
+| `agent_metadata` | dict | `null` | Structured metadata (source_url, intent, findings, etc.) |
+
+**Response:** JSON with `document_id`, `source_file`, `title`, `markdown`, `file_type`, `engine`, `content_fingerprint`, `collection`, `chunks_count`, `was_dedup_skip`, `provenance`, `warnings`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio`, `embedding_model`, `store_status` (`"stored"` / `"not_stored"` / `"skipped"`), `interactions`.
 
 **Dedup behavior:** If a document with the same content fingerprint already exists in the target collection, extraction/chunking/embedding are skipped. The existing document is returned, and a new `document_interactions` row is recorded. Use `force: true` to re-process.
 
-**Chunking auto-selection:** If no `chunking_config` is provided, the strategy is chosen by file type: `.pptx` → `by_page`, `.csv`/`.xlsx` → `fixed_size`, `.txt` with no headings → `fixed_size` with high overlap, everything else → `by_title`.
+**Chunking auto-selection:** If no `chunking_config` is provided, the strategy is chosen by file type: `.pptx` -> `by_page`, `.csv`/`.xlsx` -> `fixed_size`, `.txt` with no headings -> `fixed_size` with high overlap, everything else -> `by_title`.
 
-**Image handling:** If the file is an image format and no vision API key is configured, the tool returns a warning in the `warnings` array explaining that a vision API key is needed for image content extraction.
+**Image handling:** If the file is an image format and no vision API key is configured, a warning is returned explaining that a vision API key is needed for image content extraction.
 
-### `search`
+---
 
-Semantic search over all stored document chunks. Returns ranked results with source metadata and interaction history.
+### `GET /api/documents`
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `query` | string | (required) | Natural language search query |
-| `top_k` | int | `5` | Number of results to return (max 20) |
-| `collection` | string | `null` | Scope search to a specific collection. If null, searches all collections |
-| `filters` | dict | `null` | Additional filters (see below) |
+List stored documents. Returns metadata only — use `GET /api/documents/{id}` for full content.
 
-**Supported filters:**
-
-| Filter key | Type | Behavior |
-|------------|------|----------|
-| `collection` | string | Match chunks in this collection. Same as the `collection` parameter — either works |
-| `document_id` | string | Match chunks from a specific document |
-| `source_file` | string | Substring match (case-insensitive) against the source document's filename |
-| `file_type` | string | Exact match against file extension (e.g., `".pdf"`, `".docx"`). Both `.pdf` and `pdf` are accepted — the system normalizes internally — but `.pdf` (with dot) is the recommended convention |
-| `tags` | list[str] | Match documents that have any of the specified tags (OR logic) |
-
-Unknown filter keys are silently ignored.
-
-Returns JSON with: `query`, `results_count`, and `results` array. Each result includes `chunk_id`, `document_id`, `collection`, `text`, `section`, `page`, `token_count`, `relevance_score`, `embedding_model`, and `interactions` (full history of who has touched the source document).
-
-**Requires embedding:** Search only works when an embedding API key is configured. If not, returns an error message.
-
-### `get_document`
-
-Retrieve the full stored document by ID. Use after search to get complete content, or to inspect a specific document's chunks and interaction history.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `document_id` | string | (required) | UUID from search results or `list_documents` |
-| `include_chunks` | bool | `true` | Return all chunks with text, section, page info |
-| `include_interactions` | bool | `true` | Return all interaction records (who touched it, when, what action) |
-
-Returns JSON with: full `content_markdown`, `processing_chain`, `chunks` array, `interactions` array, and all document metadata.
-
-### `list_documents`
-
-Browse stored documents by collection or file type. Returns metadata only — call `get_document` for full content.
+**Query parameters:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `collection` | string | `null` | Filter to a specific collection |
-| `file_type` | string | `null` | Filter by extension (e.g., `".pdf"`, `".docx"`) |
+| `file_type` | string | `null` | Filter by extension (e.g. `pdf`, `docx`) |
 | `limit` | int | `20` | Results per page (max 100) |
 | `offset` | int | `0` | Pagination offset |
+| `include_deleted` | bool | `false` | Include soft-deleted documents |
 
-Returns JSON with: `total_count`, `documents` array (each with `document_id`, `collection`, `source_file`, `file_type`, `title`, `chunk_count`, `interaction_count`, `created_at`).
+**Response:** JSON with `total_count`, `documents` array (each: `document_id`, `collection`, `source_file`, `file_type`, `title`, `chunk_count`, `interaction_count`, `created_at`).
 
-### `list_collections`
+---
 
-List all collections in the knowledge store with document counts.
+### `GET /api/documents/{id}`
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| (none) | | | |
+Retrieve the full stored document by ID. Use after search to get complete content, or to inspect chunks and interaction history.
 
-Returns JSON with: `collections` array, each with `name`, `description`, and `document_count`.
-
-This helps the agent discover what's already organized before choosing a collection for ingestion or scoping a search.
-
-### `ingest`
-
-Batch ingestion of files on the server. Processes all supported files in a server-side directory and returns a summary.
+**Query parameters:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `path` | string | (required) | Server-side directory path to scan for documents |
-| `collection` | string | `"default"` | Collection to store all documents in |
+| `include_chunks` | bool | `true` | Return all chunks with text, section, page info |
+| `include_interactions` | bool | `true` | Return all interaction records |
+
+**Response:** JSON with `document_id`, `source_file`, `title`, `file_type`, `engine`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio`, `content_fingerprint`, `collection`, `tags`, `processing_chain`, `content_markdown`, `chunks` array (each: `chunk_id`, `text`, `section`, `page`, `token_count`, `embedding_model`), `interactions` array (each: `agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`, `action`, `was_dedup_skip`, `created_at`).
+
+---
+
+### `PATCH /api/documents/{id}`
+
+Update metadata on an existing document.
+
+**Request body (JSON):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tags` | list[str] | Replaces existing tags |
+| `collection` | string | Moves document to a different collection |
+| `agent_id` | string | Caller identity (recorded in interaction) |
+| `agent_type` | string | Client type |
+| `initiated_by` | string | Human or system identity |
+| `model` | string | LLM model the caller is running |
+| `agent_metadata` | dict | Structured metadata |
+| `agent_notes` | string | Why this update is being made |
+
+**Response:** JSON with `document_id`, `collection`, `tags`, `agent_metadata` (dict, shallow-merged), `updated_fields` (list of field names that were changed, e.g. `["tags", "collection"]`).
+
+**Client method:** `client.update_document(document_id, tags=None, collection=None)`
+
+---
+
+### `DELETE /api/documents/{id}`
+
+Soft-delete a document. The document is hidden immediately but can be restored within 48 hours. After 48 hours, it is permanently purged (chunks, interactions, and all data cascade-deleted).
+
+**Request body (JSON, optional):** Caller metadata fields: `agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`.
+
+**Response:** JSON with `document_id`, `status: "scheduled_for_deletion"`, `deletion_scheduled_at`.
+
+**Client method:** `client.delete_document(document_id)`
+
+---
+
+### `POST /api/documents/{id}/restore`
+
+Restore a soft-deleted document within the 48-hour window. Returns 410 if the window has passed.
+
+**Request body (JSON, optional):** Caller metadata fields: `agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`.
+
+**Response:** JSON with `document_id`, `status: "restored"`.
+
+**Client method:** `client.restore_document(document_id)`
+
+---
+
+### `POST /api/search`
+
+Semantic search over all stored document chunks. Returns ranked results with source metadata and interaction history.
+
+**Request body (JSON):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `query` | string | (required) | Natural language search query |
+| `top_k` | int | `5` | Number of results (max 20) |
+| `collection` | string | `null` | Scope to a specific collection |
+| `filters` | dict | `null` | Additional filters (see below) |
+| `include_deleted` | bool | `false` | Include soft-deleted documents in results |
+| `agent_id` | string | `null` | Caller identity |
+| `agent_type` | string | `null` | Client type |
+| `model` | string | `null` | LLM model the caller is running |
+| `initiated_by` | string | `null` | Human or system identity |
+| `agent_notes` | string | `null` | Why this search is being performed |
+| `agent_metadata` | dict | `null` | Structured metadata |
+
+**Current filters:**
+
+| Filter key | Type | Behavior |
+|------------|------|----------|
+| `collection` | string | Match chunks in this collection. Same as the top-level `collection` parameter — either works. If both are provided, the filter value takes precedence. |
+| `document_id` | string | Match chunks from a specific document |
+| `source_file` | string | Substring match (case-insensitive) against filename |
+| `file_type` | string | Exact match against extension. Both `.pdf` and `pdf` accepted |
+| `tags` | list[str] | Match documents with any of these tags (OR logic) |
+
+Unknown filter keys are silently ignored.
+
+**Planned metadata filters** (not yet implemented):
+
+| Filter key | Type | Behavior |
+|------------|------|----------|
+| `metadata` | dict | JSONB containment match — find documents where `agent_metadata` contains these key-value pairs. Works for nested keys too: `{"nested": {"field": "value"}}` matches documents where `agent_metadata.nested.field == "value"`. |
+| `metadata_exists` | list[str] | Find documents that have these keys in `agent_metadata` (regardless of value) |
+
+These will enable queries like "find all documents from project P176874" or "find all documents that have a wb_doc_type field."
+
+**Response:** JSON with `query`, `top_k`, `collection`, `results_count`, `results` array. Each result: `chunk_id`, `document_id`, `collection`, `text`, `section`, `page`, `token_count`, `relevance_score`, `embedding_model`, `interactions` array.
+
+**Requires embedding:** Search only works when an embedding API key is configured. Returns 503 if not.
+
+**Search is approximate (ANN):** Results may vary slightly between identical queries due to HNSW index traversal. For reproducible results, pin document/chunk IDs rather than re-querying.
+
+---
+
+### `POST /api/ingest`
+
+Batch ingestion of files already on the server. Processes all supported files in a server-side directory and returns a summary.
+
+**Request body (JSON):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | string | (required) | Server-side directory path |
+| `collection` | string | `"default"` | Collection for all documents |
 | `recursive` | bool | `true` | Recurse into subdirectories |
-| `file_types` | list[str] | `null` | Filter to specific extensions (e.g., `["pdf", "docx"]`). If null, process all supported types |
-| `force` | bool | `false` | Re-process documents even if they already exist (dedup override) |
-| `tags` | list[str] | `[]` | Tags to apply to all documents |
+| `file_types` | list[str] | `null` | Filter to extensions (e.g. `["pdf", "docx"]`). Null = all supported |
+| `force` | bool | `false` | Re-process even if fingerprint exists (dedup override) |
+| `tags` | list[str] | `[]` | Tags applied to all documents |
+| `agent_id` | string | `null` | Caller identity |
+| `agent_type` | string | `null` | Client type |
+| `model` | string | `null` | LLM model |
+| `initiated_by` | string | `null` | Human or system identity |
+| `agent_notes` | string | `null` | Why this ingestion is being done |
+| `agent_metadata` | dict | `null` | Structured metadata |
 
-Returns JSON with: `files_found`, `files_processed`, `files_skipped` (dedup), `files_errored`, and `results` array with per-file status (document_id, source_file, was_dedup_skip, error message if any).
+**Response:** JSON with `files_found`, `files_processed`, `files_skipped` (dedup), `files_errored`, `results` array (each: `document_id`, `source_file`, `was_dedup_skip`, `error`).
 
-Processing is synchronous. Files are processed concurrently (up to 4 at a time) using asyncio. For large directories this may take minutes. The tool returns the full summary when done.
+Processing is synchronous. Files are processed concurrently (up to 4 at a time). For large directories this may take minutes. The endpoint returns the full summary when done.
+
+**Note:** This endpoint only works with server-side paths. For local files, use the client package (`client.ingest_file()`) or the CLI (`ariadne ingest`), which handle upload + conversion automatically.
+
+---
+
+### `GET /api/collections`
+
+List all collections with document counts.
+
+**Response:**
+```json
+{"collections": [{"name": "world-bank-ree", "description": null, "document_count": 502}]}
+```
+
+---
+
+### `POST /api/collections`
+
+Create a new named collection.
+
+**Request body (JSON):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Collection name |
+| `description` | string | Optional description |
+| `initiated_by` | string | Who created this collection |
+
+**Response:** JSON with `name`, `description`, `status: "created"`. Returns 409 if collection already exists.
+
+**Client method:** `client.create_collection(name, description=None)`
+
+---
+
+### `DELETE /api/collections/{name}`
+
+Soft-delete all documents in a collection. Each document keeps its own 48-hour recovery window.
+
+**Request body (JSON, optional):** Caller metadata fields: `agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`.
+
+**Response:** JSON with `collection`, `documents_marked` (int — count of documents soft-deleted), `message`.
+
+**Client method:** `client.delete_collection(name)`
+
+---
+
+### `POST /api/collections/{name}/restore`
+
+Restore soft-deleted documents in a collection. Only restores documents within their 48-hour window.
+
+**Request body (JSON, optional):** Caller metadata fields: `agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`.
+
+**Response:** JSON with `collection`, `documents_restored` (int — count of documents restored).
+
+**Client method:** `client.restore_collection(name)`
+
+---
+
+### `GET /api/stats`
+
+System statistics.
+
+**Response:**
+```json
+{"total_documents": 502, "total_chunks": 124000, "total_collections": 3, "embedding_enabled": true, "collections": {"world-bank-ree": 502, "default": 0}}
+```
+
+**Client method:** `client.stats()`
 
 ---
 
@@ -551,29 +808,6 @@ Agent C searches `collection: "compliance-audits"`, finds the document, and sees
 Agent C can answer the question using Agent B's findings without re-reading the full document. The `agent_notes` from Agent B's interaction tell Agent C exactly what was found and what the deadlines are.
 
 This is the payoff of metadata conventions: Agent C didn't need to know about Agent A or Agent B. It just searched, found a document with rich interaction history, and used that history to answer the question efficiently.
-
----
-
-## REST API
-
-The REST API mirrors MCP tool functionality and adds collection management, file upload, and stats. All endpoints are under `/api/`.
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/upload` | Upload a file, returns server-side path for use with `convert_document` |
-| `POST` | `/api/documents` | Convert and store a document (same as MCP `convert_document`) |
-| `GET` | `/api/documents` | List documents with optional `collection` filter, `offset`, `limit` |
-| `GET` | `/api/documents/{id}` | Get full document by ID (same as MCP `get_document`) |
-| `POST` | `/api/ingest` | Batch directory ingestion (same as MCP `ingest`) |
-| `POST` | `/api/search` | Semantic search (same as MCP `search`) |
-| `GET` | `/api/collections` | List all collections (same as MCP `list_collections`) |
-| `POST` | `/api/collections` | Create a new collection |
-| `GET` | `/api/stats` | System statistics (document count, chunk count, collections) |
-| `GET` | `/api/health` | Health check (no auth required) |
-
-When `require_auth` is enabled in config, all endpoints except `/api/health` need an `X-API-Key` header. API keys are stored as SHA-256 hashes.
-
-**Changed in v0.x:** The `GET /api/documents` endpoint now uses `offset`/`limit` pagination (matching the MCP `list_documents` tool) instead of the previous `page`/`per_page` parameters. Defaults: `offset=0`, `limit=20`, max `100`.
 
 ---
 
