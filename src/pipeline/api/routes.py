@@ -1,4 +1,4 @@
-"""REST API routes — mirrors MCP tool functionality.
+"""REST API routes for document extraction and retrieval.
 
 All POST endpoints accept caller metadata (agent_id, agent_type, model,
 initiated_by). GET /api/health requires no auth. All other endpoints
@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from pipeline.api.auth import APIKey, check_api_key
 from pipeline.api.signing import mark_signature_used, verify_signature
-import pipeline.mcp_server as _mcp
+import pipeline.services as _svc
 
 router = APIRouter()
 
@@ -223,7 +223,7 @@ async def health():
         "status": "healthy",
         "version": "0.1.0",
         "engine": "markitdown",
-        "embedding_enabled": _mcp._embedding_client.enabled,
+        "embedding_enabled": _svc._embedding_client.enabled,
     }
 
 
@@ -236,7 +236,7 @@ async def submit_document(
     api_key: APIKey | None = Depends(check_api_key),
 ):
     """Submit a single document for extraction and processing."""
-    from pipeline.mcp_server import _process_single_document
+    from pipeline.services import _process_single_document
 
     agent_id = _resolve_agent_id(req, api_key)
 
@@ -276,7 +276,7 @@ async def get_document(
     api_key: APIKey | None = Depends(check_api_key),
 ):
     """Retrieve the full processed document by ID."""
-    doc = _mcp._find_document_by_id(document_id)
+    doc = _svc._find_document_by_id(document_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -297,7 +297,7 @@ async def get_document(
     }
 
     if include_chunks:
-        doc_chunks = _mcp._get_chunks_for_document(doc.document_id)
+        doc_chunks = _svc._get_chunks_for_document(doc.document_id)
         response["chunks"] = [
             {
                 "chunk_id": c.chunk_id,
@@ -312,7 +312,7 @@ async def get_document(
         response["chunk_count"] = len(doc_chunks)
 
     if include_interactions:
-        interactions = _mcp._dedup_store.get_interactions(doc.document_id)
+        interactions = _svc._dedup_store.get_interactions(doc.document_id)
         response["interactions"] = [
             {
                 "agent_id": i.agent_id,
@@ -343,18 +343,18 @@ async def list_documents(
     """List all documents, optionally filtered by collection or file type."""
     from pipeline.dedup import PgDedupStore
 
-    if isinstance(_mcp._dedup_store, PgDedupStore):
-        page_docs, total = _mcp._dedup_store.list_documents(
+    if isinstance(_svc._dedup_store, PgDedupStore):
+        page_docs, total = _svc._dedup_store.list_documents(
             collection=collection, file_type=file_type,
             limit=limit, offset=offset,
             include_deleted=include_deleted,
         )
     else:
-        docs = list(_mcp._dedup_store._documents.values())
+        docs = list(_svc._dedup_store._documents.values())
         if not include_deleted:
             docs = [
                 d for d in docs
-                if d.document_id not in _mcp._dedup_store._deletions
+                if d.document_id not in _svc._dedup_store._deletions
             ]
         if collection:
             docs = [d for d in docs if d.collection_id == collection]
@@ -373,9 +373,9 @@ async def list_documents(
                 "file_type": d.file_type,
                 "collection": d.collection_id,
                 "content_fingerprint": d.content_fingerprint,
-                "chunk_count": _mcp._count_chunks_for_document(d.document_id),
+                "chunk_count": _svc._count_chunks_for_document(d.document_id),
                 "interaction_count": len(
-                    _mcp._dedup_store.get_interactions(d.document_id)
+                    _svc._dedup_store.get_interactions(d.document_id)
                 ),
                 "created_at": d.created_at,
             }
@@ -418,7 +418,7 @@ async def update_document(
         )
 
     try:
-        updated = _mcp._dedup_store.update_document_metadata(
+        updated = _svc._dedup_store.update_document_metadata(
             document_id=document_id,
             tags=req.tags,
             agent_metadata=req.agent_metadata,
@@ -428,7 +428,7 @@ async def update_document(
         raise HTTPException(status_code=404, detail=str(e))
 
     agent_id = _resolve_agent_id(req, api_key)
-    _mcp._dedup_store.record_interaction(
+    _svc._dedup_store.record_interaction(
         DocumentInteraction(
             document_id=document_id,
             collection_id=updated.get("collection") or "",
@@ -463,15 +463,15 @@ async def delete_document(
     from pipeline.dedup import DocumentInteraction
 
     req = req or CallerMetadata()
-    doc = _mcp._find_document_by_id(document_id)
+    doc = _svc._find_document_by_id(document_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    _mcp._dedup_store.soft_delete_document(document_id)
+    _svc._dedup_store.soft_delete_document(document_id)
     scheduled_at = datetime.now(timezone.utc).isoformat()
 
     agent_id = _resolve_agent_id(req, api_key)
-    _mcp._dedup_store.record_interaction(
+    _svc._dedup_store.record_interaction(
         DocumentInteraction(
             document_id=document_id,
             collection_id=doc.collection_id,
@@ -505,12 +505,12 @@ async def restore_document(
 
     req = req or CallerMetadata()
     doc = None
-    if isinstance(_mcp._dedup_store, PgDedupStore):
-        doc = _mcp._dedup_store.get_document_by_id(
+    if isinstance(_svc._dedup_store, PgDedupStore):
+        doc = _svc._dedup_store.get_document_by_id(
             document_id, include_deleted=True
         )
     else:
-        for (_coll, _fp), candidate in _mcp._dedup_store._documents.items():
+        for (_coll, _fp), candidate in _svc._dedup_store._documents.items():
             if candidate.document_id == document_id:
                 doc = candidate
                 break
@@ -518,7 +518,7 @@ async def restore_document(
         raise HTTPException(status_code=404, detail="Document not found")
 
     try:
-        _mcp._dedup_store.restore_document(document_id)
+        _svc._dedup_store.restore_document(document_id)
     except ValueError as e:
         msg = str(e)
         if "48h" in msg or "48 h" in msg or "outside" in msg:
@@ -526,7 +526,7 @@ async def restore_document(
         raise HTTPException(status_code=404, detail=msg)
 
     agent_id = _resolve_agent_id(req, api_key)
-    _mcp._dedup_store.record_interaction(
+    _svc._dedup_store.record_interaction(
         DocumentInteraction(
             document_id=document_id,
             collection_id=doc.collection_id,
@@ -553,14 +553,14 @@ async def search_documents(
     api_key: APIKey | None = Depends(check_api_key),
 ):
     """Semantic search over the document knowledge store."""
-    if not _mcp._embedding_client.enabled:
+    if not _svc._embedding_client.enabled:
         raise HTTPException(
             status_code=503,
             detail="Search is not available: no embedding API key configured.",
         )
 
     try:
-        query_embedding = _mcp._embedding_client.embed_query(req.query)
+        query_embedding = _svc._embedding_client.embed_query(req.query)
     except RuntimeError as e:
         raise HTTPException(
             status_code=502,
@@ -573,7 +573,7 @@ async def search_documents(
     if req.filters:
         search_filters.update(req.filters)
 
-    results = _mcp._vector_store.search(
+    results = _svc._vector_store.search(
         query_embedding=query_embedding,
         top_k=req.top_k,
         filters=search_filters if search_filters else None,
@@ -582,12 +582,12 @@ async def search_documents(
 
     # Post-filter for source_file, file_type, tags when using in-memory store
     from pipeline.storage.base import InMemoryVectorStore
-    if isinstance(_mcp._vector_store, InMemoryVectorStore) and search_filters:
-        results = _mcp._post_filter_results(results, search_filters)
+    if isinstance(_svc._vector_store, InMemoryVectorStore) and search_filters:
+        results = _svc._post_filter_results(results, search_filters)
 
     response_results = []
     for r in results:
-        interactions = _mcp._dedup_store.get_interactions(r.document_id)
+        interactions = _svc._dedup_store.get_interactions(r.document_id)
         response_results.append(
             {
                 "chunk_id": r.chunk.chunk_id,
@@ -619,7 +619,7 @@ async def search_documents(
     # Record search in search_log (non-blocking — failures are logged, not raised)
     from pipeline.dedup import SearchLogEntry
     agent_id = _resolve_agent_id(req, api_key)
-    _mcp._dedup_store.record_search(
+    _svc._dedup_store.record_search(
         SearchLogEntry(
             query=req.query,
             collection=req.collection,
@@ -654,7 +654,7 @@ async def ingest_directory(
     api_key: APIKey | None = Depends(check_api_key),
 ):
     """Batch-ingest a directory of documents."""
-    from pipeline.mcp_server import SUPPORTED_EXTENSIONS, _process_single_document
+    from pipeline.services import SUPPORTED_EXTENSIONS, _process_single_document
     from pathlib import Path as _Path
     import os as _os
 
@@ -767,15 +767,15 @@ async def list_collections(
 
     # Count documents per collection
     collection_counts: dict[str, int] = {}
-    if isinstance(_mcp._dedup_store, PgDedupStore):
-        all_docs, _ = _mcp._dedup_store.list_documents(limit=100000)
+    if isinstance(_svc._dedup_store, PgDedupStore):
+        all_docs, _ = _svc._dedup_store.list_documents(limit=100000)
         for d in all_docs:
             collection_counts[d.collection_id] = (
                 collection_counts.get(d.collection_id, 0) + 1
             )
     else:
-        for (coll, _fp), _doc in _mcp._dedup_store._documents.items():
-            if _doc.document_id in _mcp._dedup_store._deletions:
+        for (coll, _fp), _doc in _svc._dedup_store._documents.items():
+            if _doc.document_id in _svc._dedup_store._deletions:
                 continue
             collection_counts[coll] = collection_counts.get(coll, 0) + 1
 
@@ -828,7 +828,7 @@ async def delete_collection(
     collection record itself is preserved.
     """
     _ = req or CallerMetadata()
-    marked = _mcp._dedup_store.soft_delete_collection(collection_name)
+    marked = _svc._dedup_store.soft_delete_collection(collection_name)
     return {
         "collection": collection_name,
         "documents_marked": marked,
@@ -849,7 +849,7 @@ async def restore_collection(
 ):
     """Restore soft-deleted documents in a collection within the 48h window."""
     _ = req or CallerMetadata()
-    restored = _mcp._dedup_store.restore_collection(collection_name)
+    restored = _svc._dedup_store.restore_collection(collection_name)
     return {
         "collection": collection_name,
         "documents_restored": restored,
@@ -866,12 +866,12 @@ async def get_stats(
     """System statistics."""
     from pipeline.dedup import PgDedupStore
 
-    if isinstance(_mcp._dedup_store, PgDedupStore):
-        all_docs, total_docs = _mcp._dedup_store.list_documents(limit=10000)
+    if isinstance(_svc._dedup_store, PgDedupStore):
+        all_docs, total_docs = _svc._dedup_store.list_documents(limit=10000)
     else:
         all_docs = [
-            d for d in _mcp._dedup_store._documents.values()
-            if d.document_id not in _mcp._dedup_store._deletions
+            d for d in _svc._dedup_store._documents.values()
+            if d.document_id not in _svc._dedup_store._deletions
         ]
         total_docs = len(all_docs)
 
@@ -882,9 +882,9 @@ async def get_stats(
 
     return {
         "total_documents": total_docs,
-        "total_chunks": _mcp._vector_store.count(),
+        "total_chunks": _svc._vector_store.count(),
         "total_collections": len(_collections),
-        "embedding_enabled": _mcp._embedding_client.enabled,
+        "embedding_enabled": _svc._embedding_client.enabled,
         "collections": collection_stats,
     }
 
