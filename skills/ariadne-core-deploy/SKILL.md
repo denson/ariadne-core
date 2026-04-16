@@ -38,7 +38,7 @@ The deployment exposes two endpoints from one process:
 
 - Railway CLI installed: `npm install -g @railway/cli` (or check with `railway --version`)
 - Railway account: railway.com
-- An API key from any OpenAI-compatible provider (OpenAI, Google Gemini, Groq, DeepSeek, Together AI, Mistral, or local models)
+- A **Google Gemini API key** (format `AQ.*` or legacy `AIza*`). Ariadne's bundled embedding, image enrichment, and language validation clients call Gemini native endpoints directly — see `SPEC.md` → `### Provider constraints` for the exact endpoint/payload contracts. Get a key at https://aistudio.google.com/apikey.
 
 ### First-time deploy
 
@@ -67,15 +67,18 @@ The deployment exposes two endpoints from one process:
 
 5. **Set environment variables:**
    ```bash
-   railway variables set ARIADNE_EMBEDDING_API_KEY=your-provider-api-key
-   railway variables set ARIADNE_IMAGE_ENRICHMENT_API_KEY=your-provider-api-key
-   railway variables set ARIADNE_EMBEDDING_MODEL=text-embedding-3-small
-   railway variables set ARIADNE_IMAGE_ENRICHMENT_MODEL=gpt-4o-mini
+   railway variables set ARIADNE_EMBEDDING_API_KEY=your-gemini-api-key
+   railway variables set ARIADNE_IMAGE_ENRICHMENT_API_KEY=your-gemini-api-key
+   railway variables set ARIADNE_EMBEDDING_MODEL=gemini-embedding-001
+   railway variables set ARIADNE_EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+   railway variables set ARIADNE_EMBEDDING_DIMENSIONS=1536
+   railway variables set ARIADNE_IMAGE_ENRICHMENT_MODEL=gemini-2.0-flash
+   railway variables set ARIADNE_IMAGE_ENRICHMENT_BASE_URL=https://generativelanguage.googleapis.com/v1beta
    ```
 
    `DB_PASSWORD` is not needed — Railway provides `DATABASE_URL` directly.
 
-   Both API keys work with any OpenAI-compatible provider — not just OpenAI. They can use the same key if you use the same provider. If using a non-OpenAI provider, also set `ARIADNE_EMBEDDING_BASE_URL` and `ARIADNE_IMAGE_ENRICHMENT_BASE_URL`. Use different keys if you want separate usage tracking or different providers for each. For backward compatibility, unprefixed names (`EMBEDDING_API_KEY`, `VISION_API_KEY`, ...) also work.
+   All three base URLs point at the Gemini native API root, not the OpenAI-compat shim at `/v1beta/openai`. Google's current `AQ.*`-format API keys reject every auth variant on the shim — use native only. See `SPEC.md` → `### Provider constraints` for the full contract. Reusing the same Gemini key for both `ARIADNE_EMBEDDING_API_KEY` and `ARIADNE_IMAGE_ENRICHMENT_API_KEY` is fine; use different keys only if you want separate usage tracking.
 
 6. **Deploy:**
    ```bash
@@ -117,12 +120,12 @@ railway logs --tail 50  # last 50 lines
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | Auto | Set by Railway's Postgres plugin |
-| `ARIADNE_EMBEDDING_API_KEY` | Yes | API key for chunk embeddings (any OpenAI-compatible provider) |
-| `ARIADNE_IMAGE_ENRICHMENT_API_KEY` | Yes | API key for image descriptions (any OpenAI-compatible provider) |
-| `ARIADNE_EMBEDDING_MODEL` | No | Default: `text-embedding-3-small` |
-| `ARIADNE_EMBEDDING_BASE_URL` | No | Default: `https://api.openai.com/v1` |
-| `ARIADNE_IMAGE_ENRICHMENT_MODEL` | No | Default: `gpt-4o-mini` |
-| `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` | No | Default: `https://api.openai.com/v1` |
+| `ARIADNE_EMBEDDING_API_KEY` | Yes | API key for chunk embeddings (Google Gemini, `AQ.*` or `AIza*` format) |
+| `ARIADNE_IMAGE_ENRICHMENT_API_KEY` | Yes | API key for image descriptions (Google Gemini, `AQ.*` or `AIza*` format) |
+| `ARIADNE_EMBEDDING_MODEL` | No | Default: `gemini-embedding-001` |
+| `ARIADNE_EMBEDDING_BASE_URL` | No | Default: `https://generativelanguage.googleapis.com/v1beta` (Gemini native root; see `SPEC.md` → `### Provider constraints`) |
+| `ARIADNE_IMAGE_ENRICHMENT_MODEL` | No | Default: `gemini-2.0-flash` |
+| `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` | No | Default: `https://generativelanguage.googleapis.com/v1beta` (Gemini native root; see `SPEC.md` → `### Provider constraints`) |
 | `PORT` | Auto | Set by Railway, used by the server to bind |
 
 Unprefixed names (`EMBEDDING_API_KEY`, `VISION_API_KEY`, ...) also work for backward compatibility.
