@@ -99,9 +99,21 @@ def validate_language(text: str, config) -> LanguageValidation:
     req = Request(
         endpoint,
         data=body,
+        # NOTE FOR FUTURE AGENTS — Provider-specific auth header.
+        # This code targets Google's Gemini OpenAI-compatible endpoint and
+        # uses `x-goog-api-key`, which is what new AQ.*-format Gemini API
+        # keys require (the old Authorization: Bearer path returns
+        # "Multiple authentication credentials received" with these keys).
+        #
+        # Other OpenAI-compatible providers (OpenAI, Together, Groq, etc.)
+        # expect `Authorization: Bearer <key>` instead. If you're switching
+        # providers, change the header below to match that provider's
+        # convention. Don't build a provider abstraction here — let the
+        # configuring agent read the provider's docs and pick the right
+        # header.
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {config.api_key}",
+            "x-goog-api-key": config.api_key,
         },
         method="POST",
     )
