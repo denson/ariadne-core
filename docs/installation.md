@@ -1,5 +1,10 @@
 # Installation Guide
 
+> **⚠️ v1 runtime is Gemini-native.** Only Google Gemini is wired
+> up out of the box. To use a different provider, fork the repo
+> and modify the clients in `src/pipeline/`. See `SPEC.md` →
+> "Provider constraints."
+
 Ariadne Core runs as a hosted service on Railway (or any Docker host). By the end of this guide, you'll have document extraction and search available to Claude Code, Open Brain, and OpenClaw over HTTPS.
 
 ## What you need
@@ -38,10 +43,12 @@ Railway builds the Docker image from the `Dockerfile` in the repo and provisions
 In the Railway dashboard or via CLI:
 
 ```bash
-railway variables set EMBEDDING_API_KEY=your-provider-api-key
-railway variables set VISION_API_KEY=your-provider-api-key
-railway variables set EMBEDDING_MODEL=text-embedding-3-small
-railway variables set VISION_MODEL=gpt-4o-mini
+railway variables set EMBEDDING_API_KEY=your-gemini-api-key
+railway variables set VISION_API_KEY=your-gemini-api-key
+railway variables set EMBEDDING_MODEL=gemini-embedding-001
+railway variables set VISION_MODEL=gemini-2.0-flash
+railway variables set EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+railway variables set VISION_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 railway variables set ARIADNE_API_KEY=your-secret-api-key
 ```
 

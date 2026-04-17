@@ -166,10 +166,12 @@ railway up
 In the Railway dashboard or via CLI:
 
 ```bash
-railway variables set ARIADNE_EMBEDDING_API_KEY=your-provider-api-key
-railway variables set ARIADNE_IMAGE_ENRICHMENT_API_KEY=your-provider-api-key
-railway variables set ARIADNE_EMBEDDING_MODEL=text-embedding-3-small
-railway variables set ARIADNE_IMAGE_ENRICHMENT_MODEL=gpt-4o-mini
+railway variables set ARIADNE_EMBEDDING_API_KEY=your-gemini-api-key
+railway variables set ARIADNE_IMAGE_ENRICHMENT_API_KEY=your-gemini-api-key
+railway variables set ARIADNE_EMBEDDING_MODEL=gemini-embedding-001
+railway variables set ARIADNE_IMAGE_ENRICHMENT_MODEL=gemini-2.0-flash
+railway variables set ARIADNE_EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+railway variables set ARIADNE_IMAGE_ENRICHMENT_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 railway variables set ARIADNE_API_KEY=your-secret-api-key
 ```
 
@@ -351,6 +353,16 @@ ariadne-core/
 
 ## Compatible providers
 
+> **⚠️ v1 runtime is Gemini-native.** Ariadne Core's bundled
+> embedding, vision, and language-validation clients call Google
+> Gemini's native endpoints directly. The tables below list other
+> provider URLs for reference — to use any of them you'll need to
+> fork the repo and modify `src/pipeline/embedding/embedder.py`,
+> `src/pipeline/enrichment/vision.py`, and
+> `src/pipeline/extraction/text_encoding.py` to match that
+> provider's request/response shapes. See `SPEC.md` →
+> "Provider constraints" for the current native contract.
+
 Ariadne Core works with any OpenAI-compatible API for embeddings and vision. You are not locked to OpenAI — use whichever provider fits your needs and budget.
 
 ### Providers with native OpenAI compatibility
@@ -358,7 +370,7 @@ Ariadne Core works with any OpenAI-compatible API for embeddings and vision. You
 | Provider | Base URL | Good models for this task |
 |----------|----------|--------------------------|
 | **OpenAI** | `https://api.openai.com/v1` (default) | `text-embedding-3-small`, `gpt-4o-mini` |
-| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-3-flash-preview`, `gemini-2.5-pro` |
+| **Google Gemini** (v1 default) | `https://generativelanguage.googleapis.com/v1beta` | `gemini-embedding-001`, `gemini-2.0-flash` |
 | **Groq** | `https://api.groq.com/openai/v1` | `llama-4-70b`, `mixtral-8x22b` |
 | **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek-chat` |
 | **Together AI** | `https://api.together.xyz/v1` | `BAAI/bge-large-en-v1.5` (embeddings) |
@@ -400,8 +412,8 @@ Basic extraction is free — no API calls needed. But for full performance (imag
 
 | What | Model | Cost |
 |------|-------|------|
-| Embedding | text-embedding-3-small | ~$0.02 per million tokens |
-| Image description | gpt-4o-mini | ~$0.15 per million input tokens |
+| Embedding | gemini-embedding-001 | ~$0.15 per million tokens |
+| Image description | gemini-2.0-flash | ~$0.10 per million input tokens |
 
 Many providers (Groq, DeepSeek, Together AI) are significantly cheaper or offer free tiers. Local models (Ollama, LM Studio) cost nothing beyond hardware.
 

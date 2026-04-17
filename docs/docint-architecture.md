@@ -1,5 +1,10 @@
 # Ariadne Core — Open Source Document Extraction & Retrieval Pipeline
 
+> **⚠️ v1 runtime is Gemini-native.** Only Google Gemini is wired
+> up out of the box. To use a different provider, fork the repo
+> and modify the clients in `src/pipeline/`. See `SPEC.md` →
+> "Provider constraints."
+
 ## Architecture Specification v0.3
 
 **Project:** Open source document extraction and retrieval pipeline, deployable as a hosted service (Railway, Fly.io, or any Docker host). Designed for Claude Code, Open Brain, OpenClaw, or any MCP/REST API client.
@@ -235,14 +240,14 @@ Revenue grew 12% year-over-year to $4.2B...
       },
       {
         "step": "image_enrichment",
-        "tool": "openai:gpt-4o-mini",
+        "tool": "gemini:gemini-2.0-flash",
         "timestamp": "2026-04-03T14:22:01Z",
         "images_processed": 3,
         "duration_ms": 2800
       },
       {
         "step": "embedding",
-        "tool": "openai:bge-large-en-v1.5",
+        "tool": "gemini:gemini-embedding-001",
         "timestamp": "2026-04-03T14:22:04Z",
         "chunks_embedded": 14,
         "duration_ms": 1100
@@ -350,10 +355,10 @@ Recommended starting point: `BAAI/bge-large-en-v1.5` (1024 dimensions, ~1.3GB) f
 
 **Configuration:**
 ```
-EMBEDDING_MODEL=BAAI/bge-large-en-v1.5      # Model name
-EMBEDDING_DIMENSIONS=1024                     # Must match chosen model
-EMBEDDING_PROVIDER=openai-compatible          # Any OpenAI-compatible endpoint
-EMBEDDING_BASE_URL=https://api.openai.com/v1  # Endpoint
+EMBEDDING_MODEL=gemini-embedding-001           # Model name
+EMBEDDING_DIMENSIONS=1536                      # Must match chosen model
+EMBEDDING_PROVIDER=google-gemini               # v1 runtime is Gemini-native
+EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
 ```
 
@@ -564,18 +569,18 @@ vector_store:
 
 # --- Embedding ---
 embedding:
-  model: BAAI/bge-large-en-v1.5
-  dimensions: 1024
-  provider: openai-compatible
-  base_url: https://api.openai.com/v1
+  model: gemini-embedding-001
+  dimensions: 1536
+  provider: google-gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
   api_key: ${EMBEDDING_API_KEY}
 
 # --- Image Enrichment (Vision) ---
 image_enrichment:
   enabled: true
-  provider: openai-compatible
-  base_url: https://api.openai.com/v1
-  model: gpt-4o-mini
+  provider: google-gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  model: gemini-2.0-flash
   api_key: ${VISION_API_KEY}
   prompt: "Describe this image in detail. Include any text, data, charts, diagrams, or visual elements. Be specific about numbers, labels, and relationships shown."
 
@@ -636,9 +641,8 @@ VISION_API_KEY=sk-...
 ARIADNE_API_KEY=your-secret-key    # clients authenticate with this
 
 # Optional overrides
-# EMBEDDING_MODEL=text-embedding-3-small
-# VISION_MODEL=gpt-4o-mini
-# ARIADNE_EMBEDDING_MODEL=bge-m3
+# EMBEDDING_MODEL=gemini-embedding-001
+# VISION_MODEL=gemini-2.0-flash
 ```
 
 For local development, copy `.env.example` to `.env` and set `DB_PASSWORD` for the local Postgres container.
@@ -847,8 +851,8 @@ Provenance is split across two tables, each answering a different question:
 ```json
 [
   {"step": "extraction", "tool": "markitdown", "ts": "2026-04-03T14:22:00Z", "ms": 1240},
-  {"step": "image_enrichment", "tool": "openai:gpt-4o-mini", "ts": "2026-04-03T14:22:01Z", "ms": 2800, "images": 3},
-  {"step": "embedding", "tool": "openai:bge-large-en-v1.5", "ts": "2026-04-03T14:22:04Z", "ms": 1100, "chunks": 14}
+  {"step": "image_enrichment", "tool": "gemini:gemini-2.0-flash", "ts": "2026-04-03T14:22:01Z", "ms": 2800, "images": 3},
+  {"step": "embedding", "tool": "gemini:gemini-embedding-001", "ts": "2026-04-03T14:22:04Z", "ms": 1100, "chunks": 14}
 ]
 ```
 

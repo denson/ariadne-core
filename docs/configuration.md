@@ -1,5 +1,10 @@
 # Configuration Reference
 
+> **⚠️ v1 runtime is Gemini-native.** Only Google Gemini is wired
+> up out of the box. To use a different provider, fork the repo
+> and modify the clients in `src/pipeline/`. See `SPEC.md` →
+> "Provider constraints."
+
 Ariadne Core uses a single config file (`ariadne.yaml`) plus environment variables. This document explains every option.
 
 ## How configuration works
@@ -33,10 +38,10 @@ Optional overrides:
 | `DATABASE_URL` | (from Postgres plugin) | Postgres connection string |
 | `PORT` | `8000` | HTTP port (Railway sets this) |
 | `MCP_PORT` | (from config) | MCP port. Set equal to `PORT` for single-port mode on Railway |
-| `ARIADNE_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
-| `ARIADNE_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | Embedding API endpoint |
-| `ARIADNE_IMAGE_ENRICHMENT_MODEL` | `gpt-4o-mini` | Vision model name |
-| `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` | `https://api.openai.com/v1` | Vision API endpoint |
+| `ARIADNE_EMBEDDING_MODEL` | `gemini-embedding-001` | Embedding model name |
+| `ARIADNE_EMBEDDING_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | Embedding API endpoint |
+| `ARIADNE_IMAGE_ENRICHMENT_MODEL` | `gemini-2.0-flash` | Vision model name |
+| `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | Vision API endpoint |
 
 `ARIADNE_EMBEDDING_API_KEY` and `ARIADNE_IMAGE_ENRICHMENT_API_KEY` can use the same key if you use the same provider for both. They work with any OpenAI-compatible provider — see [Compatible providers](../README.md#compatible-providers).
 
@@ -76,19 +81,19 @@ Configuration for the embedding API that converts text chunks into vectors for s
 
 ```yaml
 embedding:
-  model: text-embedding-3-small
+  model: gemini-embedding-001
   dimensions: 1536
-  provider: openai-compatible
-  base_url: https://api.openai.com/v1
+  provider: google-gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
   api_key: ${EMBEDDING_API_KEY}
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | string | `text-embedding-3-small` | Embedding model name. Must match what the API expects. |
+| `model` | string | `gemini-embedding-001` | Embedding model name. Must match what the API expects. |
 | `dimensions` | int | `1536` | Vector dimensions. Must match the model's output. The Postgres vector column is sized to this value. |
-| `provider` | string | `openai-compatible` | API provider type. Any OpenAI-compatible endpoint works (OpenAI, Together AI, Fireworks, Ollama, etc.). |
-| `base_url` | string | `https://api.openai.com/v1` | API base URL. Change for non-OpenAI providers. |
+| `provider` | string | `google-gemini` | API provider type. |
+| `base_url` | string | `https://generativelanguage.googleapis.com/v1beta` | API base URL. |
 | `api_key` | string | (none) | API key. Use `${EMBEDDING_API_KEY}` to pull from environment. If empty, embedding is disabled (documents are extracted but not embedded or searchable). |
 
 Common embedding models:
@@ -109,9 +114,9 @@ Configuration for the vision API that describes images found in documents.
 ```yaml
 image_enrichment:
   enabled: true
-  provider: openai-compatible
-  base_url: https://api.openai.com/v1
-  model: gpt-4o-mini
+  provider: google-gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  model: gemini-2.0-flash
   api_key: ${VISION_API_KEY}
   prompt: "Describe this image in detail. Include any text, data, charts, diagrams, or visual elements."
 ```
@@ -119,9 +124,9 @@ image_enrichment:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Set to `false` to skip image enrichment entirely. |
-| `provider` | string | `openai-compatible` | API provider type. |
-| `base_url` | string | `https://api.openai.com/v1` | API base URL. |
-| `model` | string | `gpt-4o-mini` | Vision model. `gpt-4o-mini` is cheapest and sufficient for document images. `gpt-4o` for higher quality. |
+| `provider` | string | `google-gemini` | API provider type. |
+| `base_url` | string | `https://generativelanguage.googleapis.com/v1beta` | API base URL. |
+| `model` | string | `gemini-2.0-flash` | Vision model. Default is sufficient for document images. |
 | `api_key` | string | (none) | API key. Can use the same key as embedding if using the same provider. If empty, image enrichment is disabled. |
 | `prompt` | string | (see above) | The prompt sent to the vision model with each image. Customize for domain-specific needs. |
 

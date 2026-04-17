@@ -77,7 +77,7 @@ DEFAULTS_TABLE = """
 Provider defaults:
   Google Gemini (recommended):
     Embedding: gemini-embedding-001
-    Vision:    gemini-3.1-flash-lite-preview
+    Vision:    gemini-2.0-flash
     Docs:      https://ai.google.dev/gemini-api/docs/models
 
   OpenAI:
