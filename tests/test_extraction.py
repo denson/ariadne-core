@@ -84,3 +84,93 @@ class TestMarkItDownExtractor:
         # (no recognizable speech), but the extraction wrapper should handle it.
         # The key assertion is that it doesn't crash and returns a result.
         assert isinstance(result.markdown, str)
+
+
+def test_encoding_detection_gate_overrides_llm_on_low_byte_confidence(
+    tmp_path, monkeypatch
+):
+    """Mojibake: byte detector says low confidence; LLM is fooled and votes
+    coherent=true. Final coherent must be False."""
+    from pipeline.extraction import markitdown as md_mod
+    from pipeline.extraction.text_encoding import LanguageValidation
+
+    fake_txt = tmp_path / "mojibake.txt"
+    fake_txt.write_text("pretend this is mojibake", encoding="utf-8")
+
+    def fake_detect(path):
+        return ("pretend decoded text", "windows-1252", 0.0)
+
+    def fake_validate(text, config):
+        return LanguageValidation(
+            coherent=True,
+            language="en",
+            script="Latin",
+            confidence="high",
+            notes="",
+            model="gemini-2.0-flash",
+            skipped=False,
+        )
+
+    monkeypatch.setattr(md_mod, "detect_and_decode", fake_detect)
+    monkeypatch.setattr(md_mod, "validate_language", fake_validate)
+
+    extractor = md_mod.MarkItDownExtractor(enable_plugins=False)
+    result = extractor.extract(str(fake_txt))
+
+    enc_step = next(
+        (s for s in result.processing_chain if s["step"] == "encoding_detection"),
+        None,
+    )
+    assert enc_step is not None, "encoding_detection step missing from chain"
+    assert enc_step["coherent"] is False, (
+        f"Expected coherent=False when byte confidence is 0.0 "
+        f"(mojibake gate), got {enc_step}"
+    )
+    assert enc_step["llm_coherent"] is True, (
+        "LLM's raw opinion should still be preserved in llm_coherent"
+    )
+    assert enc_step["encoding_confidence"] == 0.0
+    assert any(
+        "text may be garbled" in w for w in result.warnings
+    ), "Expected garbled-text warning when gate demotes coherent to False"
+
+
+def test_encoding_detection_happy_path_both_signals_agree(tmp_path, monkeypatch):
+    """Happy path: byte confidence high AND LLM coherent → final coherent=True."""
+    from pipeline.extraction import markitdown as md_mod
+    from pipeline.extraction.text_encoding import LanguageValidation
+
+    fake_txt = tmp_path / "clean.txt"
+    fake_txt.write_text("Real clean English text for the test.", encoding="utf-8")
+
+    def fake_detect(path):
+        return ("Real clean English text for the test.", "utf_8", 0.9)
+
+    def fake_validate(text, config):
+        return LanguageValidation(
+            coherent=True,
+            language="en",
+            script="Latin",
+            confidence="high",
+            notes="",
+            model="gemini-2.0-flash",
+            skipped=False,
+        )
+
+    monkeypatch.setattr(md_mod, "detect_and_decode", fake_detect)
+    monkeypatch.setattr(md_mod, "validate_language", fake_validate)
+
+    extractor = md_mod.MarkItDownExtractor(enable_plugins=False)
+    result = extractor.extract(str(fake_txt))
+
+    enc_step = next(
+        (s for s in result.processing_chain if s["step"] == "encoding_detection"),
+        None,
+    )
+    assert enc_step is not None, "encoding_detection step missing from chain"
+    assert enc_step["coherent"] is True
+    assert enc_step["llm_coherent"] is True
+    assert enc_step["encoding_confidence"] == 0.9
+    assert not any(
+        "text may be garbled" in w for w in result.warnings
+    ), "No garbled-text warning on happy path"

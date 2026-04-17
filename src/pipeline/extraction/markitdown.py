@@ -162,6 +162,18 @@ class MarkItDownExtractor:
                 lang_result = validate_language(markdown, ImageEnrichmentConfig())
             validation_ms = int((time.perf_counter() - validation_start) * 1000)
 
+            # Combine byte-level encoding confidence with the LLM's coherence
+            # vote. Frontier LLMs can read English through mojibake (they
+            # parse 'â€™' as a curly apostrophe), so the LLM will vote
+            # coherent=true on a file that charset-normalizer correctly
+            # scored 0.0. If either signal says garbled, the text is
+            # garbled. Threshold is deliberately generous (0.5): legitimate
+            # rare encodings can score lower than 1.0 but should still be
+            # above 0.5 on any real text.
+            ENCODING_CONFIDENCE_THRESHOLD = 0.5
+            bytes_ok = enc_confidence >= ENCODING_CONFIDENCE_THRESHOLD
+            final_coherent = lang_result.coherent and bytes_ok
+
             processing_chain.append({
                 "step": "encoding_detection",
                 "detected_encoding": detected_encoding,
@@ -169,7 +181,8 @@ class MarkItDownExtractor:
                 "language": lang_result.language,
                 "language_script": lang_result.script,
                 "language_confidence": lang_result.confidence,
-                "coherent": lang_result.coherent,
+                "coherent": final_coherent,
+                "llm_coherent": lang_result.coherent,
                 "llm_model": lang_result.model,
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "ms": validation_ms,
@@ -182,7 +195,7 @@ class MarkItDownExtractor:
                 )
             if lang_result.confidence == "low":
                 warnings.append("Encoding validation: low confidence")
-            if not lang_result.coherent:
+            if not final_coherent:
                 warnings.append("Encoding validation: text may be garbled")
 
             # Tags
