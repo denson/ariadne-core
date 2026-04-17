@@ -818,16 +818,38 @@ async def create_collection(
 @router.delete("/collections/{collection_name}")
 async def delete_collection(
     collection_name: str,
+    purge: bool = Query(
+        False,
+        description=(
+            "Hard-delete immediately instead of soft-delete. "
+            "Irreversible — bypasses the 48-hour restore window."
+        ),
+    ),
     req: Optional[CallerMetadata] = None,
     api_key: APIKey | None = Depends(check_api_key),
 ):
-    """Soft-delete every document in a collection.
+    """Soft-delete every document in a collection (or hard-delete with ?purge=true).
 
     Each document keeps its own 48-hour restore clock — documents that were
     individually deleted earlier retain their original deletion time. The
     collection record itself is preserved.
+
+    When ``purge=true``, documents are marked and then immediately
+    hard-deleted from the database. Use this to fully reset a collection
+    before a fresh ingest (a soft-deleted row with the same fingerprint is
+    resurrected by re-ingest — see PgDedupStore.store_document).
     """
     _ = req or CallerMetadata()
+    if purge:
+        _svc._dedup_store.soft_delete_collection(collection_name)
+        purged = _svc._dedup_store.purge_deleted(older_than_hours=0)
+        return {
+            "collection": collection_name,
+            "documents_purged": purged,
+            "message": (
+                f"Hard-deleted {purged} document(s). Not recoverable."
+            ),
+        }
     marked = _svc._dedup_store.soft_delete_collection(collection_name)
     return {
         "collection": collection_name,

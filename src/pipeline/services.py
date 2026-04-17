@@ -264,8 +264,15 @@ def _process_single_document(
         tags=tags,
         warnings=warnings,
     )
-    _dedup_store.store_document(stored_doc)
+    was_resurrected = _dedup_store.store_document(stored_doc)
     doc_id = stored_doc.document_id
+
+    if was_resurrected:
+        warnings.append(
+            "This document was previously soft-deleted and has been "
+            "resurrected by re-ingest. Its deletion_scheduled_at has "
+            "been cleared."
+        )
 
     # Warn when key metadata conventions aren't followed
     if collection == "default":

@@ -104,7 +104,7 @@ class DedupStore(Protocol):
         include_deleted: bool = False,
     ) -> StoredDocument | None: ...
 
-    def store_document(self, doc: StoredDocument) -> None: ...
+    def store_document(self, doc: StoredDocument) -> bool: ...
 
     def record_interaction(self, interaction: DocumentInteraction) -> None: ...
 
@@ -184,11 +184,34 @@ class PgDedupStore:
                     return None
                 return _row_to_stored_document(row, collection)
 
-    def store_document(self, doc: StoredDocument) -> None:
+    def store_document(self, doc: StoredDocument) -> bool:
+        """Insert or upsert a document.
+
+        Returns True if the upsert resurrected a previously soft-deleted row
+        (i.e. the row existed with deleted_at IS NOT NULL before this call).
+        """
         import json as _json
         with self._pool.connection() as conn:
             self._ensure_collection(conn, doc.collection_id)
             with conn.cursor() as cur:
+                # Capture prior soft-delete state in the same transaction so
+                # callers can surface "this re-ingest resurrected a row".
+                # After the UPDATE below, deleted_at is always NULL, so the
+                # only way to detect a resurrection is to look up the prior
+                # state first.
+                cur.execute(
+                    """
+                    SELECT d.deleted_at IS NOT NULL
+                    FROM documents d
+                    JOIN collections col ON d.collection_id = col.id
+                    WHERE col.name = %(collection)s
+                      AND d.content_fingerprint = %(fp)s
+                    """,
+                    {"collection": doc.collection_id, "fp": doc.content_fingerprint},
+                )
+                prior = cur.fetchone()
+                was_resurrected = bool(prior and prior[0])
+
                 cur.execute(
                     """
                     INSERT INTO documents (
@@ -215,6 +238,8 @@ class PgDedupStore:
                         output_tokens_estimate = EXCLUDED.output_tokens_estimate,
                         token_savings_ratio = EXCLUDED.token_savings_ratio,
                         tags = EXCLUDED.tags,
+                        deleted_at = NULL,
+                        deletion_scheduled_at = NULL,
                         updated_at = now()
                     RETURNING id
                     """,
@@ -236,10 +261,9 @@ class PgDedupStore:
                 )
                 row = cur.fetchone()
                 if row:
-                    # Update the doc's id to match what's actually in Postgres
-                    # (may differ on conflict/force re-process)
                     doc.document_id = str(row[0])
             conn.commit()
+        return was_resurrected
 
     def record_interaction(self, interaction: DocumentInteraction) -> None:
         import json as _json
@@ -568,19 +592,33 @@ class PgDedupStore:
         """Hard-delete documents whose deletion_scheduled_at is older than
         the threshold. Chunks and interactions cascade via FK.
 
+        When ``older_than_hours <= 0``, purges every soft-deleted row
+        regardless of timing. This is what the ``DELETE
+        /api/collections/{name}?purge=true`` route relies on to empty a
+        collection in a single request — the interval check would
+        otherwise miss rows that were marked microseconds earlier.
+
         Returns the number of documents purged.
         """
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    DELETE FROM documents
-                    WHERE deletion_scheduled_at IS NOT NULL
-                      AND deletion_scheduled_at
-                          < now() - make_interval(hours => %(hrs)s)
-                    """,
-                    {"hrs": older_than_hours},
-                )
+                if older_than_hours <= 0:
+                    cur.execute(
+                        """
+                        DELETE FROM documents
+                        WHERE deleted_at IS NOT NULL
+                        """
+                    )
+                else:
+                    cur.execute(
+                        """
+                        DELETE FROM documents
+                        WHERE deletion_scheduled_at IS NOT NULL
+                          AND deletion_scheduled_at
+                              < now() - make_interval(hours => %(hrs)s)
+                        """,
+                        {"hrs": older_than_hours},
+                    )
                 purged = cur.rowcount
             conn.commit()
         return purged
@@ -737,8 +775,21 @@ class InMemoryDedupStore:
             return None
         return doc
 
-    def store_document(self, doc: StoredDocument) -> None:
-        self._documents[(doc.collection_id, doc.content_fingerprint)] = doc
+    def store_document(self, doc: StoredDocument) -> bool:
+        """Insert or upsert a document.
+
+        Returns True if the upsert resurrected a previously soft-deleted row
+        at the same (collection, fingerprint) key.
+        """
+        key = (doc.collection_id, doc.content_fingerprint)
+        prior = self._documents.get(key)
+        was_resurrected = bool(prior and prior.document_id in self._deletions)
+        if was_resurrected:
+            # Clear the old doc's deletion entry so future queries see the
+            # resurrected content as active.
+            del self._deletions[prior.document_id]
+        self._documents[key] = doc
+        return was_resurrected
 
     def record_interaction(self, interaction: DocumentInteraction) -> None:
         self._interactions.setdefault(interaction.document_id, []).append(interaction)
@@ -797,12 +848,15 @@ class InMemoryDedupStore:
 
     def purge_deleted(self, older_than_hours: int = 48) -> int:
         from datetime import timedelta
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
-        to_purge = [
-            doc_id
-            for doc_id, (_del, scheduled) in self._deletions.items()
-            if scheduled < cutoff
-        ]
+        if older_than_hours <= 0:
+            to_purge = list(self._deletions.keys())
+        else:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
+            to_purge = [
+                doc_id
+                for doc_id, (_del, scheduled) in self._deletions.items()
+                if scheduled < cutoff
+            ]
         for doc_id in to_purge:
             del self._deletions[doc_id]
             self._interactions.pop(doc_id, None)
