@@ -343,6 +343,7 @@ def _process_single_document(
 
         response["chunks_count"] = len(chunks)
 
+        embedding_failed = False
         if _embedding_client.enabled and chunks:
             try:
                 texts = [c.text for c in chunks]
@@ -356,13 +357,18 @@ def _process_single_document(
                 response.setdefault("warnings", []).append(
                     f"Embedding failed: {e}"
                 )
+                embedding_failed = True
 
-        if chunks:
+        if chunks and not embedding_failed:
             if force:
                 _vector_store.delete_by_document(doc_id)
             _vector_store.insert(chunks)
 
-        response["store_status"] = "stored"
+        if embedding_failed:
+            response["store_status"] = "error"
+            response["chunks_count"] = 0
+        else:
+            response["store_status"] = "stored"
         response["provenance"]["processing_chain"] = processing_chain
     else:
         response["store_status"] = "not_stored"

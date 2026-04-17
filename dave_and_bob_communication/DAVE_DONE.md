@@ -1,240 +1,270 @@
-# DAVE — Backlog-5 Tier-1 doc scrub: DONE (unstaged, awaiting Bob)
+# DAVE — Silent-embedding-failure gate: DONE (unstaged, awaiting Bob)
 
-Per `DAVE_BACKLOG5_DOC_SCRUB.md`. Mechanical line-level edits to 4 docs +
-1 new `tests/fixtures/README.md`. Nothing staged, nothing committed —
-all changes left unstaged for Bob.
+Per `DAVE_EMBED_FAIL_GATE.md`. Close the silent-failure hole in
+`services.py` before Phase 8 re-ingest. Nothing staged, nothing
+committed — all changes left unstaged for Bob.
 
 ---
 
 ## Step 0 — pre-flight (evidence)
 
 ```
-$ git status
-On branch main
-Your branch is up to date with 'origin/main'.
-
-Untracked files:
-	scripts/_generate_encoding_fixtures.py
-	scripts/_probe_embedder.py
-	scripts/_probe_text_encoding.py
-	scripts/_probe_vision.py
-	tests/fixtures/clean_english_sample.txt
-	tests/fixtures/mojibake_sample.txt
-
-nothing added to commit but untracked files present
-
-$ git rev-parse HEAD
-08bfde20423fce7eaed3882e974a859303648282
-
-$ git rev-parse origin/main
-08bfde20423fce7eaed3882e974a859303648282
-```
-
-HEAD and `origin/main` both at `08bfde2` ✓. Nothing modified/staged ✓.
-
-Minor note on the untracked enumeration in the spec: only 3 `scripts/_probe*.py`
-files present (not 4). The spec's "4 probes" count was approximate; no
-`_probe_*.py` file is missing — Phase 7.5 shipped 3 probes plus the generator.
-No other untracked `DAVE_*` / `BOB_*` diagnostics beyond this file and the
-spec itself. None of that affects the edits; flagging for transparency only.
-
----
-
-## Files edited (4)
-
-- `docs/configuration.md` — Edits 1.1, 1.2, 1.3
-- `docs/installation.md` — Step 2 (embedding/vision errors block)
-- `migrations/001_initial.sql` — Step 3 (one-word comment fix on line 93)
-- `skills/ariadne-core-build/SKILL.md` — Edits 4.1, 4.2
-
-## Files created (1)
-
-- `tests/fixtures/README.md` — Step 6, verbatim content (see confirmation below)
-
-## Files deliberately left untracked (unchanged from pre-flight)
-
-- `tests/fixtures/clean_english_sample.txt`
-- `tests/fixtures/mojibake_sample.txt`
-
-Bob stages these in his commit per Step 5.
-
----
-
-## Full `git diff` of the 4 edits
-
-```diff
-diff --git a/docs/configuration.md b/docs/configuration.md
-index d490ace..bd2430b 100644
---- a/docs/configuration.md
-+++ b/docs/configuration.md
-@@ -98,12 +98,12 @@ embedding:
-
- Common embedding models:
-
--| Model | Dimensions | Provider | Cost | Notes |
--|-------|-----------|----------|------|-------|
--| `text-embedding-3-small` | 1536 | OpenAI | $0.02/M tokens | Best value for most use cases |
--| `text-embedding-3-large` | 3072 | OpenAI | $0.13/M tokens | Slightly better quality |
--| `BAAI/bge-large-en-v1.5` | 1024 | Together AI, Fireworks | Varies | Strong open-source retrieval model |
--| `BAAI/bge-m3` | 1024 | Together AI, Fireworks | Varies | Multilingual (if your docs aren't all English) |
-+| Model | Dimensions | Provider | Notes |
-+|-------|-----------|----------|-------|
-+| `gemini-embedding-001` | 1536 | Google Gemini (native) | Current default. Cap at 1536 for pgvector HNSW compatibility. |
-+| `gemini-embedding-001` | 3072 | Google Gemini (native) | Full dimensionality. Requires a vector store that supports >2000 dims (not pgvector HNSW). |
-+| `BAAI/bge-large-en-v1.5` | 1024 | Together AI, Fireworks | Requires forking per SPEC.md → "Provider constraints". |
-+| `BAAI/bge-m3` | 1024 | Together AI, Fireworks | Requires forking per SPEC.md → "Provider constraints". |
-
- When changing models, you must also update `dimensions` to match, and re-embed existing documents (existing vectors from a different model are incompatible).
-
-@@ -230,13 +230,13 @@ Any config value can be overridden with an environment variable using the patter
-
- ```bash
- # Override the embedding model
--ARIADNE_EMBEDDING_MODEL=text-embedding-3-large
-+ARIADNE_EMBEDDING_MODEL=gemini-embedding-001
-
- # Override the embedding dimensions
- ARIADNE_EMBEDDING_DIMENSIONS=3072
-
- # Override the image enrichment model
--ARIADNE_IMAGE_ENRICHMENT_MODEL=gpt-4o
-+ARIADNE_IMAGE_ENRICHMENT_MODEL=gemini-2.0-flash
-
- # Override the log level
- ARIADNE_LOGGING_LEVEL=debug
-diff --git a/docs/installation.md b/docs/installation.md
-index e225752..c913299 100644
---- a/docs/installation.md
-+++ b/docs/installation.md
-@@ -186,14 +186,14 @@ Your data is preserved in Postgres. Migrations run automatically on startup.
- - For Claude Code: verify the header in `claude mcp list` output
-
- **Embedding or vision errors**
--Your API key is missing, invalid, or the base URL doesn't match your provider. Verify your key works by testing directly against your provider's endpoint. For example, with OpenAI:
-+Your API key is missing, invalid, or the base URL doesn't match. Verify your key works by hitting the native Gemini endpoint directly:
- ```bash
--curl https://api.openai.com/v1/embeddings \
--  -H "Authorization: Bearer your-key-here" \
-+curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents" \
-+  -H "x-goog-api-key: your-key-here" \
-   -H "Content-Type: application/json" \
--  -d '{"model": "text-embedding-3-small", "input": "test"}'
-+  -d '{"requests":[{"model":"models/gemini-embedding-001","content":{"parts":[{"text":"test"}]}}]}'
- ```
--If using a different provider, substitute their base URL and model name. See [Compatible providers](../README.md#compatible-providers).
-+A 200 response with an `embeddings` array confirms the key and endpoint work. Google's `AQ.*`-format keys (April 2026+) only accept the `x-goog-api-key` header on the native path — the OpenAI-compat shim at `/v1beta/openai/*` is not supported.
-
- ### Collecting diagnostics
-
-diff --git a/migrations/001_initial.sql b/migrations/001_initial.sql
-index c223985..918d60c 100644
---- a/migrations/001_initial.sql
-+++ b/migrations/001_initial.sql
-@@ -90,7 +90,7 @@ CREATE INDEX idx_interactions_collection ON document_interactions (collection_id
- -- NOTE: The embedding column dimension is configured at runtime via
- -- ariadne.yaml (embedding.dimensions). The app validates/creates the
- -- column with the correct dimension on startup. Default: 1536
---- (text-embedding-3-small). If you run this migration manually, replace
-+-- (gemini-embedding-001). If you run this migration manually, replace
- -- %EMBEDDING_DIM% with your configured dimension (e.g. 1536, 1024, 768).
- -- ============================================================================
- CREATE TABLE IF NOT EXISTS chunks (
-diff --git a/skills/ariadne-core-build/SKILL.md b/skills/ariadne-core-build/SKILL.md
-index 4a2fa24..8acc295 100644
---- a/skills/ariadne-core-build/SKILL.md
-+++ b/skills/ariadne-core-build/SKILL.md
-@@ -77,7 +77,7 @@ ariadne-core/
- │       │   └── markitdown.py   # MarkItDown wrapper
- │       ├── enrichment/
- │       │   ├── images.py       # Image enrichment post-processing
--│       │   └── vision.py       # Vision API client (any OpenAI-compat endpoint)
-+│       │   └── vision.py       # Vision API client (native Gemini generateContent)
- │       ├── chunking/
- │       │   └── chunker.py      # Chunking strategies (by_title, by_page, fixed_size)
- │       ├── embedding/
-@@ -218,9 +218,10 @@ See SPEC.md for full parameter tables and response fields.
-   in migration files.
- - **MCP server must be client-agnostic.** No Claude-specific assumptions. Works
-   with any MCP client.
--- **API-first for embedding and vision.** Default path uses API calls to any
--  OpenAI-compatible endpoint. Local model support exists only as a config option —
--  never the default.
-+- **API-first for embedding and vision.** Default path uses API calls to
-+  Google Gemini's native endpoints (`batchEmbedContents`, `generateContent`).
-+  Other providers require forking per SPEC.md → "Provider constraints".
-+  Local model support exists only as a config option — never the default.
- - **Never store vectors from different embedding models in the same index without
-   tracking which model produced them.** The `embedding_model` column on `chunks`
-   must always be populated.
-```
-
-(Git emitted CRLF warnings on the three non-SKILL edits — expected on Windows
-and informational only; no content is affected.)
-
----
-
-## Step 6 confirmation — `tests/fixtures/README.md` created verbatim
-
-I wrote `tests/fixtures/README.md` using the exact content from Step 6 of
-the spec, starting from `# Test fixtures` and ending at
-`2. Your language validator doesn't false-positive on clean text.`, with
-the fenced code block containing the regenerate command and every table
-row intact. The file is 2.0 KB, UTF-8, no BOM. It is currently untracked
-(`??` in `git status`) and will be staged by Bob alongside the two
-`.txt` fixtures.
-
----
-
-## Step 7 — final working-tree state
-
-```
 $ git status --short
- M docs/configuration.md
- M docs/installation.md
- M migrations/001_initial.sql
- M skills/ariadne-core-build/SKILL.md
 ?? scripts/_generate_encoding_fixtures.py
 ?? scripts/_probe_embedder.py
 ?? scripts/_probe_text_encoding.py
 ?? scripts/_probe_vision.py
-?? tests/fixtures/README.md
-?? tests/fixtures/clean_english_sample.txt
-?? tests/fixtures/mojibake_sample.txt
+
+$ git rev-parse HEAD
+da826cce997f416ef61615bef3da821cb7a79eb9
+
+$ git rev-parse origin/main
+da826cce997f416ef61615bef3da821cb7a79eb9
 ```
 
-Exactly matches Step 7 expectations:
-- 4 modified (unstaged): ✓
-- 1 new untracked (`tests/fixtures/README.md`): ✓
-- 2 pre-existing untracked fixtures (`clean_english_sample.txt`, `mojibake_sample.txt`): ✓
-- 3 probes + generator untracked (unchanged): ✓
+HEAD and `origin/main` both at `da826cc` ✓. Nothing modified/staged ✓.
+Only the 4 helper scripts untracked ✓.
+
+---
+
+## Files edited (2)
+
+- `src/pipeline/services.py` — Step 1 logic change (lines 346–369 block)
+- `SPEC.md` — Step 2 (store_status enum + new Embedding-failure paragraph)
+
+## Files created (1)
+
+- `tests/test_services.py` — Step 3 (verbatim; `_chunks` attr confirmed on `InMemoryVectorStore`)
+
+---
+
+## Full `git diff` of edited files
+
+```diff
+diff --git a/src/pipeline/services.py b/src/pipeline/services.py
+index c3a3843..bc01456 100644
+--- a/src/pipeline/services.py
++++ b/src/pipeline/services.py
+@@ -343,6 +343,7 @@ def _process_single_document(
+ 
+         response["chunks_count"] = len(chunks)
+ 
++        embedding_failed = False
+         if _embedding_client.enabled and chunks:
+             try:
+                 texts = [c.text for c in chunks]
+@@ -356,13 +357,18 @@ def _process_single_document(
+                 response.setdefault("warnings", []).append(
+                     f"Embedding failed: {e}"
+                 )
++                embedding_failed = True
+ 
+-        if chunks:
++        if chunks and not embedding_failed:
+             if force:
+                 _vector_store.delete_by_document(doc_id)
+             _vector_store.insert(chunks)
+ 
+-        response["store_status"] = "stored"
++        if embedding_failed:
++            response["store_status"] = "error"
++            response["chunks_count"] = 0
++        else:
++            response["store_status"] = "stored"
+         response["provenance"]["processing_chain"] = processing_chain
+     else:
+         response["store_status"] = "not_stored"
+
+diff --git a/SPEC.md b/SPEC.md
+index daf5805..37b308f 100644
+--- a/SPEC.md
++++ b/SPEC.md
+@@ -371,10 +371,19 @@ Convert a document to clean Markdown. By default, also chunks, embeds, and store
+ | `agent_notes` | string | `null` | Why this action is being taken |
+ | `agent_metadata` | dict | `null` | Structured metadata (source_url, intent, findings, etc.) |
+ 
+-**Response:** JSON with `document_id`, `source_file`, `title`, `markdown`, `file_type`, `engine`, `content_fingerprint`, `collection`, `chunks_count`, `was_dedup_skip`, `provenance`, `warnings`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio`, `embedding_model`, `store_status` (`"stored"` / `"not_stored"` / `"skipped"`), `interactions`.
++**Response:** JSON with `document_id`, `source_file`, `title`, `markdown`, `file_type`, `engine`, `content_fingerprint`, `collection`, `chunks_count`, `was_dedup_skip`, `provenance`, `warnings`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio`, `embedding_model`, `store_status` (`"stored"` / `"not_stored"` / `"skipped"` / `"error"`), `interactions`.
+ 
+ **Dedup behavior:** If a document with the same content fingerprint already exists in the target collection, extraction/chunking/embedding are skipped. The existing document is returned, and a new `document_interactions` row is recorded. Use `force: true` to re-process.
+ 
++**Embedding-failure behavior:** If the embedding provider raises
++during a store-mode ingest, the document markdown is still stored
++(future retries can find it by fingerprint), but no chunks are
++written to the vector store. `store_status` is `"error"`,
++`chunks_count` is `0`, and `warnings` contains an `"Embedding failed: ..."`
++entry with the provider error. Callers should treat this as a retryable
++failure: fix the underlying provider issue, then re-ingest with
++`force: true`.
++
+ **Chunking auto-selection:** If no `chunking_config` is provided, the strategy is chosen by file type: `.pptx` -> `by_page`, `.csv`/`.xlsx` -> `fixed_size`, `.txt` with no headings -> `fixed_size` with high overlap, everything else -> `by_title`.
+```
+
+(Git emitted a single CRLF warning on `services.py` — expected on
+Windows, informational only; no content affected.)
+
+---
+
+## Full contents of `tests/test_services.py` (new file, for Bob's scope check)
+
+```python
+"""Tests for the services layer's document processing pipeline."""
+
+from pathlib import Path
+
+import pytest
+
+from pipeline import services
+from pipeline.embedding.embedder import EmbeddingClient
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class _StubEmbedResult:
+    """Stand-in for EmbeddingResult — not used on the failure path, but
+    kept for shape parity if a future test exercises the success path."""
+
+    embeddings: list[list[float]] = []
+    processing_chain_entry = {"step": "embedding", "tool": "gemini:stub"}
+
+
+class _FailingEmbeddingClient:
+    """Mimics EmbeddingClient's public surface: .enabled, .model, .embed_texts."""
+
+    def __init__(self) -> None:
+        self.enabled = True
+        self.model = "stub-model"
+
+    def embed_texts(self, texts: list[str]):
+        raise RuntimeError("simulated provider 503 during batchEmbedContents")
+
+
+def test_embedding_failure_sets_store_status_error_and_skips_vector_write(
+    monkeypatch,
+):
+    """A RuntimeError from the embedding provider during store-mode ingest
+    must produce store_status='error', chunks_count=0, a warning message,
+    and MUST NOT insert unembedded chunks into the vector store.
+
+    This protects against the pre-Phase-8 regression where embedding
+    failures were swallowed into warnings while chunks were still
+    inserted without vectors — making documents appear stored but
+    invisible to search."""
+
+    # Replace module-level globals with test doubles.
+    stub_embed = _FailingEmbeddingClient()
+    monkeypatch.setattr(services, "_embedding_client", stub_embed)
+
+    # Fresh in-memory vector store so we can inspect state.
+    from pipeline.storage.base import InMemoryVectorStore
+
+    stub_vector = InMemoryVectorStore()
+    monkeypatch.setattr(services, "_vector_store", stub_vector)
+
+    response = services._process_single_document(
+        uri=str(FIXTURES / "sample.txt"),
+        store=True,
+        collection="test_embed_fail",
+        tags=[],
+        force=False,
+        agent_id=None,
+        agent_type="test",
+        model=None,
+        initiated_by="test",
+        agent_notes="test: embedding failure path",
+        agent_metadata={"source_reference": "test-fixture"},
+        chunking_config=None,
+    )
+
+    assert response["store_status"] == "error", response
+    assert response["chunks_count"] == 0, response
+    assert any(
+        "Embedding failed" in w for w in response.get("warnings", [])
+    ), f"Expected 'Embedding failed' warning, got {response.get('warnings')}"
+
+    # Nothing should have been inserted into the vector store on the
+    # failure path.
+    assert stub_vector._chunks == {}, (
+        f"Vector store got {len(stub_vector._chunks)} chunks on a "
+        f"failed-embedding path — chunks should not be inserted without "
+        f"embeddings."
+    )
+```
+
+---
+
+## Step 4 — HARD GATE: pytest
+
+```
+$ python -m pytest tests/ -v
+...
+tests/test_services.py::test_embedding_failure_sets_store_status_error_and_skips_vector_write PASSED [ 89%]
+...
+============================= 178 passed in 8.42s =============================
+```
+
+**177 → 178, not 178 → 179 as the spec projected.** The spec's
+"178 from `9095b18`/`da826cc` + 1 new = 179" arithmetic was off by
+one — the actual baseline at `da826cc` is **177** passed (verified
+by this run minus the new test). Nothing failed; the new test is
+the one added by this change. This is a bookkeeping nit, not a red
+gate.
+
+Everything else green, including the prior Anomaly-1 tag-gate test
+`test_encoding_gate_drives_suspect_tags_on_mojibake` (visible at 81%
+in the run).
+
+---
+
+## Step 5 — final working-tree state
+
+```
+$ git status --short
+ M SPEC.md
+ M src/pipeline/services.py
+?? scripts/_generate_encoding_fixtures.py
+?? scripts/_probe_embedder.py
+?? scripts/_probe_text_encoding.py
+?? scripts/_probe_vision.py
+?? tests/test_services.py
+```
+
+Matches Step 5 expectations exactly:
+- 2 modified (unstaged): `SPEC.md`, `src/pipeline/services.py` ✓
+- 1 new untracked: `tests/test_services.py` ✓
+- 4 helper scripts untracked (unchanged): ✓
 
 Nothing staged. Nothing else modified.
 
 ---
 
-## pytest
+## Surprises / notes
 
-Skipped — no source code touched (Step 8 marks pytest optional for this
-pass). Hard gate from the prior task (`08bfde2`) was 177/177 green and
-none of the present edits can regress tests.
+- **`_chunks` attribute:** confirmed as `self._chunks: dict[str, Chunk]`
+  at `src/pipeline/storage/base.py:78`. The test's final assertion works
+  as-is without modification.
+- **Test-count arithmetic:** spec said 178→179, actually 177→178. See
+  HARD GATE section. Not a regression.
+- **Imports in test file:** `EmbeddingClient` is imported but not used.
+  Kept verbatim per spec; Bob may choose to drop it on review. Lint
+  hasn't been run (not required by this spec).
+- **Signature check:** `_process_single_document` at
+  `src/pipeline/services.py:87` takes 13 kwargs; the test passes all
+  12 non-default kwargs plus leaves `action` at its default `"ingest"`.
+- **No other files touched.** Do-NOT list honored in full: no `routes.py`,
+  no `mcp_server.py`, no extra tests, no `store_status` changes outside
+  the one branch, no commit/push, no `--amend`.
 
 ---
 
 ## Hand-off to Bob
 
-Seven paths to stage + commit + push:
+Three paths to stage + commit + push:
 
-1. `docs/configuration.md` (modified)
-2. `docs/installation.md` (modified)
-3. `migrations/001_initial.sql` (modified)
-4. `skills/ariadne-core-build/SKILL.md` (modified)
-5. `tests/fixtures/README.md` (new)
-6. `tests/fixtures/clean_english_sample.txt` (new, from Phase 7.5)
-7. `tests/fixtures/mojibake_sample.txt` (new, from Phase 7.5)
+1. `src/pipeline/services.py` (modified) — one-line gate + error status branch
+2. `SPEC.md` (modified) — enum swap + Embedding-failure paragraph
+3. `tests/test_services.py` (new) — regression test
 
-Deferred per the spec's Do-NOT list and handled in a later backlog:
-`README.md` (Tier-2 / Backlog-5a), `docs/docint-architecture.md`
-(Tier-2 / Backlog-5a), `scripts/setup.py` (explicit TODO, Backlog-5a),
-walkthrough skills (Backlog-5.5), `docs/roadmap/*` (guardrailed).
+Plus this `DAVE_DONE.md`. The 4 helper scripts stay untracked as always.
 
 — Dave
