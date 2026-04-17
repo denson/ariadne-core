@@ -6,6 +6,38 @@ The canonical skill at `skills/ariadne-document-intelligence/SKILL.md` describes
 
 ---
 
+## 0. Native Gemini migration (v1)
+
+**Target state:** Bundled embedding, vision, and language-validation clients call Google Gemini's native endpoints (`:batchEmbedContents`, `:generateContent`) with `x-goog-api-key`. Multi-provider support is out of scope for v1 — other providers require forking the client modules.
+
+**Current state:** ✅ Fixed across 7 phases (April 2026).
+
+**What was changed:**
+- SPEC.md `### Provider constraints` now documents the native contract (phase 1, `db676b0`).
+- `skills/ariadne-core-deploy/SKILL.md` updated for native env vars (phase 2, `731fb49`).
+- `src/pipeline/embedding/embedder.py` rewritten for native `:batchEmbedContents` (phase 3, `e0caf2e`).
+- `src/pipeline/enrichment/vision.py` rewritten for native `:generateContent` with `inlineData` parts. `describe_image_from_url` now fetches URL bytes server-side — new outbound-HTTP surface (phase 4, `c5e923e`).
+- `src/pipeline/extraction/text_encoding.py` language validator rewritten for native `:generateContent` with markdown-fence-strip fallback (phase 5, `43a286f`).
+- Runtime defaults in `config.py`, `.env.example`, `config/ariadne.yaml`, `scripts/setup.py`, and the CLI's built-in `_ENV_TEMPLATE` now point at Gemini-native URLs (phase 6a, `0b9a39e`).
+- User-facing docs (README, configuration, installation, architecture) updated with an honest "roll your own for other providers" caveat banner (phase 6b, `6db1663`).
+- Module-level dataclass defaults in `embedder.py` and `vision.py` aligned with the phase-6a loader defaults (phase 7, this commit — fixes a phase-6a scope gap).
+- Pytest suite updated to assert the native HTTP contract; stale `tests/test_openai_live.py` deleted (phase 7, this commit).
+
+**Why:** Google's `AQ.*`-format API keys are rejected by every auth variant on the OpenAI-compatible shim at `/v1beta/openai/*`. Empirical probe (April 2026) confirmed native endpoints with `x-goog-api-key` as the only viable path.
+
+**Known carry-forward items:**
+- `docs/roadmap/pro-pricing.md` and `docs/roadmap/token_pricing_snapshot.md` still reference OpenAI-compat defaults (phase 6c, pending — under Sam's supervision).
+- `src/pipeline/enrichment/images.py` tool-label emits `openai:<model>` (e.g. `openai:gemini-2.0-flash`). Cosmetic bug — should be `gemini:<model>` to match `embedder.py`. Deferred to a follow-up.
+- Multi-provider support (OpenAI, Together, Groq) deferred to v2 via a provider abstraction.
+- `docs/installation.md` still uses legacy unprefixed env var names (`EMBEDDING_API_KEY` vs `ARIADNE_EMBEDDING_API_KEY`) — separate backlog item.
+
+**How to test:**
+- `PYTHONPATH=src python -m pytest tests/` passes green. (The bare `python -m pytest tests/` may load a shadowing editable install — see DAVE_DONE.md phase-7 anomaly notes.)
+- `python scripts/_probe_embedder.py` and `python scripts/_probe_vision.py` print PASS against live Gemini (probes are not tracked; re-create from phase 3/4 `DAVE_CODE*.md` if needed).
+- `curl -H "x-goog-api-key: $KEY" "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents" -d '{"requests":[{"model":"models/gemini-embedding-001","content":{"parts":[{"text":"test"}]},"outputDimensionality":1536}]}'` returns a 200 with an embeddings array.
+
+---
+
 ## 1. Config: env vars for model and base_url
 
 **Target state:** All API configuration (keys, models, base URLs) is controlled from `.env`. The `ariadne.yaml` config file interpolates `${EMBEDDING_MODEL}`, `${EMBEDDING_BASE_URL}`, `${VISION_MODEL}`, `${VISION_BASE_URL}` from env vars so users set everything in one place.

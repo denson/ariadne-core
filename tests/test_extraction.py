@@ -47,7 +47,9 @@ class TestMarkItDownExtractor:
 
     def test_processing_chain_recorded(self):
         result = self.extractor.extract(str(FIXTURES / "sample.txt"))
-        assert len(result.processing_chain) == 1
+        # Phase 5 appends an `encoding_detection` step for .txt files when
+        # language validation runs. First step is always `extraction`.
+        assert len(result.processing_chain) >= 1
         step = result.processing_chain[0]
         assert step["step"] == "extraction"
         assert step["tool"] == "markitdown"

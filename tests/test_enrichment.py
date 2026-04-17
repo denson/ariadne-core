@@ -1,4 +1,4 @@
-"""Tests for image enrichment post-processing and vision client."""
+"""Tests for image enrichment post-processing and vision client (Gemini native)."""
 
 import base64
 import json
@@ -22,17 +22,17 @@ FIXTURES = Path(__file__).parent / "fixtures"
 class TestVisionConfig:
     def test_defaults(self):
         config = VisionConfig()
-        assert config.base_url == "https://api.openai.com/v1"
-        assert config.model == "gpt-4o-mini"
+        assert config.base_url == "https://generativelanguage.googleapis.com/v1beta"
+        assert config.model == "gemini-2.0-flash"
         assert config.api_key == ""
 
     def test_custom(self):
         config = VisionConfig(
-            base_url="https://custom.api/v1",
+            base_url="https://custom.api/v1beta",
             api_key="test-key",
-            model="gpt-4o",
+            model="gemini-2.0-flash-lite",
         )
-        assert config.base_url == "https://custom.api/v1"
+        assert config.base_url == "https://custom.api/v1beta"
         assert config.api_key == "test-key"
 
 
@@ -45,33 +45,72 @@ class TestVisionClient:
 
     @patch("pipeline.enrichment.vision.urlopen")
     def test_describe_image_from_url(self, mock_urlopen):
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(
-            {"choices": [{"message": {"content": "A test image"}}]}
+        # Phase 4 pattern: two urlopen calls — (1) fetch image bytes,
+        # (2) POST to Gemini's :generateContent. Use side_effect to
+        # return different responses in order.
+        fetch_resp = MagicMock()
+        fetch_resp.read.return_value = b"\x89PNG\r\n\x1a\nfake-bytes"
+        fetch_resp.headers = {"Content-Type": "image/png"}
+        fetch_resp.__enter__ = lambda s: s
+        fetch_resp.__exit__ = MagicMock(return_value=False)
+
+        api_resp = MagicMock()
+        api_resp.read.return_value = json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": "A test image"}]}}]}
         ).encode()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_resp
+        api_resp.__enter__ = lambda s: s
+        api_resp.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [fetch_resp, api_resp]
 
         config = VisionConfig(api_key="test-key")
         client = VisionClient(config)
         result = client.describe_image_from_url("https://example.com/img.png")
         assert result == "A test image"
 
-        # Verify the API was called with correct payload
-        call_args = mock_urlopen.call_args
-        req = call_args[0][0]
+        # Second urlopen call is the Gemini POST — verify payload shape.
+        assert mock_urlopen.call_count == 2
+        api_call = mock_urlopen.call_args_list[1]
+        req = api_call[0][0]
+        assert req.full_url.endswith(":generateContent")
         body = json.loads(req.data)
-        assert body["model"] == "gpt-4o-mini"
-        assert len(body["messages"][0]["content"]) == 2
-        assert body["messages"][0]["content"][1]["type"] == "image_url"
+        parts = body["contents"][0]["parts"]
+        assert any("inlineData" in p for p in parts)
+        assert any(p.get("text") for p in parts)
+        # No OpenAI-compat keys leaked.
+        assert "messages" not in body
+        assert "model" not in body
+        # Auth header (title-cased by urllib).
+        header_val = req.headers.get("X-goog-api-key") or req.headers.get(
+            "x-goog-api-key"
+        )
+        assert header_val == "test-key"
 
     @patch("pipeline.enrichment.vision.urlopen")
     def test_api_error_raises_runtime_error(self, mock_urlopen):
-        mock_urlopen.side_effect = Exception("Connection refused")
+        # Fetch succeeds, Gemini POST fails — exercises the `_call_vision_api`
+        # error path which wraps any Exception as "Vision API call failed: ...".
+        fetch_resp = MagicMock()
+        fetch_resp.read.return_value = b"\x89PNG\r\n\x1a\n"
+        fetch_resp.headers = {"Content-Type": "image/png"}
+        fetch_resp.__enter__ = lambda s: s
+        fetch_resp.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [fetch_resp, Exception("Connection refused")]
+
         config = VisionConfig(api_key="test-key")
         client = VisionClient(config)
         with pytest.raises(RuntimeError, match="Vision API call failed"):
+            client.describe_image_from_url("https://example.com/img.png")
+
+    @patch("pipeline.enrichment.vision.urlopen")
+    def test_url_fetch_error_raises_runtime_error(self, mock_urlopen):
+        # Fetch itself fails — exercises the "Failed to fetch image URL" branch
+        # in describe_image_from_url.
+        mock_urlopen.side_effect = Exception("Connection refused")
+        config = VisionConfig(api_key="test-key")
+        client = VisionClient(config)
+        with pytest.raises(RuntimeError, match="Failed to fetch image URL"):
             client.describe_image_from_url("https://example.com/img.png")
 
 
@@ -160,7 +199,11 @@ class TestImageEnricher:
         result = enricher.enrich(md)
         chain = result.processing_chain_entry
         assert chain["step"] == "image_enrichment"
-        assert chain["tool"] == "openai:gpt-4o-mini"
+        # The enricher (src/pipeline/enrichment/images.py) still emits the
+        # `openai:` prefix — phase 4 only rewrote vision.py. Assert reality
+        # and flag for Bob: enricher tool-label should become `gemini:`
+        # as a follow-up to the native-Gemini migration.
+        assert chain["tool"] == "openai:gemini-2.0-flash"
         assert "ts" in chain
         assert "ms" in chain
         assert chain["images_processed"] == 1

@@ -101,13 +101,13 @@ class TestLoadConfigDefaults:
         # No config file, no env vars — pure defaults
         config = load_config(path="/nonexistent/path.yaml", env={})
         assert isinstance(config, AriadneConfig)
-        assert config.embedding.model == "text-embedding-3-small"
+        assert config.embedding.model == "gemini-embedding-001"
         assert config.embedding.dimensions == 1536
         assert config.chunking.default_strategy == "by_title"
         assert config.chunking.max_characters == 1500
         assert config.api.port == 8000
         assert config.api.require_auth is False
-        assert config.image_enrichment.model == "gpt-4o-mini"
+        assert config.image_enrichment.model == "gemini-2.0-flash"
         assert config.logging.level == "info"
         assert config.database.url == "postgresql://app:changeme@localhost:5432/pipeline"
 
@@ -124,17 +124,17 @@ class TestLoadConfigFromFile:
         config_file = tmp_path / "ariadne.yaml"
         config_file.write_text(textwrap.dedent("""\
             embedding:
-              model: text-embedding-3-small
+              model: gemini-embedding-001
               dimensions: 512
             chunking:
               max_characters: 2000
         """))
         config = load_config(path=str(config_file), env={})
-        assert config.embedding.model == "text-embedding-3-small"
+        assert config.embedding.model == "gemini-embedding-001"
         assert config.embedding.dimensions == 512
         assert config.chunking.max_characters == 2000
         # Unset fields keep defaults
-        assert config.embedding.base_url == "https://api.openai.com/v1"
+        assert config.embedding.base_url == "https://generativelanguage.googleapis.com/v1beta"
         assert config.chunking.default_strategy == "by_title"
 
     def test_var_interpolation_in_file(self, tmp_path):
@@ -288,13 +288,13 @@ class TestLoadRealConfig:
         path = Path(__file__).parent.parent / "config" / "ariadne.yaml"
         # Provide env vars that ariadne.yaml interpolates via ${VAR}
         env = {
-            "EMBEDDING_MODEL": "text-embedding-3-small",
-            "EMBEDDING_BASE_URL": "https://api.openai.com/v1",
-            "VISION_MODEL": "gpt-4o-mini",
-            "VISION_BASE_URL": "https://api.openai.com/v1",
+            "EMBEDDING_MODEL": "gemini-embedding-001",
+            "EMBEDDING_BASE_URL": "https://generativelanguage.googleapis.com/v1beta",
+            "VISION_MODEL": "gemini-2.0-flash",
+            "VISION_BASE_URL": "https://generativelanguage.googleapis.com/v1beta",
         }
         config = load_config(path=str(path), env=env)
-        assert config.embedding.model == "text-embedding-3-small"
+        assert config.embedding.model == "gemini-embedding-001"
         assert config.chunking.default_strategy == "by_title"
-        assert config.image_enrichment.model == "gpt-4o-mini"
+        assert config.image_enrichment.model == "gemini-2.0-flash"
         assert config.vector_store.backend == "pgvector"
