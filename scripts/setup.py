@@ -31,12 +31,15 @@ PROVIDERS = {
     "google": {
         "name": "Google Gemini",
         "key_url": "https://aistudio.google.com/apikey",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "models_endpoint": "https://generativelanguage.googleapis.com/v1beta/models",
         "docs_url": "https://ai.google.dev/gemini-api/docs/models",
         "default_embedding": "gemini-embedding-001",
-        "default_vision": "gemini-3.1-flash-lite-preview",
+        "default_vision": "gemini-2.0-flash",
     },
+    # TODO(native-gemini migration): openai/together entries assume the
+    # OpenAI-compat shim; after phase 3-5 the runtime speaks Gemini
+    # native only. Re-evaluate multi-provider support in a later phase.
     "openai": {
         "name": "OpenAI",
         "key_url": "https://platform.openai.com/api-keys",

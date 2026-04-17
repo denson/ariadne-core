@@ -8,7 +8,7 @@ Loads configuration from ariadne.yaml with three-layer resolution:
 Usage:
     config = load_config()                          # auto-discover
     config = load_config("/config/ariadne.yaml")    # explicit path
-    config.embedding.model   # "text-embedding-3-small"
+    config.embedding.model   # "gemini-embedding-001"
     config.database.url      # resolved from ${DB_PASSWORD}
 """
 
@@ -47,19 +47,19 @@ class VectorStoreConfig:
 
 @dataclass
 class EmbeddingConfig:
-    model: str = "text-embedding-3-small"
+    model: str = "gemini-embedding-001"
     dimensions: int = 1536
-    provider: str = "openai-compatible"
-    base_url: str = "https://api.openai.com/v1"
+    provider: str = "google-gemini"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     api_key: str = ""
 
 
 @dataclass
 class ImageEnrichmentConfig:
     enabled: bool = True
-    provider: str = "openai-compatible"
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-4o-mini"
+    provider: str = "google-gemini"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    model: str = "gemini-2.0-flash"
     api_key: str = ""
     prompt: str = (
         "Describe this image in detail. Include any text, data, charts, "

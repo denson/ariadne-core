@@ -11,18 +11,18 @@ vector_store:
 
 # --- Embedding ---
 embedding:
-  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  model: ${EMBEDDING_MODEL:-gemini-embedding-001}
   dimensions: 1536
-  provider: openai-compatible
-  base_url: ${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+  provider: google-gemini
+  base_url: ${EMBEDDING_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
   api_key: ${EMBEDDING_API_KEY}
 
 # --- Image Enrichment (Vision) ---
 image_enrichment:
   enabled: true
-  provider: openai-compatible
-  base_url: ${VISION_BASE_URL:-https://api.openai.com/v1}
-  model: ${VISION_MODEL:-gpt-4o-mini}
+  provider: google-gemini
+  base_url: ${VISION_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
+  model: ${VISION_MODEL:-gemini-2.0-flash}
   api_key: ${VISION_API_KEY}
   prompt: "Describe this image in detail. Include any text, data, charts, diagrams, or visual elements. Be specific about numbers, labels, and relationships shown."
 
