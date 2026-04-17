@@ -29,9 +29,9 @@ DEFAULT_PROMPT = (
 class VisionConfig:
     """Configuration for the vision API client."""
 
-    base_url: str = "https://api.openai.com/v1"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     api_key: str = ""
-    model: str = "gpt-4o-mini"
+    model: str = "gemini-2.0-flash"
     prompt: str = DEFAULT_PROMPT
 
 

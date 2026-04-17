@@ -29,10 +29,10 @@ logger = logging.getLogger(__name__)
 class EmbeddingConfig:
     """Configuration for the embedding API client."""
 
-    model: str = "text-embedding-3-small"
+    model: str = "gemini-embedding-001"
     dimensions: int = 1536
-    provider: str = "openai-compatible"
-    base_url: str = "https://api.openai.com/v1"
+    provider: str = "google-gemini"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     api_key: str = ""
 
 
