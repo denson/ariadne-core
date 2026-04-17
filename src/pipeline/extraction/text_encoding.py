@@ -1,8 +1,14 @@
 """Text encoding detection and LLM language validation for .txt files.
 
 Uses charset-normalizer (transitive dependency of MarkItDown) for encoding
-detection, and the existing image enrichment API config for an LLM validation
-call that confirms the decoded text is coherent (not mojibake).
+detection, and Gemini's native `:generateContent` endpoint for a text-only
+LLM call that confirms the decoded text is coherent (not mojibake). Reuses
+the image-enrichment config (`ImageEnrichmentConfig`) so operators don't
+have to configure a second provider.
+
+See SPEC.md → "Provider constraints" for the request/response contract
+and an explanation of why the OpenAI-compatible shim is not supported
+for Ariadne's bundled language validator.
 """
 
 from __future__ import annotations
@@ -85,32 +91,40 @@ def validate_language(text: str, config) -> LanguageValidation:
 
     first_500 = text[:500]
     prompt = _VALIDATION_PROMPT.format(text_sample=first_500)
-    endpoint = f"{config.base_url.rstrip('/')}/chat/completions"
+    model_path = config.model
+    if not model_path.startswith("models/"):
+        model_path = f"models/{model_path}"
+    endpoint = f"{config.base_url.rstrip('/')}/{model_path}:generateContent"
 
+    # Native Gemini text-only payload.
+    # See SPEC.md → "Provider constraints" → generateContent contract (text-only).
     payload = {
-        "model": config.model,
-        "messages": [
-            {"role": "user", "content": prompt},
+        "contents": [
+            {"parts": [{"text": prompt}]}
         ],
-        "max_tokens": 256,
+        "generationConfig": {"maxOutputTokens": 256},
     }
 
     body = json.dumps(payload).encode("utf-8")
     req = Request(
         endpoint,
         data=body,
-        # NOTE FOR FUTURE AGENTS — Provider-specific auth header.
-        # This code targets Google's Gemini OpenAI-compatible endpoint and
-        # uses `x-goog-api-key`, which is what new AQ.*-format Gemini API
-        # keys require (the old Authorization: Bearer path returns
-        # "Multiple authentication credentials received" with these keys).
+        # NOTE FOR FUTURE AGENTS — native Gemini endpoint, not OpenAI-compat.
+        # Ariadne's language validator calls Gemini's native
+        # `:generateContent` with a text-only part and the
+        # `x-goog-api-key` header. The OpenAI-compatible shim at
+        # `/v1beta/openai/chat/completions` is NOT supported here —
+        # Google's `AQ.*`-format keys reject every auth variant on
+        # that path.
         #
-        # Other OpenAI-compatible providers (OpenAI, Together, Groq, etc.)
-        # expect `Authorization: Bearer <key>` instead. If you're switching
-        # providers, change the header below to match that provider's
-        # convention. Don't build a provider abstraction here — let the
-        # configuring agent read the provider's docs and pick the right
-        # header.
+        # If you swap to a different OpenAI-compatible provider
+        # (OpenAI proper, Together, Groq, etc.), this whole function
+        # needs a rewrite — endpoint construction, payload shape
+        # (chat/completions with messages), response parser, and
+        # auth header all differ. Don't build a provider abstraction
+        # here; let the configuring agent read the provider's docs
+        # and pick a concrete path. See SPEC.md → "Provider
+        # constraints" for the current native contract.
         headers={
             "Content-Type": "application/json",
             "x-goog-api-key": config.api_key,
@@ -121,7 +135,19 @@ def validate_language(text: str, config) -> LanguageValidation:
     try:
         with urlopen(req) as resp:
             result = json.loads(resp.read().decode("utf-8"))
-        content = result["choices"][0]["message"]["content"]
+        # Native response: candidates[0].content.parts[].text
+        candidates = result.get("candidates") or []
+        if not candidates:
+            raise RuntimeError(
+                f"generateContent returned no candidates: {result}"
+            )
+        parts = candidates[0].get("content", {}).get("parts") or []
+        text_parts = [p.get("text", "") for p in parts if "text" in p]
+        if not text_parts:
+            raise RuntimeError(
+                f"generateContent returned no text parts: {result}"
+            )
+        content = "".join(text_parts).strip()
     except Exception as e:
         return LanguageValidation(
             coherent=True,
@@ -133,8 +159,20 @@ def validate_language(text: str, config) -> LanguageValidation:
             skipped=False,
         )
 
+    # Gemini occasionally wraps JSON replies in a ```json ... ``` fence
+    # when responseMimeType is not explicitly set. Strip it before parsing.
+    stripped = content.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        # Drop the opening fence (may be ```json or ```)
+        lines = lines[1:]
+        # Drop the closing fence if present
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+
     try:
-        parsed = json.loads(content)
+        parsed = json.loads(stripped)
     except (json.JSONDecodeError, TypeError):
         return LanguageValidation(
             coherent=True,
