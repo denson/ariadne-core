@@ -186,14 +186,14 @@ Your data is preserved in Postgres. Migrations run automatically on startup.
 - For Claude Code: verify the header in `claude mcp list` output
 
 **Embedding or vision errors**
-Your API key is missing, invalid, or the base URL doesn't match your provider. Verify your key works by testing directly against your provider's endpoint. For example, with OpenAI:
+Your API key is missing, invalid, or the base URL doesn't match. Verify your key works by hitting the native Gemini endpoint directly:
 ```bash
-curl https://api.openai.com/v1/embeddings \
-  -H "Authorization: Bearer your-key-here" \
+curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents" \
+  -H "x-goog-api-key: your-key-here" \
   -H "Content-Type: application/json" \
-  -d '{"model": "text-embedding-3-small", "input": "test"}'
+  -d '{"requests":[{"model":"models/gemini-embedding-001","content":{"parts":[{"text":"test"}]}}]}'
 ```
-If using a different provider, substitute their base URL and model name. See [Compatible providers](../README.md#compatible-providers).
+A 200 response with an `embeddings` array confirms the key and endpoint work. Google's `AQ.*`-format keys (April 2026+) only accept the `x-goog-api-key` header on the native path — the OpenAI-compat shim at `/v1beta/openai/*` is not supported.
 
 ### Collecting diagnostics
 

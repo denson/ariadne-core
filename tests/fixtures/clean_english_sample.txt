@@ -1,0 +1,5 @@
+The company’s CEO announced a new product on April 16th, 2026.
+“This is a major milestone,” she said.
+Her résumé was impressive — she had led teams at Café Müller in Zürich and a boutique consultancy in Düsseldorf.
+Projected costs were approximately €1.2M and ¥50M respectively, with a 15% contingency.
+The naive approach would be to ignore the encoding problem — but that leads to corrupted archives.

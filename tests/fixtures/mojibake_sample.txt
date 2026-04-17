@@ -1,0 +1,5 @@
+The companyâ€™s CEO announced a new product on April 16th, 2026.
+â€œThis is a major milestone,â€� she said.
+Her rÃ©sumÃ© was impressive â€” she had led teams at CafÃ© MÃ¼ller in ZÃ¼rich and a boutique consultancy in DÃ¼sseldorf.
+Projected costs were approximately â‚¬1.2M and Â¥50M respectively, with a 15% contingency.
+The naive approach would be to ignore the encoding problem â€” but that leads to corrupted archives.

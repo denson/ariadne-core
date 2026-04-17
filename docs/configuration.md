@@ -98,12 +98,12 @@ embedding:
 
 Common embedding models:
 
-| Model | Dimensions | Provider | Cost | Notes |
-|-------|-----------|----------|------|-------|
-| `text-embedding-3-small` | 1536 | OpenAI | $0.02/M tokens | Best value for most use cases |
-| `text-embedding-3-large` | 3072 | OpenAI | $0.13/M tokens | Slightly better quality |
-| `BAAI/bge-large-en-v1.5` | 1024 | Together AI, Fireworks | Varies | Strong open-source retrieval model |
-| `BAAI/bge-m3` | 1024 | Together AI, Fireworks | Varies | Multilingual (if your docs aren't all English) |
+| Model | Dimensions | Provider | Notes |
+|-------|-----------|----------|-------|
+| `gemini-embedding-001` | 1536 | Google Gemini (native) | Current default. Cap at 1536 for pgvector HNSW compatibility. |
+| `gemini-embedding-001` | 3072 | Google Gemini (native) | Full dimensionality. Requires a vector store that supports >2000 dims (not pgvector HNSW). |
+| `BAAI/bge-large-en-v1.5` | 1024 | Together AI, Fireworks | Requires forking per SPEC.md → "Provider constraints". |
+| `BAAI/bge-m3` | 1024 | Together AI, Fireworks | Requires forking per SPEC.md → "Provider constraints". |
 
 When changing models, you must also update `dimensions` to match, and re-embed existing documents (existing vectors from a different model are incompatible).
 
@@ -230,13 +230,13 @@ Any config value can be overridden with an environment variable using the patter
 
 ```bash
 # Override the embedding model
-ARIADNE_EMBEDDING_MODEL=text-embedding-3-large
+ARIADNE_EMBEDDING_MODEL=gemini-embedding-001
 
 # Override the embedding dimensions
 ARIADNE_EMBEDDING_DIMENSIONS=3072
 
 # Override the image enrichment model
-ARIADNE_IMAGE_ENRICHMENT_MODEL=gpt-4o
+ARIADNE_IMAGE_ENRICHMENT_MODEL=gemini-2.0-flash
 
 # Override the log level
 ARIADNE_LOGGING_LEVEL=debug

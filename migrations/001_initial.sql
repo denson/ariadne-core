@@ -90,7 +90,7 @@ CREATE INDEX idx_interactions_collection ON document_interactions (collection_id
 -- NOTE: The embedding column dimension is configured at runtime via
 -- ariadne.yaml (embedding.dimensions). The app validates/creates the
 -- column with the correct dimension on startup. Default: 1536
--- (text-embedding-3-small). If you run this migration manually, replace
+-- (gemini-embedding-001). If you run this migration manually, replace
 -- %EMBEDDING_DIM% with your configured dimension (e.g. 1536, 1024, 768).
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS chunks (

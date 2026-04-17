@@ -77,7 +77,7 @@ ariadne-core/
 │       │   └── markitdown.py   # MarkItDown wrapper
 │       ├── enrichment/
 │       │   ├── images.py       # Image enrichment post-processing
-│       │   └── vision.py       # Vision API client (any OpenAI-compat endpoint)
+│       │   └── vision.py       # Vision API client (native Gemini generateContent)
 │       ├── chunking/
 │       │   └── chunker.py      # Chunking strategies (by_title, by_page, fixed_size)
 │       ├── embedding/
@@ -218,9 +218,10 @@ See SPEC.md for full parameter tables and response fields.
   in migration files.
 - **MCP server must be client-agnostic.** No Claude-specific assumptions. Works
   with any MCP client.
-- **API-first for embedding and vision.** Default path uses API calls to any
-  OpenAI-compatible endpoint. Local model support exists only as a config option —
-  never the default.
+- **API-first for embedding and vision.** Default path uses API calls to
+  Google Gemini's native endpoints (`batchEmbedContents`, `generateContent`).
+  Other providers require forking per SPEC.md → "Provider constraints".
+  Local model support exists only as a config option — never the default.
 - **Never store vectors from different embedding models in the same index without
   tracking which model produced them.** The `embedding_model` column on `chunks`
   must always be populated.
