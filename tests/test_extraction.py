@@ -174,3 +174,43 @@ def test_encoding_detection_happy_path_both_signals_agree(tmp_path, monkeypatch)
     assert not any(
         "text may be garbled" in w for w in result.warnings
     ), "No garbled-text warning on happy path"
+
+
+def test_encoding_gate_drives_suspect_tags_on_mojibake(tmp_path, monkeypatch):
+    """Mojibake: byte detector says low confidence; LLM is fooled and votes
+    coherent=true. Suggested tags must include encoding:suspect and
+    status:needs-review so agents can filter the doc out of search."""
+    from pipeline.extraction import markitdown as md_mod
+    from pipeline.extraction.text_encoding import LanguageValidation
+
+    fake_txt = tmp_path / "mojibake.txt"
+    fake_txt.write_text("pretend this is mojibake", encoding="utf-8")
+
+    def fake_detect(path):
+        return ("pretend decoded text", "windows-1252", 0.0)
+
+    def fake_validate(text, config):
+        return LanguageValidation(
+            coherent=True,
+            language="en",
+            script="Latin",
+            confidence="high",
+            notes="",
+            model="gemini-2.0-flash",
+            skipped=False,
+        )
+
+    monkeypatch.setattr(md_mod, "detect_and_decode", fake_detect)
+    monkeypatch.setattr(md_mod, "validate_language", fake_validate)
+
+    extractor = md_mod.MarkItDownExtractor(enable_plugins=False)
+    result = extractor.extract(str(fake_txt))
+
+    assert "encoding:suspect" in result.suggested_tags, (
+        f"Expected encoding:suspect tag when byte confidence is 0.0 "
+        f"(mojibake gate), got {result.suggested_tags}"
+    )
+    assert "status:needs-review" in result.suggested_tags, (
+        f"Expected status:needs-review tag when byte confidence is 0.0, "
+        f"got {result.suggested_tags}"
+    )

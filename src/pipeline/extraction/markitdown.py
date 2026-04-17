@@ -205,7 +205,7 @@ class MarkItDownExtractor:
                 suggested_tags.append(f"language:{lang_result.language}")
             if lang_result.confidence == "low":
                 suggested_tags.append("encoding:low-confidence")
-            if not lang_result.coherent:
+            if not final_coherent:
                 suggested_tags.append("encoding:suspect")
                 suggested_tags.append("status:needs-review")
 
