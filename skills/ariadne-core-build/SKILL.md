@@ -125,7 +125,6 @@ check the others for drift:
 |------|----------------|-----------|
 | `SPEC.md` | Tool signatures, API endpoints, behavior contracts | **Primary source of truth** |
 | `skills/.../SKILL.md` | How agents should use the tools, caller metadata, processes | Must match SPEC tool signatures and response fields |
-| `src/pipeline/mcp_server.py` | MCP tool implementations | Must match SPEC tool signatures |
 | `src/pipeline/api/routes.py` | REST API endpoints (including `/api/upload`) | Must match SPEC API table |
 | `docs/mcp-setup.md` | Client connection instructions | Must reflect current architecture |
 | `config/ariadne.yaml` | Configuration schema | Must match `docs/configuration.md` |
