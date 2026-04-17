@@ -148,7 +148,7 @@ class ImageEnricher:
 
         chain_entry = {
             "step": "image_enrichment",
-            "tool": f"openai:{self._config.model}" if self._config else "none",
+            "tool": f"gemini:{self._config.model}" if self._config else "none",
             "ts": datetime.now(timezone.utc).isoformat(),
             "ms": elapsed_ms,
             "images_processed": images_processed,

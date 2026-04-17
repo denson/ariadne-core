@@ -36,7 +36,7 @@ class VisionConfig:
 
 
 class VisionClient:
-    """Client for describing images via an OpenAI-compatible vision API."""
+    """Client for describing images via Google Gemini's native generateContent endpoint."""
 
     def __init__(self, config: VisionConfig) -> None:
         self._config = config

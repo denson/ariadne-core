@@ -199,11 +199,7 @@ class TestImageEnricher:
         result = enricher.enrich(md)
         chain = result.processing_chain_entry
         assert chain["step"] == "image_enrichment"
-        # The enricher (src/pipeline/enrichment/images.py) still emits the
-        # `openai:` prefix — phase 4 only rewrote vision.py. Assert reality
-        # and flag for Bob: enricher tool-label should become `gemini:`
-        # as a follow-up to the native-Gemini migration.
-        assert chain["tool"] == "openai:gemini-2.0-flash"
+        assert chain["tool"] == "gemini:gemini-2.0-flash"
         assert "ts" in chain
         assert "ms" in chain
         assert chain["images_processed"] == 1
