@@ -1,9 +1,11 @@
-"""Vision API client — any OpenAI-compatible endpoint.
+"""Vision API client — Gemini native generateContent with inlineData.
 
-Sends images to a vision model and returns text descriptions.
-Supports OpenAI, Anthropic (via proxy), Together, Groq, or any
-endpoint that accepts the OpenAI chat completions format with
-image_url content parts.
+Sends images to Gemini's native vision endpoint and returns text
+descriptions. Uses the `x-goog-api-key` header.
+
+See SPEC.md → "Provider constraints" for the request/response contract
+and an explanation of why the OpenAI-compatible shim is not supported
+for Ariadne's bundled vision client.
 """
 
 from __future__ import annotations
@@ -38,7 +40,12 @@ class VisionClient:
 
     def __init__(self, config: VisionConfig) -> None:
         self._config = config
-        self._endpoint = f"{config.base_url.rstrip('/')}/chat/completions"
+        model_path = config.model
+        if not model_path.startswith("models/"):
+            model_path = f"models/{model_path}"
+        self._endpoint = (
+            f"{config.base_url.rstrip('/')}/{model_path}:generateContent"
+        )
 
     def describe_image_from_path(self, image_path: str) -> str:
         """Describe an image from a local file path.
@@ -58,13 +65,15 @@ class VisionClient:
             raise FileNotFoundError(f"Image not found: {image_path}")
 
         mime_type = mimetypes.guess_type(str(path))[0] or "image/png"
-        image_data = base64.b64encode(path.read_bytes()).decode("utf-8")
-        data_url = f"data:{mime_type};base64,{image_data}"
-
-        return self._call_vision_api(data_url)
+        data = base64.b64encode(path.read_bytes()).decode("utf-8")
+        return self.describe_image_from_base64(data, mime_type=mime_type)
 
     def describe_image_from_url(self, image_url: str) -> str:
         """Describe an image from a URL.
+
+        Fetches the URL bytes and sends them as inline data. Gemini's
+        native generateContent does not accept arbitrary HTTP(S) image
+        URLs; it requires inline base64 or a Gemini-managed file URI.
 
         Args:
             image_url: HTTP(S) URL to the image.
@@ -73,14 +82,35 @@ class VisionClient:
             Text description of the image.
 
         Raises:
-            RuntimeError: If the API call fails.
+            RuntimeError: If the URL fetch or the API call fails.
         """
-        return self._call_vision_api(image_url)
+        parsed = urlparse(image_url)
+        if parsed.scheme not in ("http", "https"):
+            raise RuntimeError(
+                f"describe_image_from_url only accepts http(s) URLs, got: {image_url}"
+            )
+        try:
+            with urlopen(image_url) as resp:
+                img_bytes = resp.read()
+                content_type = resp.headers.get("Content-Type", "")
+        except Exception as e:
+            raise RuntimeError(f"Failed to fetch image URL {image_url}: {e}") from e
+
+        mime_type = content_type.split(";")[0].strip() if content_type else ""
+        if not mime_type or not mime_type.startswith("image/"):
+            guessed = mimetypes.guess_type(image_url)[0]
+            mime_type = guessed or "image/png"
+
+        data = base64.b64encode(img_bytes).decode("utf-8")
+        return self.describe_image_from_base64(data, mime_type=mime_type)
 
     def describe_image_from_base64(
         self, data: str, mime_type: str = "image/png"
     ) -> str:
         """Describe an image from base64-encoded data.
+
+        This is the terminal method — all other describe_image_* methods
+        route through here.
 
         Args:
             data: Base64-encoded image data.
@@ -92,51 +122,55 @@ class VisionClient:
         Raises:
             RuntimeError: If the API call fails.
         """
-        data_url = f"data:{mime_type};base64,{data}"
-        return self._call_vision_api(data_url)
+        return self._call_vision_api(mime_type=mime_type, b64_data=data)
 
-    def _call_vision_api(self, image_url: str) -> str:
-        """Call the OpenAI-compatible vision API.
+    def _call_vision_api(self, mime_type: str, b64_data: str) -> str:
+        """Call Gemini's native generateContent with an inline image.
 
         Args:
-            image_url: data: URL or HTTP(S) URL for the image.
+            mime_type: MIME type of the image (e.g. "image/png").
+            b64_data: Base64-encoded image bytes.
 
         Returns:
             Text description from the model.
         """
         payload = {
-            "model": self._config.model,
-            "messages": [
+            "contents": [
                 {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": self._config.prompt},
+                    "parts": [
                         {
-                            "type": "image_url",
-                            "image_url": {"url": image_url},
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": b64_data,
+                            }
                         },
-                    ],
+                        {"text": self._config.prompt},
+                    ]
                 }
             ],
-            "max_tokens": 1024,
+            "generationConfig": {"maxOutputTokens": 1024},
         }
 
         body = json.dumps(payload).encode("utf-8")
         req = Request(
             self._endpoint,
             data=body,
-            # NOTE FOR FUTURE AGENTS — Provider-specific auth header.
-            # This code targets Google's Gemini OpenAI-compatible endpoint and
-            # uses `x-goog-api-key`, which is what new AQ.*-format Gemini API
-            # keys require (the old Authorization: Bearer path returns
-            # "Multiple authentication credentials received" with these keys).
+            # NOTE FOR FUTURE AGENTS — native Gemini endpoint, not OpenAI-compat.
+            # Ariadne's vision client calls Gemini's native
+            # `:generateContent` with inlineData image parts and the
+            # `x-goog-api-key` header. The OpenAI-compatible shim at
+            # `/v1beta/openai/chat/completions` is NOT supported here —
+            # Google's `AQ.*`-format keys reject every auth variant on
+            # that path.
             #
-            # Other OpenAI-compatible providers (OpenAI, Together, Groq, etc.)
-            # expect `Authorization: Bearer <key>` instead. If you're switching
-            # providers, change the header below to match that provider's
-            # convention. Don't build a provider abstraction here — let the
-            # configuring agent read the provider's docs and pick the right
-            # header.
+            # If you swap to a different OpenAI-compatible provider
+            # (OpenAI proper, Together, Groq, etc.), this whole module
+            # needs a rewrite — endpoint construction, payload shape
+            # (chat/completions with image_url parts), response parser,
+            # and auth header all differ. Don't build a provider
+            # abstraction here; let the configuring agent read the
+            # provider's docs and pick a concrete path. See SPEC.md →
+            # "Provider constraints" for the current native contract.
             headers={
                 "Content-Type": "application/json",
                 "x-goog-api-key": self._config.api_key,
@@ -147,6 +181,21 @@ class VisionClient:
         try:
             with urlopen(req) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-            return result["choices"][0]["message"]["content"]
+            # Native response: candidates[0].content.parts[].text
+            # Concatenate all text parts (usually one).
+            candidates = result.get("candidates") or []
+            if not candidates:
+                raise RuntimeError(
+                    f"Vision API returned no candidates: {result}"
+                )
+            parts = candidates[0].get("content", {}).get("parts") or []
+            text_parts = [p.get("text", "") for p in parts if "text" in p]
+            if not text_parts:
+                raise RuntimeError(
+                    f"Vision API returned no text parts: {result}"
+                )
+            return "".join(text_parts).strip()
+        except RuntimeError:
+            raise
         except Exception as e:
             raise RuntimeError(f"Vision API call failed: {e}") from e
