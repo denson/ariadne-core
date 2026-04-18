@@ -277,12 +277,46 @@ def test_list_documents_total_is_exact_flag():
     f.dedup.store_document(_make_doc(f.collection, "a.txt", "alpha", tags=["keep"]))
     f.dedup.store_document(_make_doc(f.collection, "b.txt", "beta"))
 
-    # No post-filter → total_is_exact is true.
+    # No filter → total_is_exact is true.
     resp = f.client.get(f"/api/documents?collection={f.collection}")
     assert resp.status_code == 200, resp.text
     assert resp.json()["total_is_exact"] is True
 
-    # With tag filter → total reflects post-filter page size, not collection total.
+    # Pass 4: filters are pushed into the store, so total_is_exact stays true
+    # even under a tag filter (or any other filter).
     resp = f.client.get(f"/api/documents?collection={f.collection}&tag=keep")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["total_is_exact"] is False
+    body = resp.json()
+    assert body["total_is_exact"] is True
+    assert body["total_count"] == 1
+    assert [d["source_file"] for d in body["documents"]] == ["a.txt"]
+
+
+def test_list_documents_pagination_under_filter():
+    """Pass 4 pin: with filters pushed into the store, total_count reflects
+    the full filtered size (not the page), pagination is honored, and
+    total_is_exact is true."""
+    f = _Fixture()
+    # 30 docs total, 10 of them with warnings.
+    for i in range(30):
+        warnings = ["bad"] if i < 10 else []
+        f.dedup.store_document(
+            _make_doc(
+                f.collection,
+                f"doc_{i:02d}.txt",
+                f"content {i}",
+                warnings=warnings,
+            )
+        )
+
+    resp = f.client.get(
+        f"/api/documents?collection={f.collection}"
+        "&has_warnings=true&limit=5&offset=5"
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total_count"] == 10
+    assert body["total_is_exact"] is True
+    assert len(body["documents"]) == 5
+    for row in body["documents"]:
+        assert row["warnings_count"] >= 1

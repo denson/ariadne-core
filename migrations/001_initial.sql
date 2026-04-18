@@ -1,8 +1,13 @@
 -- Ariadne Core — Initial Database Schema
 -- Requires: PostgreSQL 16+ with pgvector extension
 --
--- Tables: collections, documents, document_interactions, chunks, jobs, api_keys
--- All tables include org_id for future row-level security (not enforced in Phase 1).
+-- This file is the single source of truth for a fresh deploy. It
+-- folds together what was historically 001-005 plus the Pass 4
+-- source_reference denormalization and pushdown-index work. Prior
+-- migration files (002-005) have been removed — this is the schema
+-- we would write today. On an empty database the BL-25 runner
+-- applies this file exactly once and records version
+-- '001_initial.sql' in schema_migrations.
 
 -- Enable pgvector extension
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -35,15 +40,15 @@ CREATE TABLE documents (
     source_file TEXT NOT NULL,
     content_fingerprint TEXT,
     file_type TEXT NOT NULL,
-    pages INTEGER,
     engine TEXT NOT NULL DEFAULT 'markitdown',
     processing_time_ms INTEGER,
     output_tokens_estimate INTEGER,
     token_savings_ratio REAL,
     markdown TEXT,
-    markdown_path TEXT,
     title TEXT,
     tags TEXT[] DEFAULT '{}',
+    warnings TEXT[] NOT NULL DEFAULT '{}',
+    source_reference TEXT,
     processing_chain JSONB DEFAULT '[]',
     metadata JSONB DEFAULT '{}',
     org_id UUID DEFAULT '00000000-0000-0000-0000-000000000000',
@@ -61,6 +66,21 @@ CREATE UNIQUE INDEX idx_documents_fingerprint
 -- Fast lookups by collection
 CREATE INDEX idx_documents_collection ON documents (collection_id);
 
+-- Partial index supporting has_source_reference=true filter.
+-- Excludes empty and the sentinel 'unknown' value so those rows are
+-- treated as "no provenance" for filter purposes while preserving the
+-- raw value for display / audit.
+CREATE INDEX idx_documents_source_reference
+    ON documents (source_reference)
+    WHERE source_reference IS NOT NULL
+      AND source_reference <> ''
+      AND source_reference <> 'unknown';
+
+-- GIN indexes on array columns — near-free at current corpus size and
+-- future-proof scale without changing filter semantics.
+CREATE INDEX idx_documents_tags ON documents USING GIN (tags);
+CREATE INDEX idx_documents_warnings ON documents USING GIN (warnings);
+
 -- ============================================================================
 -- Document interactions: one row per agent call, even on dedup collision
 -- ============================================================================
@@ -74,7 +94,8 @@ CREATE TABLE document_interactions (
     initiated_by TEXT,
     action TEXT NOT NULL DEFAULT 'ingest',
     was_dedup_skip BOOLEAN DEFAULT false,
-    metadata JSONB DEFAULT '{}',
+    agent_notes TEXT,
+    agent_metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -119,6 +140,30 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks
 -- Fast lookups by collection and document
 CREATE INDEX idx_chunks_collection ON chunks (collection_id);
 CREATE INDEX idx_chunks_document ON chunks (document_id);
+
+-- ============================================================================
+-- Search log: one row per /api/search call
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS search_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    query TEXT NOT NULL,
+    collection TEXT,
+    filters JSONB,
+    top_k INTEGER,
+    results_count INTEGER,
+    result_document_ids UUID[],
+    agent_id TEXT,
+    agent_type TEXT,
+    model TEXT,
+    initiated_by TEXT,
+    agent_notes TEXT,
+    agent_metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_search_log_created_at ON search_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_search_log_agent_id ON search_log (agent_id);
+CREATE INDEX IF NOT EXISTS idx_search_log_initiated_by ON search_log (initiated_by);
 
 -- ============================================================================
 -- Jobs: batch processing tracking

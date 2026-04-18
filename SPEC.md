@@ -471,8 +471,6 @@ Unknown include values return `400` with a list of valid values.
 }
 ```
 
-**`total_count` semantics:** when `tag`, `has_warnings`, or `has_source_reference` is active, `total_count` reflects the current page's post-filter size, not the whole-collection total. The response includes `"total_is_exact": false` to signal this. Without these filters, `total_count` is the exact collection total. Post-query route-level filtering is a deliberate Pass-2 limitation; a future pass pushes them into SQL and restores exact totals in all cases.
-
 **Brute-force fallback** — if the question you're asking can't be expressed with these filters, paginate `list_documents` with `include=[...]` covering the fields you need, then filter client-side:
 
 ```python

@@ -29,6 +29,24 @@ def compute_fingerprint(text: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _extract_source_reference(agent_metadata: dict[str, Any] | None) -> str | None:
+    """Pull a non-empty source_reference string out of agent_metadata.
+
+    Returns the trimmed value when present (including the sentinel
+    'unknown', which is preserved verbatim for display/audit — the
+    partial index and filter clauses exclude it). Returns None when
+    agent_metadata is missing the key or the value is empty/whitespace
+    or the wrong type.
+    """
+    if not agent_metadata or not isinstance(agent_metadata, dict):
+        return None
+    val = agent_metadata.get("source_reference")
+    if not isinstance(val, str):
+        return None
+    val = val.strip()
+    return val or None
+
+
 @dataclass
 class StoredDocument:
     """A previously processed document record."""
@@ -129,6 +147,19 @@ class DedupStore(Protocol):
         agent_metadata: dict[str, Any] | None = None,
         collection: str | None = None,
     ) -> dict[str, Any]: ...
+
+    def list_documents(
+        self,
+        collection: str | None = None,
+        file_type: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        include_deleted: bool = False,
+        *,
+        tag: str | None = None,
+        has_warnings: bool | None = None,
+        has_source_reference: bool | None = None,
+    ) -> tuple[list[StoredDocument], int]: ...
 
 
 class PgDedupStore:
@@ -306,6 +337,22 @@ class PgDedupStore:
                         "was_dedup_skip": interaction.was_dedup_skip,
                     },
                 )
+
+                # Latest-wins denormalization: propagate a non-empty
+                # source_reference into documents.source_reference so the
+                # has_source_reference filter and partial index can read it
+                # directly without an N+1 back-trawl of interactions.
+                src_ref = _extract_source_reference(interaction.agent_metadata)
+                if src_ref is not None:
+                    cur.execute(
+                        """
+                        UPDATE documents
+                        SET source_reference = %(src_ref)s,
+                            updated_at = now()
+                        WHERE id = %(doc_id)s::uuid
+                        """,
+                        {"src_ref": src_ref, "doc_id": interaction.document_id},
+                    )
             conn.commit()
 
     def get_interactions(self, document_id: str) -> list[DocumentInteraction]:
@@ -427,8 +474,16 @@ class PgDedupStore:
         limit: int = 20,
         offset: int = 0,
         include_deleted: bool = False,
+        *,
+        tag: str | None = None,
+        has_warnings: bool | None = None,
+        has_source_reference: bool | None = None,
     ) -> tuple[list[StoredDocument], int]:
-        """List documents with pagination. Returns (docs, total_count)."""
+        """List documents with pagination. Returns (docs, total_count).
+
+        The three keyword-only filters are pushed into SQL so COUNT(*)
+        is always exact and pagination is correct across pages.
+        """
         where_clauses: list[str] = []
         params: dict[str, Any] = {"limit": limit, "offset": offset}
 
@@ -441,6 +496,28 @@ class PgDedupStore:
             params["file_type"] = ft
         if not include_deleted:
             where_clauses.append("d.deleted_at IS NULL")
+
+        if tag is not None:
+            where_clauses.append("d.tags @> ARRAY[%(tag)s]::text[]")
+            params["tag"] = tag
+
+        if has_warnings is True:
+            where_clauses.append("cardinality(d.warnings) > 0")
+        elif has_warnings is False:
+            where_clauses.append("cardinality(d.warnings) = 0")
+
+        if has_source_reference is True:
+            where_clauses.append(
+                "d.source_reference IS NOT NULL "
+                "AND d.source_reference <> '' "
+                "AND d.source_reference <> 'unknown'"
+            )
+        elif has_source_reference is False:
+            where_clauses.append(
+                "(d.source_reference IS NULL "
+                "OR d.source_reference = '' "
+                "OR d.source_reference = 'unknown')"
+            )
 
         where_sql = ""
         if where_clauses:
@@ -721,6 +798,20 @@ class PgDedupStore:
                 col_name_row = cur.fetchone()
                 collection_name = col_name_row[0] if col_name_row else None
 
+                # Latest-wins source_reference propagation — mirror of
+                # record_interaction so PATCH can overwrite the column
+                # without going through a new interaction row.
+                src_ref = _extract_source_reference(agent_metadata)
+                if src_ref is not None:
+                    cur.execute(
+                        """
+                        UPDATE documents
+                        SET source_reference = %(src_ref)s
+                        WHERE id = %(doc_id)s::uuid
+                        """,
+                        {"src_ref": src_ref, "doc_id": document_id},
+                    )
+
             conn.commit()
 
         return {
@@ -773,6 +864,9 @@ class InMemoryDedupStore:
         self._deletions: dict[str, tuple[datetime, datetime]] = {}
         # Key: document_id -> metadata dict (for update_document_metadata)
         self._doc_metadata: dict[str, dict[str, Any]] = {}
+        # Latest agent_metadata.source_reference per document, for symmetry
+        # with the Pg documents.source_reference column. Latest-wins.
+        self._doc_source_ref: dict[str, str] = {}
 
     def _is_deleted(self, doc: StoredDocument) -> bool:
         return doc.document_id in self._deletions
@@ -808,9 +902,60 @@ class InMemoryDedupStore:
 
     def record_interaction(self, interaction: DocumentInteraction) -> None:
         self._interactions.setdefault(interaction.document_id, []).append(interaction)
+        src_ref = _extract_source_reference(interaction.agent_metadata)
+        if src_ref is not None:
+            self._doc_source_ref[interaction.document_id] = src_ref
+
+    def get_source_reference(self, document_id: str) -> str | None:
+        """Return the latest-wins source_reference for this document, if any."""
+        return self._doc_source_ref.get(document_id)
 
     def get_interactions(self, document_id: str) -> list[DocumentInteraction]:
         return self._interactions.get(document_id, [])
+
+    def list_documents(
+        self,
+        collection: str | None = None,
+        file_type: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        include_deleted: bool = False,
+        *,
+        tag: str | None = None,
+        has_warnings: bool | None = None,
+        has_source_reference: bool | None = None,
+    ) -> tuple[list[StoredDocument], int]:
+        """In-memory analogue of PgDedupStore.list_documents with symmetric filters."""
+        docs = list(self._documents.values())
+
+        if not include_deleted:
+            docs = [d for d in docs if d.document_id not in self._deletions]
+        if collection:
+            docs = [d for d in docs if d.collection_id == collection]
+        if file_type:
+            ft = file_type.lstrip(".")
+            docs = [d for d in docs if d.file_type == ft]
+        if tag is not None:
+            docs = [d for d in docs if d.tags and tag in d.tags]
+        if has_warnings is True:
+            docs = [d for d in docs if d.warnings]
+        elif has_warnings is False:
+            docs = [d for d in docs if not d.warnings]
+        if has_source_reference is not None:
+            def _has_src_ref(doc_id: str) -> bool:
+                val = self._doc_source_ref.get(doc_id)
+                return bool(val) and val != "unknown"
+            docs = [
+                d for d in docs
+                if _has_src_ref(d.document_id) == has_source_reference
+            ]
+
+        # Mirror the Pg ORDER BY d.created_at DESC. Python sort is stable,
+        # so rows with identical created_at keep insertion order.
+        docs.sort(key=lambda d: d.created_at, reverse=True)
+
+        total = len(docs)
+        return docs[offset:offset + limit], total
 
     def record_search(self, entry: SearchLogEntry) -> None:
         self._search_log.append(entry)
@@ -876,6 +1021,7 @@ class InMemoryDedupStore:
             del self._deletions[doc_id]
             self._interactions.pop(doc_id, None)
             self._doc_metadata.pop(doc_id, None)
+            self._doc_source_ref.pop(doc_id, None)
             # Drop from _documents too
             for key, doc in list(self._documents.items()):
                 if doc.document_id == doc_id:
@@ -905,6 +1051,9 @@ class InMemoryDedupStore:
         if agent_metadata is not None:
             existing = self._doc_metadata.setdefault(document_id, {})
             existing.update(agent_metadata)
+            src_ref = _extract_source_reference(agent_metadata)
+            if src_ref is not None:
+                self._doc_source_ref[document_id] = src_ref
 
         if collection is not None and collection != target_doc.collection_id:
             del self._documents[target_key]

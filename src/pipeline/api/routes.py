@@ -286,7 +286,6 @@ async def aggregate_documents(
     api_key: APIKey | None = Depends(check_api_key),
 ):
     """Group-by summary over /documents filters. Returns [{group, count}, ...]."""
-    from pipeline.dedup import PgDedupStore
     import collections as _py_collections
 
     _reject_unknown_query_params(
@@ -303,38 +302,20 @@ async def aggregate_documents(
             },
         )
 
-    if isinstance(_svc._dedup_store, PgDedupStore):
-        all_docs, _ = _svc._dedup_store.list_documents(
-            collection=collection, file_type=file_type,
-            limit=100000, offset=0,
-            include_deleted=include_deleted,
-        )
-    else:
-        docs = list(_svc._dedup_store._documents.values())
-        if not include_deleted:
-            docs = [
-                d for d in docs
-                if d.document_id not in _svc._dedup_store._deletions
-            ]
-        if collection:
-            docs = [d for d in docs if d.collection_id == collection]
-        if file_type:
-            ft = file_type.lstrip(".")
-            docs = [d for d in docs if d.file_type == ft]
-        all_docs = docs
-
-    if tag is not None:
-        all_docs = [d for d in all_docs if d.tags and tag in d.tags]
-    if has_warnings is not None:
-        if has_warnings:
-            all_docs = [d for d in all_docs if d.warnings]
-        else:
-            all_docs = [d for d in all_docs if not d.warnings]
-    if has_source_reference is not None:
-        all_docs = [
-            d for d in all_docs
-            if _has_source_reference(d.document_id) == has_source_reference
-        ]
+    # list_documents owns filtering on both backends, so a single call
+    # returns the post-filter corpus ready for bucketing. The 100000 cap
+    # is still a fetch-and-count hack — flagged for replacement by a
+    # native SQL GROUP BY query in a future pass.
+    all_docs, _ = _svc._dedup_store.list_documents(
+        collection=collection,
+        file_type=file_type,
+        limit=100000,
+        offset=0,
+        include_deleted=include_deleted,
+        tag=tag,
+        has_warnings=has_warnings,
+        has_source_reference=has_source_reference,
+    )
 
     counter: _py_collections.Counter[str] = _py_collections.Counter()
     if group_by == "collection":
@@ -500,9 +481,9 @@ _FILTER_REGISTRY: dict[str, str] = {
     "tag": "Docs whose tag list contains this tag (single-value, OR-semantics across repeated calls).",
     "has_warnings": "true -> only docs with >=1 warning; false -> only clean docs.",
     "has_source_reference": (
-        "true -> latest interaction's agent_metadata has a non-empty "
-        "'source_reference' value that is not literally 'unknown'. "
-        "false -> inverse."
+        "true -> document has a non-empty 'source_reference' value "
+        "(latest-wins from agent_metadata) that is not literally "
+        "'unknown'. false -> inverse."
     ),
     "include_deleted": "Include soft-deleted docs (default false).",
 }
@@ -560,26 +541,6 @@ def _reject_unknown_query_params(
         )
 
 
-def _has_source_reference(document_id: str) -> bool:
-    """True iff the latest interaction's agent_metadata has a non-empty
-    source_reference that isn't literally 'unknown'.
-
-    N+1 on get_interactions is deliberate Pass-2 pragmatism — flagged for a
-    future batch-fetch pass.
-    """
-    interactions = _svc._dedup_store.get_interactions(document_id)
-    if not interactions:
-        return False
-    md = interactions[-1].agent_metadata or {}
-    if not isinstance(md, dict):
-        return False
-    val = md.get("source_reference", "")
-    if not isinstance(val, str):
-        return False
-    val = val.strip()
-    return bool(val) and val != "unknown"
-
-
 @router.get("/documents")
 async def list_documents(
     request: Request,
@@ -597,7 +558,8 @@ async def list_documents(
         None,
         description=(
             "Filter by presence of a non-empty, non-'unknown' "
-            "source_reference in the latest interaction's agent_metadata."
+            "source_reference on the document "
+            "(latest value written from agent_metadata)."
         ),
     ),
     include: list[str] = Query(
@@ -613,8 +575,6 @@ async def list_documents(
     api_key: APIKey | None = Depends(check_api_key),
 ):
     """List all documents, optionally filtered by collection or file type."""
-    from pipeline.dedup import PgDedupStore
-
     _reject_unknown_query_params(
         request, _LIST_DOCUMENTS_PARAMS, "/api/documents"
     )
@@ -646,50 +606,16 @@ async def list_documents(
             },
         )
 
-    if isinstance(_svc._dedup_store, PgDedupStore):
-        page_docs, total = _svc._dedup_store.list_documents(
-            collection=collection, file_type=file_type,
-            limit=limit, offset=offset,
-            include_deleted=include_deleted,
-        )
-    else:
-        docs = list(_svc._dedup_store._documents.values())
-        if not include_deleted:
-            docs = [
-                d for d in docs
-                if d.document_id not in _svc._dedup_store._deletions
-            ]
-        if collection:
-            docs = [d for d in docs if d.collection_id == collection]
-        if file_type:
-            ft = file_type.lstrip(".")
-            docs = [d for d in docs if d.file_type == ft]
-        total = len(docs)
-        page_docs = docs[offset:offset + limit]
-
-    # Post-query filters. Flag: push into SQL in a future pass for
-    # large-collection performance — for now this only scans the current page.
-    if tag is not None:
-        page_docs = [d for d in page_docs if d.tags and tag in d.tags]
-    if has_warnings is not None:
-        if has_warnings:
-            page_docs = [d for d in page_docs if d.warnings]
-        else:
-            page_docs = [d for d in page_docs if not d.warnings]
-    if has_source_reference is not None:
-        page_docs = [
-            d for d in page_docs
-            if _has_source_reference(d.document_id) == has_source_reference
-        ]
-
-    total_exact = True
-    if (
-        tag is not None
-        or has_warnings is not None
-        or has_source_reference is not None
-    ):
-        total = len(page_docs)
-        total_exact = False
+    page_docs, total = _svc._dedup_store.list_documents(
+        collection=collection,
+        file_type=file_type,
+        limit=limit,
+        offset=offset,
+        include_deleted=include_deleted,
+        tag=tag,
+        has_warnings=has_warnings,
+        has_source_reference=has_source_reference,
+    )
 
     def _build_row(d) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -730,7 +656,7 @@ async def list_documents(
     return {
         "documents": [_build_row(d) for d in page_docs],
         "total_count": total,
-        "total_is_exact": total_exact,
+        "total_is_exact": True,
         "limit": limit,
         "offset": offset,
     }
