@@ -203,23 +203,12 @@ group_by values (`agent_metadata.source_reference`,
 Blocker: probably waits for BL-21's SQL refactor to avoid double-
 writing the latest-interaction subquery.
 
-### BL-24 — Non-ASCII glyphs mojibake in JSON responses on Railway
+### BL-24 — Ensure JSON responses emit `Content-Type: application/json; charset=utf-8`
 
-The /documents/schema endpoint served non-ASCII description strings as
-cp1252-mojibake UTF-8 (em-dash — → "\u00e2\u20ac\u201d", arrow → →
-"\u00e2\u2020\u2019"). Source file is clean UTF-8 (no BOM, no coding cookie);
-FastAPI uses stock JSONResponse with ensure_ascii=False. Bytes survive locally.
-Implies a Railway-runtime pipeline step reinterprets UTF-8 as cp1252. Pass 2.1
-sanitized the visible strings to ASCII as a mitigation; the underlying pipeline
-bug is unresolved.
-
-Fix direction: needs a shell session in the Railway container. Candidates to
-inspect: LANG/LC_ALL env vars, uvicorn worker config, any Nixpacks build step
-that might rewrite Python sources, any reverse proxy in front of the app
-(Railway's edge?). Add a test that POSTs UTF-8 content and asserts it
-round-trips through /documents/{id} unchanged.
-
-Blocker: requires Railway shell / env access.
+Ensure JSON responses emit Content-Type: application/json; charset=utf-8.
+Root cause: Windows clients (PowerShell Invoke-WebRequest etc.) default to
+cp1252 when charset is missing. Server bytes were always correct UTF-8 —
+see dave_and_bob_communication/BL24_SCHEMA_MOJIBAKE_ROOT_CAUSE.md.
 
 ---
 

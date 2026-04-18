@@ -22,6 +22,19 @@ from pipeline.stores import create_stores, close_pool
 logger = logging.getLogger("ariadne.app")
 
 
+class UTF8JSONResponse(JSONResponse):
+    """JSONResponse subclass that declares charset=utf-8 in Content-Type.
+
+    Windows clients (PowerShell Invoke-WebRequest, older curl, some HTTP
+    libs) default to cp1252 when the server omits the charset — the bytes
+    on the wire are correct UTF-8 but the client decodes them as cp1252,
+    producing mojibake like \\u00e2\\u20ac\\u201d for an em-dash. See
+    dave_and_bob_communication/BL24_SCHEMA_MOJIBAKE_ROOT_CAUSE.md.
+    """
+
+    media_type = "application/json; charset=utf-8"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan — startup and shutdown hooks."""
@@ -92,6 +105,7 @@ app = FastAPI(
     ),
     version="0.1.0",
     lifespan=lifespan,
+    default_response_class=UTF8JSONResponse,
 )
 
 @app.exception_handler(Exception)
@@ -105,7 +119,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     that would otherwise bubble up as naked 500s.
     """
     logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
-    return JSONResponse(
+    return UTF8JSONResponse(
         status_code=500,
         content={
             "detail": {
