@@ -523,7 +523,7 @@ Supported filters (combinable; all AND together):
 | `file_type` | str | Exact file type (`.pdf` and `pdf` both accepted). |
 | `tag` | str | Docs whose tag list contains this tag. |
 | `has_warnings` | bool | `True` = only docs with >=1 warning; `False` = only clean docs. |
-| `has_source_reference` | bool | `True` = latest interaction's `agent_metadata.source_reference` is a non-empty string that isn't literally `"unknown"`. |
+| `has_source_reference` | bool | `True` = `source_reference` (latest-wins from `agent_metadata`) is a non-empty string that isn't literally `"unknown"`. Indexed column, O(log n). |
 | `include_deleted` | bool | Default False. |
 
 Every row now carries `warnings_count` (int). Use it to spot

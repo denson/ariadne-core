@@ -404,7 +404,7 @@ List stored documents. Returns metadata only — use `GET /api/documents/{id}` f
 | `file_type` | string | `null` | Filter by extension (e.g. `pdf`, `docx`) |
 | `tag` | string | `null` | Match docs whose tag list contains this tag |
 | `has_warnings` | bool | `null` | If `true`, only docs with at least one warning; if `false`, only docs with none |
-| `has_source_reference` | bool | `null` | If `true`, only docs whose latest interaction carries a non-empty `source_reference` in `agent_metadata` (excluding the literal string `"unknown"`); if `false`, inverse |
+| `has_source_reference` | bool | `null` | If `true`, only docs whose `source_reference` (latest-wins from `agent_metadata`) is a non-empty string other than the literal `"unknown"`; if `false`, inverse |
 | `include` | list[string] | `[]` | Repeatable. Thickens each row. Accepted: `agent_metadata`, `tags`, `last_interaction`, `markdown` |
 | `limit` | int | `20` | Results per page (shape-dependent cap — see below) |
 | `offset` | int | `0` | Pagination offset |
@@ -422,17 +422,21 @@ List stored documents. Returns metadata only — use `GET /api/documents/{id}` f
 | `file_type` | string | Exact match (leading dot stripped, so `pdf` and `.pdf` both work) |
 | `tag` | string | Match docs whose tag list contains this tag |
 | `has_warnings` | bool | If `true`, only docs with at least one warning; if `false`, only docs with none |
-| `has_source_reference` | bool | If `true`, only docs whose latest interaction's `agent_metadata.source_reference` is a non-empty string other than `"unknown"`; if `false`, inverse |
+| `has_source_reference` | bool | If `true`, only docs whose `source_reference` (latest-wins from `agent_metadata`) is a non-empty string other than `"unknown"`; if `false`, inverse |
 | `include_deleted` | bool | Include soft-deleted docs (default `false`) |
 | `limit` | int | Max rows per page (shape-dependent cap — see below) |
 | `offset` | int | Pagination offset |
 
-> **Historical rows note:** documents ingested before migration 005
-> (`warnings TEXT[]` column) show `warnings_count=0` regardless of
-> what their ingest actually emitted — warnings weren't persisted
-> prior to that migration. The `has_warnings` filter queries only
-> the persisted column, not `processing_chain`. If you need to
-> audit pre-migration warnings, re-ingest with `force=true`.
+> **Filter backing note:** `has_warnings` queries the persisted
+> `warnings_count` column; it does not walk `processing_chain`.
+> `has_source_reference` queries a denormalized `source_reference`
+> column on `documents` that is updated on every interaction write
+> using latest-wins semantics (the most recent `agent_metadata`
+> entry wins). Both filters are indexed, so they stay O(log n) at
+> any collection size. If a historical document has the wrong
+> `warnings_count` or `source_reference` value because of a stale
+> row, re-ingest with `force=true` to refresh the denormalized
+> fields from the current `agent_metadata`.
 
 **Includes** — use `include=` query param (repeatable) to thicken the returned row. Default row is always returned; `include=` adds fields.
 
