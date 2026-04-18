@@ -210,6 +210,10 @@ Root cause: Windows clients (PowerShell Invoke-WebRequest etc.) default to
 cp1252 when charset is missing. Server bytes were always correct UTF-8 —
 see dave_and_bob_communication/BL24_SCHEMA_MOJIBAKE_ROOT_CAUSE.md.
 
+405/404 responses from Starlette's routing layer still lack charset;
+ASCII-only bodies so no mojibake risk. Address if/when error bodies gain
+non-ASCII content.
+
 ---
 
 ## Operator / infrastructure — user-driven
