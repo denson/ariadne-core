@@ -453,7 +453,9 @@ you have a corpus of unsourced documents.
 ## Process: Browsing and managing documents
 
 1. Call `client.list_collections()` to see what's available.
-2. Call `client.list_documents(collection=...)` filtered by collection if the user asks.
+2. Call `client.list_documents(collection=...)` filtered by
+   collection if the user asks. For richer queries (by tag,
+   warnings status, or provenance) see the Query API section.
 3. Present results as a navigable list — document name, collection, file type,
    when it was ingested.
 4. If the user wants to see a specific document, call `client.get_document(document_id)`.
@@ -488,6 +490,107 @@ client.restore_collection("old-project") # restore collection within 48h
 
 After 48 hours, deleted documents are permanently purged.
 
+## Query API
+
+For any question that involves counting, filtering, or grouping
+documents in the corpus, use the Query API — not search. Search is
+for content retrieval; the Query API is for corpus introspection.
+
+### Start with `schema()`
+
+When you're unsure what's available, call `client.schema()` first.
+It returns the live registry of filters, includes, aggregatable
+fields, and caps for this server — so you never have to guess.
+
+```python
+sch = client.schema()
+print(sch.filters)              # {filter_name: description}
+print(sch.aggregatable_fields)  # valid group_by values
+print(sch.caps)                 # limits per request
+```
+
+### Filtering with `list_documents()`
+
+`list_documents()` returns a `DocumentListPage` — iterable like a
+list, plus pagination metadata on `total_count`, `total_is_exact`,
+`limit`, `offset`.
+
+Supported filters (combinable; all AND together):
+
+| Param | Type | Behavior |
+|---|---|---|
+| `collection` | str | Exact collection match. |
+| `file_type` | str | Exact file type (`.pdf` and `pdf` both accepted). |
+| `tag` | str | Docs whose tag list contains this tag. |
+| `has_warnings` | bool | `True` = only docs with >=1 warning; `False` = only clean docs. |
+| `has_source_reference` | bool | `True` = latest interaction's `agent_metadata.source_reference` is a non-empty string that isn't literally `"unknown"`. |
+| `include_deleted` | bool | Default False. |
+
+Every row now carries `warnings_count` (int). Use it to spot
+documents that need cleanup without paying to materialize the
+`warnings` array on every row.
+
+### Adding extra row fields with `include=`
+
+By default `list_documents()` returns a lean row. Request extra
+fields with `include=[...]`:
+
+| `include` value | Adds |
+|---|---|
+| `"tags"` | Full tag list. |
+| `"agent_metadata"` | Latest interaction's agent_metadata dict. |
+| `"last_interaction"` | `{agent_notes, action, created_at}` of the latest interaction. |
+| `"markdown"` | Full markdown body. Caps `limit` at 50. |
+
+Example — find all papers that lack a DOI in their provenance:
+
+```python
+page = client.list_documents(
+    tag="docty:paper",
+    has_source_reference=False,
+    include=["last_interaction", "agent_metadata"],
+    limit=50,
+)
+for doc in page:
+    print(doc.source_file, doc.warnings_count)
+print(f"Total: {page.total_count} (exact={page.total_is_exact})")
+```
+
+### Counting with `aggregate()`
+
+`aggregate()` groups by one field and counts, reusing all the same
+filters as a WHERE clause. Much cheaper than paging the full list
+client-side.
+
+```python
+# How many docs per collection?
+resp = client.aggregate(group_by="collection")
+for b in resp:
+    print(b.group, b.count)
+
+# How many warnings-laden PDFs per collection?
+resp = client.aggregate(
+    group_by="collection",
+    file_type="pdf",
+    has_warnings=True,
+)
+```
+
+Valid `group_by` values: `collection`, `file_type`, `tags`. (Call
+`schema()` to confirm — the server is the source of truth.) Grouping
+by `tags` counts each distinct tag separately: a document with two
+tags contributes +1 to each bucket.
+
+### When filters don't fit
+
+If your question can't be expressed with the filters above (e.g. a
+date range, or a nested `agent_metadata` path), the Query API
+deliberately doesn't hide the fallback: paginate `list_documents()`
+with the `include=[...]` you need, filter client-side. `schema()`
+returns a `brute_force_fallback` hint describing this. Date range
+and JSON-path filters are listed under `schema().deferred` — not
+planned for this release.
+
 ## When to search before answering
 
 If the user asks a question that could be answered by documents they've previously
@@ -503,7 +606,10 @@ Triggers for "search first":
 Use `client.list_collections()` first if you're not sure what's been ingested. If
 there's nothing in the store, tell the user rather than guessing.
 
-## Search filters reference
+## Search filters reference (chunks via `/api/search`)
+
+These filters apply to `client.search(...)` — chunk-level retrieval.
+For document-level filtering see the Query API section above.
 
 | Filter key | Type | Behavior |
 |------------|------|----------|

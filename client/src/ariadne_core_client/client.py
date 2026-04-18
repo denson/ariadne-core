@@ -17,10 +17,14 @@ from ariadne_core_client import _http
 from ariadne_core_client.credentials import resolve_credentials
 from ariadne_core_client.exceptions import AriadneClientError
 from ariadne_core_client.models import (
+    AggregateBucket,
+    AggregateResponse,
     Collection,
     Document,
+    DocumentListPage,
     Health,
     Interaction,
+    QuerySchema,
     SearchResponse,
     SearchResult,
     Stats,
@@ -64,6 +68,12 @@ class AriadneClient:
             params["include_chunks"] = "true" if params["include_chunks"] else "false"
         if isinstance(params.get("include_interactions"), bool):
             params["include_interactions"] = "true" if params["include_interactions"] else "false"
+        if isinstance(params.get("has_warnings"), bool):
+            params["has_warnings"] = "true" if params["has_warnings"] else "false"
+        if isinstance(params.get("has_source_reference"), bool):
+            params["has_source_reference"] = (
+                "true" if params["has_source_reference"] else "false"
+            )
         qs = urlencode(params) if params else ""
         base = f"{self.url}{path}"
         return f"{base}?{qs}" if qs else base
@@ -144,6 +154,7 @@ class AriadneClient:
             chunks_count=int(data.get("chunks_count") or 0),
             was_dedup_skip=bool(data.get("was_dedup_skip", False)),
             warnings=list(data.get("warnings") or []),
+            warnings_count=data.get("warnings_count"),
             processing_time_ms=data.get("processing_time_ms"),
             output_tokens_estimate=data.get("output_tokens_estimate"),
             token_savings_ratio=data.get("token_savings_ratio"),
@@ -428,29 +439,181 @@ class AriadneClient:
         *,
         collection: str | None = None,
         file_type: str | None = None,
+        tag: str | None = None,
+        has_warnings: bool | None = None,
+        has_source_reference: bool | None = None,
+        include: list[str] | None = None,
         limit: int = 20,
         offset: int = 0,
         include_deleted: bool = False,
-    ) -> list[Document]:
+    ) -> DocumentListPage:
+        """List documents on the server, with filters + projection.
+
+        Args:
+            collection: exact collection name.
+            file_type: exact file type (leading dot stripped
+                server-side).
+            tag: docs whose tag list contains this tag. Single-value
+                only — the server ANDs nothing, it just matches one.
+            has_warnings: True = only docs with >=1 warning; False =
+                only clean docs; None = both.
+            has_source_reference: True = latest interaction's
+                agent_metadata has a non-empty, non-"unknown"
+                source_reference; False = inverse; None = both.
+            include: list of extra row fields to request. Accepts
+                any of: "agent_metadata", "tags", "last_interaction",
+                "markdown". Server caps limit at 50 when "markdown"
+                is in this list, 500 otherwise.
+            limit: page size (default 20).
+            offset: page offset (default 0).
+            include_deleted: include soft-deleted docs (default False).
+
+        Returns:
+            A `DocumentListPage` with `.documents`, `.total_count`,
+            `.total_is_exact`, `.limit`, `.offset`. Iterable as a list
+            of `Document`.
+
+        Raises:
+            AriadneClientError: on non-dict response or server 4xx/5xx.
+        """
+        params: dict[str, Any] = {
+            "collection": collection,
+            "file_type": file_type,
+            "tag": tag,
+            "has_warnings": has_warnings,
+            "has_source_reference": has_source_reference,
+            "limit": limit,
+            "offset": offset,
+            "include_deleted": include_deleted,
+        }
+        base = self._endpoint("/api/documents", **params)
+        if include:
+            from urllib.parse import urlencode as _ue
+            sep = "&" if "?" in base else "?"
+            base = f"{base}{sep}{_ue([('include', v) for v in include])}"
+
         response = _http.json_request(
             "GET",
-            self._endpoint(
-                "/api/documents",
-                collection=collection,
-                file_type=file_type,
-                limit=limit,
-                offset=offset,
-                include_deleted=include_deleted,
-            ),
+            base,
             headers=self._headers(),
             timeout=self.timeout,
         )
         data = response if isinstance(response, dict) else {}
-        return [
-            self._parse_document(item)
-            for item in data.get("documents") or []
-            if isinstance(item, dict)
-        ]
+        return DocumentListPage(
+            documents=[
+                self._parse_document(item)
+                for item in data.get("documents") or []
+                if isinstance(item, dict)
+            ],
+            total_count=int(data.get("total_count") or 0),
+            total_is_exact=bool(data.get("total_is_exact", True)),
+            limit=int(data.get("limit") or limit),
+            offset=int(data.get("offset") or offset),
+        )
+
+    def aggregate(
+        self,
+        group_by: str,
+        *,
+        collection: str | None = None,
+        file_type: str | None = None,
+        tag: str | None = None,
+        has_warnings: bool | None = None,
+        has_source_reference: bool | None = None,
+        include_deleted: bool = False,
+    ) -> AggregateResponse:
+        """Group-by count over /api/documents filters.
+
+        Args:
+            group_by: one of "collection", "file_type", "tags".
+                Call `self.schema()` for the current list.
+            collection, file_type, tag, has_warnings,
+            has_source_reference, include_deleted: same semantics as
+                `list_documents`. Applied as a WHERE clause before
+                grouping.
+
+        Returns:
+            An `AggregateResponse`. Iterates as a list of
+            `AggregateBucket`.
+
+        Raises:
+            AriadneClientError: on non-dict response or server 4xx
+                (e.g. unknown `group_by` returns a structured 400 with
+                the valid list; that surfaces as an AriadneClientError
+                with the error detail).
+        """
+        params: dict[str, Any] = {
+            "group_by": group_by,
+            "collection": collection,
+            "file_type": file_type,
+            "tag": tag,
+            "has_warnings": has_warnings,
+            "has_source_reference": has_source_reference,
+            "include_deleted": include_deleted,
+        }
+        response = _http.json_request(
+            "GET",
+            self._endpoint("/api/documents/aggregate", **params),
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if not isinstance(response, dict):
+            raise AriadneClientError(
+                "aggregate response was not a JSON object",
+                request_info=f"GET {self.url}/api/documents/aggregate",
+            )
+        return AggregateResponse(
+            group_by=response.get("group_by", "") or "",
+            filters=dict(response.get("filters") or {}),
+            buckets=[
+                AggregateBucket(
+                    group=b.get("group"),
+                    count=int(b.get("count") or 0),
+                )
+                for b in response.get("buckets") or []
+                if isinstance(b, dict)
+            ],
+            total_buckets=int(response.get("total_buckets") or 0),
+            total_documents=int(response.get("total_documents") or 0),
+        )
+
+    def schema(self) -> QuerySchema:
+        """Fetch the query-surface discovery document.
+
+        Call this first from an agent to learn what filters, includes,
+        and aggregatable fields are available on this server.
+
+        Returns:
+            A `QuerySchema` with per-server filter / include /
+            aggregatable-field registries and caps.
+        """
+        response = _http.json_request(
+            "GET",
+            self._endpoint("/api/documents/schema"),
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        if not isinstance(response, dict):
+            raise AriadneClientError(
+                "schema response was not a JSON object",
+                request_info=f"GET {self.url}/api/documents/schema",
+            )
+        return QuerySchema(
+            list_endpoint=response.get("list_endpoint", "") or "",
+            aggregate_endpoint=(
+                response.get("aggregate_endpoint", "") or ""
+            ),
+            filters=dict(response.get("filters") or {}),
+            includes=dict(response.get("includes") or {}),
+            aggregatable_fields=dict(
+                response.get("aggregatable_fields") or {}
+            ),
+            caps=dict(response.get("caps") or {}),
+            brute_force_fallback=(
+                response.get("brute_force_fallback", "") or ""
+            ),
+            deferred=dict(response.get("deferred") or {}),
+        )
 
     def list_collections(self) -> list[Collection]:
         response = _http.json_request(

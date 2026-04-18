@@ -54,6 +54,7 @@ class Document:
     chunks_count: int = 0
     was_dedup_skip: bool = False
     warnings: list[str] = field(default_factory=list)
+    warnings_count: int | None = None
     processing_time_ms: int | None = None
     output_tokens_estimate: int | None = None
     token_savings_ratio: float | None = None
@@ -129,6 +130,85 @@ class Collection:
 
     def __repr__(self) -> str:
         return f"Collection(name={self.name!r}, docs={self.document_count})"
+
+
+@dataclass
+class DocumentListPage:
+    """Paginated response from list_documents.
+
+    Iterates as its `documents` list so `for d in page: ...` and
+    `len(page)` work like the old `list[Document]` return type.
+    """
+    documents: list[Document] = field(default_factory=list)
+    total_count: int = 0
+    total_is_exact: bool = True
+    limit: int = 0
+    offset: int = 0
+
+    def __iter__(self):
+        return iter(self.documents)
+
+    def __len__(self):
+        return len(self.documents)
+
+    def __getitem__(self, idx):
+        return self.documents[idx]
+
+    def __repr__(self) -> str:
+        exact = "" if self.total_is_exact else "~"
+        return (
+            f"DocumentListPage(docs={len(self.documents)}, "
+            f"total={exact}{self.total_count}, "
+            f"limit={self.limit}, offset={self.offset})"
+        )
+
+
+@dataclass
+class AggregateBucket:
+    """One row of an aggregate response."""
+    group: str | None
+    count: int
+
+
+@dataclass
+class AggregateResponse:
+    """Response from /api/documents/aggregate."""
+    group_by: str = ""
+    filters: dict[str, Any] = field(default_factory=dict)
+    buckets: list[AggregateBucket] = field(default_factory=list)
+    total_buckets: int = 0
+    total_documents: int = 0
+
+    def __iter__(self):
+        return iter(self.buckets)
+
+    def __len__(self):
+        return len(self.buckets)
+
+    def __repr__(self) -> str:
+        return (
+            f"AggregateResponse(group_by={self.group_by!r}, "
+            f"buckets={self.total_buckets}, "
+            f"docs={self.total_documents})"
+        )
+
+
+@dataclass
+class QuerySchema:
+    """Discovery response from /api/documents/schema.
+
+    Fields are dicts of `{name: description}` as returned by the
+    server. Treat this as documentation metadata — inspect it, don't
+    mutate it.
+    """
+    list_endpoint: str = ""
+    aggregate_endpoint: str = ""
+    filters: dict[str, str] = field(default_factory=dict)
+    includes: dict[str, str] = field(default_factory=dict)
+    aggregatable_fields: dict[str, str] = field(default_factory=dict)
+    caps: dict[str, int] = field(default_factory=dict)
+    brute_force_fallback: str = ""
+    deferred: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
