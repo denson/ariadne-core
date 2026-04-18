@@ -17,7 +17,7 @@ file by name instead of re-inventing the sequence.
 
 ## Why this playbook exists
 
-Two facts about this specific Railway project make the "obvious"
+Three facts about this specific Railway project make the "obvious"
 commands fail:
 
 1. **The `pgvector` service has no public TCP proxy.** The app gets
@@ -40,7 +40,19 @@ commands fail:
    consolidated migration. The app then boots against a schema
    missing its expected columns.
 
-The sequence below avoids both traps.
+3. **`railway up` picks the service's configured builder, not the
+   Dockerfile by default.** This project's Python code lives under
+   `src/` with a nested `pyproject.toml`, not at the repo root.
+   Railpack's auto-detect can't see a Python project there and
+   falls back to a Caddy static-site image, shipping a container
+   that 404s every `/api/*` request. `railway.toml` with `[build]
+   builder = "DOCKERFILE"` pins the Dockerfile build path and
+   removes this trap — **verify that file exists at the repo root
+   before any deploy.** Incident `0e56f9f0` (2026-04-18) shipped a
+   Caddy image because `railway.toml` was missing; fixed in commit
+   `61220dd`.
+
+The sequence below avoids all three traps.
 
 ---
 
@@ -54,12 +66,17 @@ git status --short              # should be clean
 git rev-parse HEAD              # record this — it's the target SHA
 git rev-parse origin/main       # must equal HEAD
 
+ls railway.toml                 # MUST exist with builder = "DOCKERFILE"
+grep -E '^builder' railway.toml # should print: builder = "DOCKERFILE"
+
 railway status                  # confirm linked to the right project + env
 ```
 
 If `HEAD != origin/main`, push first. If `railway status` shows the
-wrong project, `railway link` it to the right one. Do not proceed
-until both are clean.
+wrong project, `railway link` it to the right one. If `railway.toml`
+is missing or its builder value is not `"DOCKERFILE"`, stop and add
+it before deploying (see Incident 0e56f9f0 above). Do not proceed
+until all three are clean.
 
 ### Step 2 — Wipe the Postgres schema
 
