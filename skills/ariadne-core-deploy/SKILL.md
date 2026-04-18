@@ -84,19 +84,21 @@ The deployment exposes two endpoints from one process:
    ```bash
    railway up
    ```
-   Railway builds from `Dockerfile` and starts the service.
+   Railway builds from `Dockerfile` and starts the service. The repo includes a `railway.toml` at the root that pins the builder to `DOCKERFILE` — without it, Railway's Railpack auto-detect misreads this project (Python lives under `src/`, not the repo root) and ships a Caddy static-site image that 404s every `/api/*` request. If you fork the repo and notice your deploy returning 404s, verify `railway.toml` exists and contains `builder = "DOCKERFILE"`.
 
 7. **Get the public URL:**
    ```bash
    railway domain
    ```
-   This gives you the HTTPS URL (e.g., `https://ariadne-core-production.up.railway.app`).
+   This gives you the HTTPS URL. Railway generates a unique subdomain per project — yours will look like `https://<service>-production-<id>.up.railway.app`. The canonical Ariadne Core public instance is at `https://ariadne-core-production-579a.up.railway.app`, but every fork gets its own URL.
 
 8. **Verify:**
    ```bash
    curl https://your-url.up.railway.app/api/health
    ```
-   Should return `{"status": "healthy"}`.
+   Should return `{"status": "healthy", "version": "0.1.0", "engine": "markitdown", "embedding_enabled": true}`.
+
+> **For schema-breaking deploys** (changing an already-applied migration, dropping a column, consolidating migration files): the above commands are NOT enough — the DB has to be wiped first and the deploy sequence is subtle. See `dave_and_bob_communication/PLAYBOOK_DESTRUCTIVE_DEPLOY.md` for the wipe → `railway up` → verify procedure.
 
 ### Update an existing deployment
 

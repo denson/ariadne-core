@@ -87,9 +87,13 @@ ariadne-core/
 │           └── pgvector.py     # Default implementation
 ├── src/pyproject.toml
 ├── migrations/
-│   ├── 001_initial.sql         # Database schema (all tables, indexes)
-│   ├── 002_add_agent_notes.sql # agent_notes + agent_metadata columns
-│   └── 003_search_log.sql      # Search logging table
+│   └── 001_initial.sql         # Consolidated schema — all tables, indexes,
+│                               # GIN indexes on tags/warnings, partial index
+│                               # on documents.source_reference. Pass 4
+│                               # (commit 4d7ddb7) folded the prior 002-005
+│                               # into this single file. Destructive deploys
+│                               # required when the file changes — see
+│                               # dave_and_bob_communication/PLAYBOOK_DESTRUCTIVE_DEPLOY.md
 ├── tests/
 │   ├── test_*.py               # Unit + integration tests
 │   └── fixtures/               # Sample documents for testing
@@ -283,10 +287,17 @@ secrets. Resolution: defaults → config file → env vars.
 ## Database schema
 
 Key tables: `collections`, `documents`, `document_interactions`, `chunks`,
-`api_keys`, `search_log`. Schema spread across three migrations:
-- `001_initial.sql` — core tables
-- `002_add_agent_notes.sql` — agent_notes + agent_metadata columns
-- `003_search_log.sql` — search logging table
+`api_keys`, `search_log`, `schema_migrations`. Everything lives in a single
+consolidated migration file:
+- `migrations/001_initial.sql` — full schema, including the `warnings TEXT[]`
+  column, `soft_deleted_at`, the denormalized `documents.source_reference`
+  column (Pass 4), GIN indexes on `tags` and `warnings`, and the partial index
+  on `source_reference` that powers the `has_source_reference` filter.
+
+The runner at `src/pipeline/stores.py:_apply_migrations` applies pending files
+in sorted order and tracks applied versions in `schema_migrations`. If you
+need to **change** an already-applied migration (rather than add a new one),
+the DB has to be wiped — see `dave_and_bob_communication/PLAYBOOK_DESTRUCTIVE_DEPLOY.md`.
 
 The unique constraint `(collection_id, content_fingerprint)` on `documents`
 enforces dedup.
