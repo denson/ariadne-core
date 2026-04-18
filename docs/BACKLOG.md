@@ -166,26 +166,16 @@ keyed by document_id. Both are moderate SQL work, no schema change.
 Blocker: none — ready to schedule. Good candidate for "Pass 2.5" or
 a dedicated server-performance pass after Pass 3 lands.
 
-### BL-22 — `has_warnings` filter is a no-op against Postgres
+### BL-22 — `has_warnings` filter is a no-op against Postgres — RESOLVED
 
-`StoredDocument.warnings` is populated at ingest time (it's a field
-on the dataclass), but `_row_to_stored_document` in `dedup.py` never
-pulls warnings out of the database — because there's no `warnings`
-column on the `documents` table. So against Pg, every loaded
-`StoredDocument.warnings` is `[]`, and `?has_warnings=true` silently
-returns nothing. The filter still works correctly against the
-InMemoryDedupStore (where warnings live on the Python object), which
-is why unit tests pass.
-
-Fix direction: either add a `warnings TEXT[]` column to `documents`
-and persist on write + re-hydrate on read, OR persist warnings in
-the existing `metadata JSONB` column and project out on read. Column
-is cleaner for indexing; JSONB is zero-migration. Either way,
-Pass 1's `has_warnings` filter becomes real.
-
-Blocker: none — ready to schedule. Worth catching before the next
-corpus of >100 ingested docs lands if any operator expects to query
-by warnings.
+Resolved in this commit. Migration 005 adds a `warnings TEXT[] NOT
+NULL DEFAULT '{}'` column; `PgDedupStore.store_document` persists
+the list on INSERT (and on the ON CONFLICT resurrection path); every
+SELECT that builds a `StoredDocument` reads the column; and
+`_row_to_stored_document` maps it onto the dataclass field. The
+Pass-1 `has_warnings` filter now queries persisted data. Historical
+rows (pre-005) appear warning-free — no backfill. New ingests
+persist warnings correctly.
 
 ### BL-23 — `agent_metadata.*` as `group_by` / `has_*` filters
 

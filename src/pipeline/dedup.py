@@ -163,13 +163,15 @@ class PgDedupStore:
         deleted_clause = "" if include_deleted else "AND d.deleted_at IS NULL"
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
+                # Column order must match _row_to_stored_document.
                 cur.execute(
                     f"""
                     SELECT d.id, d.collection_id, d.source_file,
                            d.content_fingerprint, d.file_type, d.engine,
                            d.markdown, d.title, d.processing_time_ms,
                            d.output_tokens_estimate, d.token_savings_ratio,
-                           d.processing_chain, d.tags, d.created_at
+                           d.processing_chain, d.tags, d.warnings,
+                           d.created_at
                     FROM documents d
                     JOIN collections col ON d.collection_id = col.id
                     WHERE col.name = %(collection)s
@@ -218,7 +220,7 @@ class PgDedupStore:
                         id, collection_id, source_file, content_fingerprint,
                         file_type, engine, markdown, title,
                         processing_time_ms, output_tokens_estimate,
-                        token_savings_ratio, processing_chain, tags
+                        token_savings_ratio, processing_chain, tags, warnings
                     ) VALUES (
                         %(id)s::uuid,
                         (SELECT id FROM collections WHERE name = %(collection)s),
@@ -226,7 +228,7 @@ class PgDedupStore:
                         %(file_type)s, %(engine)s, %(markdown)s, %(title)s,
                         %(processing_time_ms)s, %(output_tokens_estimate)s,
                         %(token_savings_ratio)s, %(processing_chain)s::jsonb,
-                        %(tags)s
+                        %(tags)s, %(warnings)s
                     )
                     ON CONFLICT (collection_id, content_fingerprint)
                         WHERE content_fingerprint IS NOT NULL
@@ -238,6 +240,7 @@ class PgDedupStore:
                         output_tokens_estimate = EXCLUDED.output_tokens_estimate,
                         token_savings_ratio = EXCLUDED.token_savings_ratio,
                         tags = EXCLUDED.tags,
+                        warnings = EXCLUDED.warnings,
                         deleted_at = NULL,
                         deletion_scheduled_at = NULL,
                         updated_at = now()
@@ -257,6 +260,7 @@ class PgDedupStore:
                         "token_savings_ratio": doc.token_savings_ratio,
                         "processing_chain": _json.dumps(doc.processing_chain),
                         "tags": doc.tags,
+                        "warnings": doc.warnings or [],
                     },
                 )
                 row = cur.fetchone()
@@ -393,13 +397,15 @@ class PgDedupStore:
         deleted_clause = "" if include_deleted else "AND d.deleted_at IS NULL"
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
+                # Column order must match _row_to_stored_document.
                 cur.execute(
                     f"""
                     SELECT d.id, d.collection_id, d.source_file,
                            d.content_fingerprint, d.file_type, d.engine,
                            d.markdown, d.title, d.processing_time_ms,
                            d.output_tokens_estimate, d.token_savings_ratio,
-                           d.processing_chain, d.tags, d.created_at,
+                           d.processing_chain, d.tags, d.warnings,
+                           d.created_at,
                            col.name
                     FROM documents d
                     JOIN collections col ON d.collection_id = col.id
@@ -412,7 +418,7 @@ class PgDedupStore:
                 row = cur.fetchone()
                 if row is None:
                     return None
-                return _row_to_stored_document(row[:14], row[14])
+                return _row_to_stored_document(row[:15], row[15])
 
     def list_documents(
         self,
@@ -450,13 +456,15 @@ class PgDedupStore:
                 )
                 total = cur.fetchone()[0]
 
+                # Column order must match _row_to_stored_document.
                 cur.execute(
                     f"""
                     SELECT d.id, d.collection_id, d.source_file,
                            d.content_fingerprint, d.file_type, d.engine,
                            d.markdown, d.title, d.processing_time_ms,
                            d.output_tokens_estimate, d.token_savings_ratio,
-                           d.processing_chain, d.tags, d.created_at,
+                           d.processing_chain, d.tags, d.warnings,
+                           d.created_at,
                            col.name
                     FROM documents d
                     JOIN collections col ON d.collection_id = col.id
@@ -467,7 +475,7 @@ class PgDedupStore:
                     params,
                 )
                 docs = [
-                    _row_to_stored_document(row[:14], row[14])
+                    _row_to_stored_document(row[:15], row[15])
                     for row in cur.fetchall()
                 ]
         return docs, total
@@ -726,7 +734,13 @@ class PgDedupStore:
 
 
 def _row_to_stored_document(row, collection_name: str) -> StoredDocument:
-    """Convert a database row tuple to a StoredDocument."""
+    """Convert a database row tuple to a StoredDocument.
+
+    Row column order (must match every SELECT that calls this helper):
+    id, collection_id, source_file, content_fingerprint, file_type,
+    engine, markdown, title, processing_time_ms, output_tokens_estimate,
+    token_savings_ratio, processing_chain, tags, warnings, created_at.
+    """
     return StoredDocument(
         document_id=str(row[0]),
         collection_id=collection_name,
@@ -741,7 +755,8 @@ def _row_to_stored_document(row, collection_name: str) -> StoredDocument:
         token_savings_ratio=row[10],
         processing_chain=row[11] or [],
         tags=row[12] or [],
-        created_at=row[13].isoformat() if hasattr(row[13], "isoformat") else str(row[13]),
+        warnings=row[13] or [],
+        created_at=row[14].isoformat() if hasattr(row[14], "isoformat") else str(row[14]),
     )
 
 

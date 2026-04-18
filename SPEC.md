@@ -427,6 +427,13 @@ List stored documents. Returns metadata only — use `GET /api/documents/{id}` f
 | `limit` | int | Max rows per page (shape-dependent cap — see below) |
 | `offset` | int | Pagination offset |
 
+> **Historical rows note:** documents ingested before migration 005
+> (`warnings TEXT[]` column) show `warnings_count=0` regardless of
+> what their ingest actually emitted — warnings weren't persisted
+> prior to that migration. The `has_warnings` filter queries only
+> the persisted column, not `processing_chain`. If you need to
+> audit pre-migration warnings, re-ingest with `force=true`.
+
 **Includes** — use `include=` query param (repeatable) to thicken the returned row. Default row is always returned; `include=` adds fields.
 
 | Include value | Adds |
