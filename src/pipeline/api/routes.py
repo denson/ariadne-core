@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from pydantic import BaseModel, Field
 
 from pipeline.api.auth import APIKey, check_api_key
@@ -268,6 +268,164 @@ async def submit_document(
     return result
 
 
+@router.get("/documents/aggregate")
+async def aggregate_documents(
+    request: Request,
+    group_by: str = Query(
+        ...,
+        description=(
+            "Field to group by. See /api/documents/schema for valid values."
+        ),
+    ),
+    collection: Optional[str] = Query(None),
+    file_type: Optional[str] = Query(None),
+    tag: Optional[str] = Query(None),
+    has_warnings: Optional[bool] = Query(None),
+    has_source_reference: Optional[bool] = Query(None),
+    include_deleted: bool = Query(False),
+    api_key: APIKey | None = Depends(check_api_key),
+):
+    """Group-by summary over /documents filters. Returns [{group, count}, ...]."""
+    from pipeline.dedup import PgDedupStore
+    import collections as _py_collections
+
+    _reject_unknown_query_params(
+        request, _AGGREGATE_PARAMS, "/api/documents/aggregate"
+    )
+
+    if group_by not in _AGGREGATE_REGISTRY:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Unknown group_by '{group_by}'.",
+                "valid_group_by": sorted(_AGGREGATE_REGISTRY.keys()),
+                "see": "/api/documents/schema",
+            },
+        )
+
+    if isinstance(_svc._dedup_store, PgDedupStore):
+        all_docs, _ = _svc._dedup_store.list_documents(
+            collection=collection, file_type=file_type,
+            limit=100000, offset=0,
+            include_deleted=include_deleted,
+        )
+    else:
+        docs = list(_svc._dedup_store._documents.values())
+        if not include_deleted:
+            docs = [
+                d for d in docs
+                if d.document_id not in _svc._dedup_store._deletions
+            ]
+        if collection:
+            docs = [d for d in docs if d.collection_id == collection]
+        if file_type:
+            ft = file_type.lstrip(".")
+            docs = [d for d in docs if d.file_type == ft]
+        all_docs = docs
+
+    if tag is not None:
+        all_docs = [d for d in all_docs if d.tags and tag in d.tags]
+    if has_warnings is not None:
+        if has_warnings:
+            all_docs = [d for d in all_docs if d.warnings]
+        else:
+            all_docs = [d for d in all_docs if not d.warnings]
+    if has_source_reference is not None:
+        all_docs = [
+            d for d in all_docs
+            if _has_source_reference(d.document_id) == has_source_reference
+        ]
+
+    counter: _py_collections.Counter[str] = _py_collections.Counter()
+    if group_by == "collection":
+        for d in all_docs:
+            counter[d.collection_id] += 1
+    elif group_by == "file_type":
+        for d in all_docs:
+            counter[d.file_type] += 1
+    elif group_by == "tags":
+        for d in all_docs:
+            for t in (d.tags or []):
+                counter[t] += 1
+
+    if len(counter) > _CAPS["aggregate_buckets_max"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": (
+                    f"Aggregate produced {len(counter)} buckets, "
+                    f"exceeds cap of {_CAPS['aggregate_buckets_max']}. "
+                    "Narrow with a filter (collection, file_type, etc.)."
+                ),
+                "cap_applied": _CAPS["aggregate_buckets_max"],
+                "see": "/api/documents/schema",
+            },
+        )
+
+    buckets_sorted = sorted(
+        counter.items(),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+
+    applied_filters = {
+        k: v for k, v in {
+            "collection": collection,
+            "file_type": file_type,
+            "tag": tag,
+            "has_warnings": has_warnings,
+            "has_source_reference": has_source_reference,
+            "include_deleted": include_deleted,
+        }.items() if v is not None and v is not False
+    }
+
+    return {
+        "group_by": group_by,
+        "filters": applied_filters,
+        "buckets": [{"group": g, "count": c} for g, c in buckets_sorted],
+        "total_buckets": len(buckets_sorted),
+        "total_documents": (
+            sum(counter.values()) if group_by != "tags" else len(all_docs)
+        ),
+    }
+
+
+@router.get("/documents/schema")
+async def documents_schema(
+    api_key: APIKey | None = Depends(check_api_key),
+):
+    """Return the list/aggregate query surface. Call this first from an agent."""
+    return {
+        "list_endpoint": "/api/documents",
+        "aggregate_endpoint": "/api/documents/aggregate",
+        "filters": dict(_FILTER_REGISTRY),
+        "includes": dict(_INCLUDE_REGISTRY),
+        "aggregatable_fields": dict(_AGGREGATE_REGISTRY),
+        "caps": {
+            "list_default": _CAPS["list_default"],
+            "list_with_markdown": _CAPS["list_with_markdown"],
+            "aggregate_buckets_max": _CAPS["aggregate_buckets_max"],
+        },
+        "brute_force_fallback": (
+            "If a question can't be expressed with these filters, "
+            "paginate /api/documents with include=[...] covering the "
+            "fields you need, then filter client-side."
+        ),
+        "deferred": {
+            "store_status_filter": (
+                "BL-19 made store_status vestigial (failed ingests no longer "
+                "write rows). Not planned."
+            ),
+            "agent_metadata_group_by": (
+                "Grouping by arbitrary JSON paths in agent_metadata is a "
+                "future pass."
+            ),
+            "date_range_filters": (
+                "created_after / created_before are a future pass."
+            ),
+        },
+    }
+
+
 @router.get("/documents/{document_id}")
 async def get_document(
     document_id: str,
@@ -331,11 +489,97 @@ async def get_document(
     return response
 
 
-_VALID_INCLUDES = {"agent_metadata", "tags", "last_interaction", "markdown"}
+# ── Query API registries (single source of truth for /schema) ───────────────
+
+_FILTER_REGISTRY: dict[str, str] = {
+    "collection": "Exact match on collection name.",
+    "file_type": "Exact match (leading dot stripped — 'pdf' and '.pdf' both match).",
+    "tag": "Docs whose tag list contains this tag (single-value, OR-semantics across repeated calls).",
+    "has_warnings": "true → only docs with >=1 warning; false → only clean docs.",
+    "has_source_reference": (
+        "true → latest interaction's agent_metadata has a non-empty "
+        "'source_reference' value that is not literally 'unknown'. "
+        "false → inverse."
+    ),
+    "include_deleted": "Include soft-deleted docs (default false).",
+}
+
+_INCLUDE_REGISTRY: dict[str, str] = {
+    "agent_metadata": "Adds the latest interaction's agent_metadata dict per row.",
+    "tags": "Adds the full tag list per row.",
+    "last_interaction": "Adds {agent_notes, action, created_at} of the latest interaction.",
+    "markdown": "Adds the full markdown body per row (caps limit at 50).",
+}
+
+_AGGREGATE_REGISTRY: dict[str, str] = {
+    "collection": "One bucket per collection name.",
+    "file_type": "One bucket per file type.",
+    "tags": "One bucket per distinct tag. Docs with multiple tags contribute to multiple buckets. Docs with no tags contribute to nothing.",
+}
+
+_CAPS = {
+    "list_default": 500,
+    "list_with_markdown": 50,
+    "aggregate_buckets_max": 1000,
+}
+
+_VALID_INCLUDES = set(_INCLUDE_REGISTRY.keys())
+
+_LIST_DOCUMENTS_PARAMS = (
+    set(_FILTER_REGISTRY.keys()) | {"include", "limit", "offset"}
+)
+_AGGREGATE_PARAMS = (set(_FILTER_REGISTRY.keys()) | {"group_by"}) - {"include"}
+
+
+def _reject_unknown_query_params(
+    request: Request,
+    allowed: set[str],
+    endpoint_hint: str,
+) -> None:
+    """Raise 400 if the request has query params not in `allowed`.
+
+    FastAPI's declarative Query params silently drop unknown keys by design.
+    For agent-facing endpoints we want a loud failure so an agent that typos
+    `collecton=` gets an immediate, specific error instead of a silent
+    full-corpus scan.
+    """
+    got = set(request.query_params.keys())
+    unknown = got - allowed
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Unknown query param(s): {sorted(unknown)}.",
+                "valid_params": sorted(allowed),
+                "endpoint": endpoint_hint,
+                "see": "/api/documents/schema",
+            },
+        )
+
+
+def _has_source_reference(document_id: str) -> bool:
+    """True iff the latest interaction's agent_metadata has a non-empty
+    source_reference that isn't literally 'unknown'.
+
+    N+1 on get_interactions is deliberate Pass-2 pragmatism — flagged for a
+    future batch-fetch pass.
+    """
+    interactions = _svc._dedup_store.get_interactions(document_id)
+    if not interactions:
+        return False
+    md = interactions[-1].agent_metadata or {}
+    if not isinstance(md, dict):
+        return False
+    val = md.get("source_reference", "")
+    if not isinstance(val, str):
+        return False
+    val = val.strip()
+    return bool(val) and val != "unknown"
 
 
 @router.get("/documents")
 async def list_documents(
+    request: Request,
     collection: Optional[str] = Query(None),
     file_type: Optional[str] = Query(None),
     tag: Optional[str] = Query(
@@ -345,6 +589,13 @@ async def list_documents(
     has_warnings: Optional[bool] = Query(
         None,
         description="Filter to docs that have (or do not have) any warnings",
+    ),
+    has_source_reference: Optional[bool] = Query(
+        None,
+        description=(
+            "Filter by presence of a non-empty, non-'unknown' "
+            "source_reference in the latest interaction's agent_metadata."
+        ),
     ),
     include: list[str] = Query(
         default_factory=list,
@@ -360,6 +611,10 @@ async def list_documents(
 ):
     """List all documents, optionally filtered by collection or file type."""
     from pipeline.dedup import PgDedupStore
+
+    _reject_unknown_query_params(
+        request, _LIST_DOCUMENTS_PARAMS, "/api/documents"
+    )
 
     bad_includes = [i for i in include if i not in _VALID_INCLUDES]
     if bad_includes:
@@ -418,9 +673,18 @@ async def list_documents(
             page_docs = [d for d in page_docs if d.warnings]
         else:
             page_docs = [d for d in page_docs if not d.warnings]
+    if has_source_reference is not None:
+        page_docs = [
+            d for d in page_docs
+            if _has_source_reference(d.document_id) == has_source_reference
+        ]
 
     total_exact = True
-    if tag is not None or has_warnings is not None:
+    if (
+        tag is not None
+        or has_warnings is not None
+        or has_source_reference is not None
+    ):
         total = len(page_docs)
         total_exact = False
 

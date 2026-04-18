@@ -141,6 +141,44 @@ def test_list_documents_has_warnings_false():
     assert sources == ["clean.txt"]
 
 
+def test_list_documents_has_source_reference_true():
+    """has_source_reference filter returns only docs whose latest interaction
+    carries a non-empty source_reference (not the literal 'unknown')."""
+    f = _Fixture()
+    doc_a = _make_doc(f.collection, "a.txt", "alpha")
+    doc_b = _make_doc(f.collection, "b.txt", "beta")
+    f.dedup.store_document(doc_a)
+    f.dedup.store_document(doc_b)
+    f.dedup.record_interaction(
+        DocumentInteraction(
+            document_id=doc_a.document_id,
+            collection_id=f.collection,
+            agent_metadata={"source_reference": "doi:10.1/abc"},
+        )
+    )
+    f.dedup.record_interaction(
+        DocumentInteraction(
+            document_id=doc_b.document_id,
+            collection_id=f.collection,
+            agent_metadata={"source_reference": "unknown"},
+        )
+    )
+
+    resp = f.client.get(
+        f"/api/documents?collection={f.collection}&has_source_reference=true"
+    )
+    assert resp.status_code == 200, resp.text
+    sources = [d["source_file"] for d in resp.json()["documents"]]
+    assert sources == ["a.txt"]
+
+    resp = f.client.get(
+        f"/api/documents?collection={f.collection}&has_source_reference=false"
+    )
+    assert resp.status_code == 200, resp.text
+    sources = [d["source_file"] for d in resp.json()["documents"]]
+    assert sources == ["b.txt"]
+
+
 def test_list_documents_include_tags_adds_field():
     f = _Fixture()
     f.dedup.store_document(_make_doc(f.collection, "a.txt", "alpha", tags=["x", "y"]))

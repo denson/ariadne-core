@@ -404,6 +404,7 @@ List stored documents. Returns metadata only — use `GET /api/documents/{id}` f
 | `file_type` | string | `null` | Filter by extension (e.g. `pdf`, `docx`) |
 | `tag` | string | `null` | Match docs whose tag list contains this tag |
 | `has_warnings` | bool | `null` | If `true`, only docs with at least one warning; if `false`, only docs with none |
+| `has_source_reference` | bool | `null` | If `true`, only docs whose latest interaction carries a non-empty `source_reference` in `agent_metadata` (excluding the literal string `"unknown"`); if `false`, inverse |
 | `include` | list[string] | `[]` | Repeatable. Thickens each row. Accepted: `agent_metadata`, `tags`, `last_interaction`, `markdown` |
 | `limit` | int | `20` | Results per page (shape-dependent cap — see below) |
 | `offset` | int | `0` | Pagination offset |
@@ -421,11 +422,10 @@ List stored documents. Returns metadata only — use `GET /api/documents/{id}` f
 | `file_type` | string | Exact match (leading dot stripped, so `pdf` and `.pdf` both work) |
 | `tag` | string | Match docs whose tag list contains this tag |
 | `has_warnings` | bool | If `true`, only docs with at least one warning; if `false`, only docs with none |
+| `has_source_reference` | bool | If `true`, only docs whose latest interaction's `agent_metadata.source_reference` is a non-empty string other than `"unknown"`; if `false`, inverse |
 | `include_deleted` | bool | Include soft-deleted docs (default `false`) |
 | `limit` | int | Max rows per page (shape-dependent cap — see below) |
 | `offset` | int | Pagination offset |
-
-Unknown filter keys are silently ignored by FastAPI's routing layer (per its standard behavior for query params not declared on the route). Future passes add stricter validation.
 
 **Includes** — use `include=` query param (repeatable) to thicken the returned row. Default row is always returned; `include=` adds fields.
 
@@ -464,7 +464,7 @@ Unknown include values return `400` with a list of valid values.
 }
 ```
 
-**`total_count` semantics:** when `tag` or `has_warnings` is active, `total_count` reflects the current page's post-filter size, not the whole-collection total. The response includes `"total_is_exact": false` to signal this. Without these filters, `total_count` is the exact collection total. Pass-1 limitation; future passes push the filters into SQL and restore exact totals in all cases.
+**`total_count` semantics:** when `tag`, `has_warnings`, or `has_source_reference` is active, `total_count` reflects the current page's post-filter size, not the whole-collection total. The response includes `"total_is_exact": false` to signal this. Without these filters, `total_count` is the exact collection total. Post-query route-level filtering is a deliberate Pass-2 limitation; a future pass pushes them into SQL and restores exact totals in all cases.
 
 **Brute-force fallback** — if the question you're asking can't be expressed with these filters, paginate `list_documents` with `include=[...]` covering the fields you need, then filter client-side:
 
@@ -484,6 +484,53 @@ while True:
     offset += 500
 # now filter client-side
 ```
+
+### Aggregate — group-by summary
+
+`GET /api/documents/aggregate` returns per-group document counts.
+
+**Required:** `group_by` (one of `collection`, `file_type`, `tags`).
+
+**Optional filters** (same semantics as `/api/documents`, applied as a WHERE clause before grouping): `collection`, `file_type`, `tag`, `has_warnings`, `has_source_reference`, `include_deleted`.
+
+**Response shape:**
+
+```json
+{
+  "group_by": "file_type",
+  "filters": {"collection": "world-bank-ree"},
+  "buckets": [
+    {"group": "pdf", "count": 450},
+    {"group": "docx", "count": 100},
+    {"group": "txt", "count": 22}
+  ],
+  "total_buckets": 3,
+  "total_documents": 572
+}
+```
+
+**Ordering:** `buckets` is sorted by `count` descending, tie-broken by `group` ascending (deterministic).
+
+**`tags` special case:** docs with multiple tags contribute to multiple buckets. Docs with no tags contribute to none. For `group_by=tags`, `total_documents` is the count of distinct docs in the filter scope, NOT the sum of bucket counts.
+
+**Cap:** if a query would produce more than 1000 buckets, returns `400` with a hint to narrow via filters.
+
+**Unknown `group_by` value** returns `400` with the list of valid values.
+
+### Schema — discovery endpoint
+
+`GET /api/documents/schema` returns the complete query surface as a single JSON blob. Agents should call this once at the start of a reasoning session to know what filters, includes, and group_by values are valid without probing.
+
+**Response fields:**
+
+- `filters` — map of filter-name → human description. Every key here is accepted on `/api/documents` and (minus `include`) on `/api/documents/aggregate`.
+- `includes` — map of include-value → description. Every key is accepted as a repeated `include=` query param on `/api/documents`.
+- `aggregatable_fields` — map of group_by-value → description. Exactly the values accepted by `/api/documents/aggregate`'s `group_by` param.
+- `caps` — numeric limits: `list_default` (max rows per list call without markdown), `list_with_markdown` (max rows with markdown), `aggregate_buckets_max` (max buckets per aggregate call).
+- `brute_force_fallback` — prose explanation of how to handle questions the filters can't express.
+- `deferred` — fields/filters intentionally not implemented, with brief reasons.
+
+The registries that back the filter / include / group_by validators also drive this response — the schema cannot drift from the validators by construction.
 
 ---
 

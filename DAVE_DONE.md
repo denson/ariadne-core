@@ -1,214 +1,165 @@
-# DAVE_DONE — BL-17 NUL-byte strip at extraction
+# DAVE_DONE — Query API Pass 2
 
-**Spec:** `dave_and_bob_communication/DAVE_BL17_NUL_STRIP.md`
-**Date:** 2026-04-17
-**Verdict:** BL-17 lands green. 202 passed / 3 skipped in `tests/`
-(baseline 199 at `cf4d65f` + 3 new from this pass). No existing test
-regressed. Nothing committed, nothing staged — Bob handles the commit.
+**Spec:** `dave_and_bob_communication/DAVE_QUERY_API_PASS_2.md`
+**Date:** 2026-04-18
+**Verdict:** `/documents/aggregate` + `/documents/schema` added, `has_source_reference` filter on `/documents`, rich 400 on unknown query params, SPEC updated, full test suite green.
 
 ---
 
-## 1. Diff summary
+## Files touched
 
-### `src/pipeline/extraction/markitdown.py` (+15, −0)
+- `M  src/pipeline/api/routes.py` — registries, validator helper, `has_source_reference` helper, `has_source_reference` filter on `/documents`, new `/documents/aggregate` and `/documents/schema` routes.
+- `M  SPEC.md` — deleted Pass-1 "unknown filter keys silently ignored" disclaimer; added `has_source_reference` row to both filter tables; widened `total_count` semantics paragraph; added `### Aggregate` + `### Schema` subsections.
+- `M  tests/test_routes_list_documents.py` — added `test_list_documents_has_source_reference_true` alongside the other filter tests.
+- `??  tests/test_routes_aggregate_and_schema.py` — new file, 14 tests covering aggregate, schema, and unknown-query-param rejector.
 
-One insertion block at the converged post-branch point, immediately
-after the `else:` branch's `finally:` closes (original line 127) and
-before `elapsed_ms = int((time.perf_counter() - start) * 1000)`
-(original line 128 → now line 143). Verbatim:
-
-```python
-        # Strip NUL (0x00) bytes. Postgres TEXT columns reject NUL; nothing
-        # downstream benefits from a literal 0x00 in the content, so delete
-        # them outright (lossy but semantically a no-op for text corpora).
-        # Warn so the caller knows the source wasn't clean.
-        nul_count = markdown.count("\x00") + (title.count("\x00") if title else 0)
-        if nul_count:
-            markdown = markdown.replace("\x00", "")
-            if title:
-                title = title.replace("\x00", "")
-            warnings.append(
-                f"Source contained {nul_count} NUL (0x00) byte(s); stripped "
-                "before storage. NUL bytes are rejected by Postgres TEXT "
-                "columns and have no meaning in text content."
-            )
-```
-
-Placement verifies all four spec constraints:
-
-- **Before `_estimate_tokens(markdown)`** → token estimate reflects
-  what gets stored, not pre-strip length. ✓
-- **Before `ExtractionResult(... markdown=markdown, title=title)`** →
-  returned values are cleaned. ✓
-- **After the non-.txt branch's `markdown = ""` error fallback** →
-  strip does nothing on empty-string fallback (harmless). ✓
-- **One contiguous block, post-convergence** → runs exactly once per
-  extraction regardless of path (.txt vs. convert), matching the
-  image-warning pattern 8 lines below. ✓
-
-### `tests/test_extraction.py` (+16, −0)
-
-Three new tests appended inside `class TestMarkItDownExtractor:` after
-`test_extract_audio_wav`, using the existing `self.extractor` /
-`FIXTURES` / `setup_method` pattern. One concern per test.
-
-### `tests/fixtures/nul_byte_sample.txt` (new, 381 bytes, 3 NULs)
-
-Built once with `write_bytes` so NUL bytes survive on disk:
-
-```
-b"The quick brown fox jumps over the lazy dog. " * 5
-+ b"\x00\x00 interrupted here \x00 more text follows. "
-+ b"This is enough content for the encoding validator to treat "
-+ b"it as coherent English prose and not flag it as garbled."
-```
-
-Verified on disk: `size: 381, NUL count: 3`.
+No other files modified. `dedup.py`, `services.py`, client library, skills directory, and everything under `src/pipeline/` other than `api/routes.py` untouched.
 
 ---
 
-## 2. Test results
-
-### Extraction file only (verbose)
+## `routes.py` diff summary (confirming scope)
 
 ```
-pytest tests/test_extraction.py -v
-============================= 17 passed in 3.99s ==============================
+ src/pipeline/api/routes.py | 270 +++++++++++++++++++++++++++++++++++-
 ```
 
-All 14 pre-existing tests still pass. The 3 new tests:
+Scope of the change, by region:
+
+1. **Import line** — added `Request` to the existing `from fastapi import ...` line.
+2. **Module-level registries** (replacing the single `_VALID_INCLUDES = {...}` constant):
+   - `_FILTER_REGISTRY` (6 entries including `has_source_reference`)
+   - `_INCLUDE_REGISTRY` (4 entries, same values as the old set)
+   - `_AGGREGATE_REGISTRY` (3 entries: `collection`, `file_type`, `tags`)
+   - `_CAPS` (`list_default=500`, `list_with_markdown=50`, `aggregate_buckets_max=1000`)
+   - `_VALID_INCLUDES = set(_INCLUDE_REGISTRY.keys())` — derived, not hand-maintained.
+   - `_LIST_DOCUMENTS_PARAMS` and `_AGGREGATE_PARAMS` — derived at module load, not per request.
+3. **Module-level helpers:**
+   - `_reject_unknown_query_params(request, allowed, endpoint_hint)` — raises 400 on any query-param key not in `allowed`.
+   - `_has_source_reference(document_id)` — reads last interaction, checks `agent_metadata["source_reference"]` is a non-empty string other than `"unknown"`.
+4. **`list_documents` (`GET /api/documents`):**
+   - New `request: Request` param at the head of the signature.
+   - New `has_source_reference: Optional[bool] = Query(None, ...)` param between `has_warnings` and `include`.
+   - `_reject_unknown_query_params(request, _LIST_DOCUMENTS_PARAMS, "/api/documents")` is now the first line of the body.
+   - New post-filter branch after `has_warnings` applying `_has_source_reference`.
+   - `total_exact = False` condition widened to include `has_source_reference`.
+5. **`aggregate_documents` (`GET /api/documents/aggregate`)** — new route, placed BEFORE `GET /documents/{document_id}` so the path-parameter route does not swallow it (see § Route-ordering note below).
+6. **`documents_schema` (`GET /api/documents/schema`)** — new route, placed next to `/aggregate`.
+
+**Route-ordering note** (surprise flagged for Bob): FastAPI dispatches routes in registration order. I originally placed `/documents/aggregate` + `/documents/schema` below `/documents` (as the spec's "add below the `list_documents` route" instruction suggested), but that left them shadowed by `@router.get("/documents/{document_id}")`, which was registered earlier and would match `document_id="aggregate"`. I verified the problem by printing `router.routes` and confirming order, then moved both new routes to just above `@router.get("/documents/{document_id}")`. Final registration order:
 
 ```
-tests/test_extraction.py::TestMarkItDownExtractor::test_nul_bytes_stripped_from_markdown PASSED
-tests/test_extraction.py::TestMarkItDownExtractor::test_nul_bytes_produce_warning PASSED
-tests/test_extraction.py::TestMarkItDownExtractor::test_clean_txt_no_nul_warning PASSED
+GET  /documents/aggregate       ← new, registered before the path param
+GET  /documents/schema          ← new, registered before the path param
+GET  /documents/{document_id}
+GET  /documents
+PATCH /documents/{document_id}
+DELETE /documents/{document_id}
+POST /documents/{document_id}/restore
 ```
 
-### Full suite
-
-```
-pytest tests/ -q
-202 passed, 3 skipped in 21.57s
-```
-
-Matches spec's expected `202 passed, 3 skipped` (= 199 baseline at
-`cf4d65f` + 3 new). The 3 skips are the pre-existing
-`TestPgResurrection` tests that require a reachable Postgres; local
-runs skip them via `conftest.py`'s `pg_pool` fixture.
+This matches the design intent (static segments resolve before the path-param route) and does not affect any existing endpoint.
 
 ---
 
-## 3. Scope-fence call-outs
+## SPEC.md diff
 
-`git diff --stat` (tracked files only):
+Four blocks:
 
-```
- src/pipeline/extraction/markitdown.py | 15 +++++++++++++++
- tests/test_extraction.py              | 16 ++++++++++++++++
- 2 files changed, 31 insertions(+)
-```
+1. **Top `/api/documents` parameter table** — added a `has_source_reference` row between `has_warnings` and `include`.
+2. **Querying documents → Filters table** — added a `has_source_reference` row between `has_warnings` and `include_deleted`.
+3. **Deleted** the Pass-1 disclaimer paragraph: `"Unknown filter keys are silently ignored by FastAPI's routing layer … future passes add stricter validation."`
+4. **Widened `total_count` semantics paragraph** to list `has_source_reference` alongside `tag` / `has_warnings`.
+5. **Appended** two new subsections before the `---` separator preceding `### GET /api/documents/{id}`:
+   - `### Aggregate — group-by summary`
+   - `### Schema — discovery endpoint`
 
-New untracked fixture:
-
-```
-tests/fixtures/nul_byte_sample.txt    (new, 381 bytes)
-```
-
-Explicitly untouched, per spec's DEFERRED list:
-
-- `src/pipeline/dedup.py` → untouched (no defense-in-depth strip in
-  storage layer; extraction is the choke point).
-- `src/pipeline/storage/pgvector.py` → untouched.
-- `src/pipeline/chunking/chunker.py` → untouched (strip upstream;
-  chunker sees clean text).
-- `client/` → untouched.
-- `skills/` → untouched.
-- `SPEC.md` → untouched (warning is a behavior detail, not a
-  surface-level contract change).
-
-`ExtractionResult` dataclass: **no new fields**. The existing
-`warnings: list[str]` carries the signal; no `stripped_bytes` field
-added.
-
-The `txt_decoded` branch and the `self._md.convert()` branch are
-**each untouched in isolation** — the new block sits strictly below
-their convergence point.
+Both new subsections are copied verbatim from the spec's 5b/5c blocks.
 
 ---
 
-## 4. Caveats / observations
+## New test file: `tests/test_routes_aggregate_and_schema.py`
 
-1. **Non-extraction write paths are not defended.** If a future code
-   path writes to `documents.markdown` or `documents.title` *without*
-   going through `MarkItDownExtractor.extract()`, Postgres will still
-   reject NULs. Today there is no such path — all ingest routes through
-   extraction → chunking → services. If a future feature (e.g. direct
-   API-level `PUT /documents/{id}` with caller-supplied markdown) lands,
-   it would need its own strip or a storage-layer defense. Candidate
-   for a new backlog item if/when that arrives; not filed in this pass
-   to avoid pre-emptive scope creep.
+14 tests, each with a single concern. Fixture pattern mirrors `test_routes_list_documents.py` exactly (`_Fixture` class, `_make_doc` helper, InMemoryDedupStore + InMemoryVectorStore).
 
-2. **Other control bytes (0x01–0x08, 0x0B, 0x0C, 0x0E–0x1F) pass
-   through unchanged.** Spec explicitly flagged this as out of scope.
-   Postgres TEXT accepts them; they may render ugly but won't crash
-   ingest. No opinion added to scope.
+```
+# ── aggregate ─────────────────────────────────────────────────────────
+test_aggregate_group_by_file_type_returns_counts
+test_aggregate_group_by_collection_respects_collection_filter
+test_aggregate_group_by_tags_splits_multi_tag_docs
+test_aggregate_group_by_tags_skips_no_tag_docs
+test_aggregate_has_warnings_filter_applies
+test_aggregate_has_source_reference_filter_applies
+test_aggregate_missing_group_by_returns_422
+test_aggregate_unknown_group_by_returns_400_with_valid_list
+test_aggregate_deterministic_sort_on_tie
+# ── schema ────────────────────────────────────────────────────────────
+test_schema_returns_all_registry_keys
+test_schema_filter_keys_match_registry
+test_schema_aggregatable_fields_match_aggregate_validator
+# ── unknown-query-param rejector ─────────────────────────────────────
+test_list_documents_unknown_query_param_returns_400
+test_aggregate_unknown_query_param_returns_400
+```
 
-3. **Smoke test revealed a pre-existing, orthogonal warning on this
-   fixture:** the LLM language validator votes `garbled=True` for the
-   NUL-sample in local test runs (no/limited API key, or the stripped
-   text triggered its threshold). This is unrelated to BL-17 and would
-   have been present on this fixture regardless. The new tests do not
-   depend on this behavior — they assert only on `"\x00" not in
-   result.markdown` and on NUL-warning substring presence/absence.
-
-4. **Count in the warning is `3` for the fixture.** Both `markdown`
-   and `title` are summed; for .txt files, `title` is `None` so the
-   `title` contribution is 0. Test 2 asserts the literal `"3"`
-   substring in the warning, which is robust to the exact phrasing
-   because the count is the only numeric token.
+Plus one test added to `test_routes_list_documents.py`:
+- `test_list_documents_has_source_reference_true` — asserts both `=true` and `=false` branches.
 
 ---
 
-## 5. Local smoke (one-shot, not committed)
-
-Ran via `python -c "..."` against the new fixture:
+## Pytest summary
 
 ```
-len(markdown): 378
-warnings: [
-  'Source contained 3 NUL (0x00) byte(s); stripped before storage. '
-  'NUL bytes are rejected by Postgres TEXT columns and have no meaning '
-  'in text content.',
-  'Encoding validation: text may be garbled'
-]
-NUL in output: False
-raw fixture NUL count: 3
+$ python -m pytest tests/ -q
+...
+220 passed, 3 skipped in 23.31s
 ```
 
-Observations:
-
-- Raw fixture on disk: 381 bytes, 3 NULs.
-- Extracted `markdown`: 378 chars, 0 NULs → exactly 3 bytes removed. ✓
-- Warning present, count matches, phrasing matches spec's exact
-  string. ✓
-- Second warning (`"text may be garbled"`) is the LLM language-
-  validator's verdict on this test fixture and is orthogonal to BL-17
-  (see caveat #3).
+**Count reconciliation:** spec predicted `219 passed` (205 baseline + 1 list_documents + 13 aggregate_and_schema). Actual is `220 passed` — the spec's step-6b enumerated 14 test cases but summed them as 13 in Step 7. 14 new tests in `test_routes_aggregate_and_schema.py` + 1 in `test_routes_list_documents.py` = 15 new, and 205 + 15 = 220. No existing test regressions; the 3 skips are the same pre-existing Postgres-path skips as before.
 
 ---
 
-## 6. Hand-off to Bob
+## Scope-fence call-outs for Bob
 
-Bob: please commit the three changes as one unit:
+- **No changes to `dedup.py`.** Aggregation is implemented at the route layer by calling the existing `list_documents` (PgDedupStore path) or iterating `_documents.values()` (InMemory path), mirroring the pattern already used by `/stats` and `/collections` in the same file.
+- **No changes to `services.py`.** Presentation logic only — no pipeline changes.
+- **No changes to the client library** (`client/ariadne_core_client/`). Pass 3.
+- **No changes to the skills directory.** Pass 3.
+- **No existing default-row field or Pass-1 filter was renamed or removed.** Strictly additive: `has_source_reference` is the only new `/documents` filter; `/aggregate` and `/schema` are new surfaces.
+- **`has_source_reference` is implemented as a post-query, route-level filter** via the `_has_source_reference` helper. This issues one `get_interactions` call per candidate document (N+1). This is deliberate Pass-2 pragmatism — a future pass with a batch-fetch method on `DedupStore` can collapse this to a single query. Flagged per spec.
+- **`tag` / `has_warnings` / `has_source_reference` remain post-query filters.** SQL-pushdown is explicitly deferred. `total_is_exact=false` surfaces the caveat to callers.
+- **`store_status` filter/group_by intentionally absent from the schema.** BL-19 made it vestigial (every row now has status=stored by construction). The schema's `deferred.store_status_filter` entry documents why.
+- **`agent_metadata.*` as `group_by` values intentionally absent.** Grouping by arbitrary JSON paths needs a Pg-side `jsonb_path_query_first` pattern and is its own pass. Documented in the schema's `deferred.agent_metadata_group_by` entry.
+- **Date range filters (`created_after` / `created_before`) intentionally absent.** Documented in the schema's `deferred.date_range_filters` entry.
+- **No tests for the 1000-bucket cap.** Per spec ("constructing 1001 unique file_types via seed data is wasteful"). The cap is a trivial `len(counter) > N → 400` guard; reviewer can spot-check it in `routes.py` around line 350.
 
-- `M src/pipeline/extraction/markitdown.py`
-- `M tests/test_extraction.py`
-- `A tests/fixtures/nul_byte_sample.txt`
+---
 
-Suggested commit subject: `Strip NUL bytes from extracted markdown (BL-17)`.
-Suggested body: summarize the Postgres TEXT NUL-rejection root cause,
-the 11 Phase-8 .txt failures that motivated it, the one-file fix at the
-extraction choke point, and the 3-test verification. Do **not** ping
-prod — per spec, the live validation (re-ingesting one of the 11 known-
-NUL sha1s against the deployed Railway service) is your post-deploy
-smoke after Denson triggers the deploy, not part of this PR.
+## Surprises / notes for Bob
+
+1. **Route ordering (already covered above)** — static `/documents/aggregate` and `/documents/schema` had to be registered before `/documents/{document_id}` to avoid path-param shadowing. Spec's Step 3 wording ("Add below the `list_documents` route") would have produced a broken endpoint; I deviated and documented above.
+
+2. **Test count +1 vs spec** — 220 vs predicted 219. This is the Step-6b enumeration listing 14 tests but summing to 13 in Step 7, not a regression or extra scope. The 14th test (either numbered #8 or #13/14 depending on how you split the aggregate-validator and unknown-param groups) is in the spec; the arithmetic is the discrepancy.
+
+3. **SPEC filter tables** — Pass 2 step 5 only explicitly called for the disclaimer deletion and the two new subsections, but the filter tables at the top of the `/api/documents` section and the "Querying documents" subsection now list every other filter and would drift if `has_source_reference` were left out. I added the row to both tables. This is in-scope (Pass 2 ships the filter) and keeps SPEC truthful about what's accepted — flagging in case Bob wants to revert one of them for style consistency.
+
+4. **`total_count` paragraph** — similarly widened to mention `has_source_reference` alongside `tag` and `has_warnings`. Same justification.
+
+5. **Pre-existing working-tree state** — `DAVE_DONE.md` (this file) was already `M` at session start from the BL-19 cycle. Rewriting it for Pass 2 is consistent with prior cycles. `phase_8_*.json/log` and `scripts/_probe_*`, `scripts/_phase_8_reingest*`, `scripts/_generate_encoding_fixtures.py` are all from earlier investigations and are not part of Pass 2's scope fence.
+
+6. **The spec's Step-0 pre-flight expected HEAD == origin/main == 2c9bace.** Confirmed: `git rev-parse HEAD` and `git rev-parse origin/main` both returned `2c9bace718208bfa625c420b128d6be8ad937870`. No unpushed commits.
+
+---
+
+## Hand-off
+
+Bob, when you pick this up:
+
+- Stage exactly these 4 paths:
+  - `src/pipeline/api/routes.py`
+  - `SPEC.md`
+  - `tests/test_routes_list_documents.py`
+  - `tests/test_routes_aggregate_and_schema.py`
+- Plus `DAVE_DONE.md` if the workflow includes it in the commit as in prior cycles.
+- Do not stage any `phase_8_*`, `scripts/_*`, or `dave_and_bob_communication/DAVE_QUERY_API_PASS_2.md` — those are artifacts.
+- Scope call-outs are all listed above; please spot-check the `tags` `total_documents` semantics in `test_aggregate_group_by_tags_splits_multi_tag_docs` (the distinct-doc-count vs. sum-of-buckets choice was called out in the spec as "subtle — flag in DAVE_DONE.md so Bob can spot-check").
+- Deploy-flow STOP applies as usual. No push until Sam greenlights.

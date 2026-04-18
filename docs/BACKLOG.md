@@ -147,6 +147,62 @@ Update the spec so future smoke runs don't trip on name mismatches.
 (Dave worked around these live each time — the workarounds should be
 the spec.)
 
+### BL-21 — Query API filters + include=agent_metadata are post-query / N+1
+
+`tag`, `has_warnings`, and `has_source_reference` are applied as
+route-level Python post-filters over the already-paginated page.
+Consequence: `total_count` is wrong whenever any of them is active
+(we return `len(page_docs)` and set `total_is_exact=false`). Separately,
+`include=agent_metadata` and `include=last_interaction` trigger an
+N+1 on `get_interactions` — one query per row returned. Both
+deliberately accepted for Pass 1/2 pragmatism; both want a single
+"push filters into SQL + batch-fetch interactions" pass.
+
+Fix direction: extend `PgDedupStore.list_documents` signature to
+accept the new filters and build a SQL WHERE clause; add a
+`get_latest_interactions_batch(doc_ids)` method returning a dict
+keyed by document_id. Both are moderate SQL work, no schema change.
+
+Blocker: none — ready to schedule. Good candidate for "Pass 2.5" or
+a dedicated server-performance pass after Pass 3 lands.
+
+### BL-22 — `has_warnings` filter is a no-op against Postgres
+
+`StoredDocument.warnings` is populated at ingest time (it's a field
+on the dataclass), but `_row_to_stored_document` in `dedup.py` never
+pulls warnings out of the database — because there's no `warnings`
+column on the `documents` table. So against Pg, every loaded
+`StoredDocument.warnings` is `[]`, and `?has_warnings=true` silently
+returns nothing. The filter still works correctly against the
+InMemoryDedupStore (where warnings live on the Python object), which
+is why unit tests pass.
+
+Fix direction: either add a `warnings TEXT[]` column to `documents`
+and persist on write + re-hydrate on read, OR persist warnings in
+the existing `metadata JSONB` column and project out on read. Column
+is cleaner for indexing; JSONB is zero-migration. Either way,
+Pass 1's `has_warnings` filter becomes real.
+
+Blocker: none — ready to schedule. Worth catching before the next
+corpus of >100 ingested docs lands if any operator expects to query
+by warnings.
+
+### BL-23 — `agent_metadata.*` as `group_by` / `has_*` filters
+
+The schema's `deferred` block names this explicitly. Useful queries
+("how many docs per source_reference prefix?") need grouping by a
+JSON path inside the latest interaction's `agent_metadata`. Pass 2
+only aggregates over columns (`collection`, `file_type`, `tags`).
+
+Fix direction: lateral-join the latest interaction per doc at the SQL
+level (already partly needed for BL-21's batch-fetch), then
+`jsonb_path_query_first` for the path. Start with two concrete
+group_by values (`agent_metadata.source_reference`,
+`agent_metadata.docty`) rather than a general JSON-path interface.
+
+Blocker: probably waits for BL-21's SQL refactor to avoid double-
+writing the latest-interaction subquery.
+
 ---
 
 ## Operator / infrastructure — user-driven
