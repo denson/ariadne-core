@@ -154,6 +154,7 @@ def _apply_migrations(pool) -> None:
             applied = {row[0] for row in cur.fetchall()}
 
         # Apply each unapplied migration in its own transaction.
+        newly_applied: list[str] = []
         for path in migration_files:
             version = path.name
             if version in applied:
@@ -170,6 +171,20 @@ def _apply_migrations(pool) -> None:
                     (version,),
                 )
                 conn.commit()
+            newly_applied.append(version)
+
+        # Post-loop summary — gives destructive-deploy observers a single
+        # grep-able line confirming the runner completed without error,
+        # even if individual "Applying migration ..." lines got lost in a
+        # log-tail window. Mirrors the legacy-branch summary above.
+        if newly_applied:
+            logger.info(
+                "Migrations applied: %d file(s): %s",
+                len(newly_applied),
+                ", ".join(newly_applied),
+            )
+        else:
+            logger.info("Migrations up to date — nothing to apply")
 
 
 def _ensure_schema(pool, dimensions: int) -> None:

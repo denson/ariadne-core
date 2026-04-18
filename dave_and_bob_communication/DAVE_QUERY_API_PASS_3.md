@@ -108,7 +108,7 @@ Also confirm the deployed server actually has Pass 2:
 
 ```
 curl -s -H "X-API-Key: $ARIADNE_API_KEY" \
-  https://ariadne-core-production.up.railway.app/api/documents/schema \
+  https://ariadne-core-production-579a.up.railway.app/api/documents/schema \
   | python -m json.tool
 ```
 
