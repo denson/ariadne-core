@@ -153,6 +153,14 @@ def _apply_migrations(pool) -> None:
                 cur.execute(sql)
                 conn.commit()
 
+            # Apply 005 (idempotent — uses IF NOT EXISTS)
+            migration_005 = Path("migrations/005_warnings_column.sql")
+            if migration_005.exists():
+                logger.info("Applying migration 005 (warnings column) if needed")
+                sql = migration_005.read_text(encoding="utf-8")
+                cur.execute(sql)
+                conn.commit()
+
 
 def _ensure_schema(pool, dimensions: int) -> None:
     """Validate and create/update the chunks table schema."""

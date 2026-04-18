@@ -204,6 +204,30 @@ see dave_and_bob_communication/BL24_SCHEMA_MOJIBAKE_ROOT_CAUSE.md.
 ASCII-only bodies so no mojibake risk. Address if/when error bodies gain
 non-ASCII content.
 
+### BL-25 — `docker-compose` `initdb.d` mount masks migration-runner gaps
+
+`docker-compose.yml` mounts `./migrations:/docker-entrypoint-initdb.d:ro`,
+so on a fresh `pgdata` volume Postgres applies every SQL file in
+`migrations/` at container init — *before* `_apply_migrations()` in
+`src/pipeline/stores.py` runs. That silently masks missing runner
+blocks locally: BL-22 shipped migration 005 but forgot to add the
+corresponding `_apply_migrations` block, and every local test (+ the
+fresh-Pg `down -v && up` cycle) still passed because the column had
+already been created by `initdb.d`. Production — Railway's managed
+Postgres, no `initdb.d` — 500'd on `d.warnings` missing until the
+runner block was added.
+
+Fix directions: (a) drop the `initdb.d` mount so local + prod both
+rely solely on the Python runner (requires `001_initial.sql` to be
+guaranteed present before first connect); (b) add a CI smoke that
+brings up a vanilla pg16 image (no `initdb.d`) and runs the runner
+end-to-end; (c) add a runner-completeness check that diffs
+`migrations/NNN_*.sql` filenames against the hard-coded blocks in
+`_apply_migrations` and fails startup if they drift.
+
+Blocker: none — ready to schedule. (c) is probably the cheapest,
+highest-leverage option.
+
 ---
 
 ## Operator / infrastructure — user-driven
