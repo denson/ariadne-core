@@ -489,17 +489,17 @@ async def get_document(
     return response
 
 
-# ── Query API registries (single source of truth for /schema) ───────────────
+# -- Query API registries (single source of truth for /schema) --------------
 
 _FILTER_REGISTRY: dict[str, str] = {
     "collection": "Exact match on collection name.",
-    "file_type": "Exact match (leading dot stripped — 'pdf' and '.pdf' both match).",
+    "file_type": "Exact match (leading dot stripped - 'pdf' and '.pdf' both match).",
     "tag": "Docs whose tag list contains this tag (single-value, OR-semantics across repeated calls).",
-    "has_warnings": "true → only docs with >=1 warning; false → only clean docs.",
+    "has_warnings": "true -> only docs with >=1 warning; false -> only clean docs.",
     "has_source_reference": (
-        "true → latest interaction's agent_metadata has a non-empty "
+        "true -> latest interaction's agent_metadata has a non-empty "
         "'source_reference' value that is not literally 'unknown'. "
-        "false → inverse."
+        "false -> inverse."
     ),
     "include_deleted": "Include soft-deleted docs (default false).",
 }
