@@ -9,7 +9,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from pipeline.api.auth import get_key_store, set_require_auth
 from pipeline.api.routes import router
@@ -92,5 +93,29 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Return structured error bodies for uncaught exceptions.
+
+    FastAPI's default 500 handler returns a bare "Internal Server Error"
+    that gives agents no signal. Surface the exception type and message
+    so the client can see what actually broke. HTTPException has its own
+    handler and is NOT affected by this — this only catches exceptions
+    that would otherwise bubble up as naked 500s.
+    """
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": {
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:2000],
+                "path": request.url.path,
+                "method": request.method,
+            }
+        },
+    )
+
 
 app.include_router(router, prefix="/api")

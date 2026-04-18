@@ -26,6 +26,8 @@ from ariadne_core_client.models import (
     Stats,
 )
 
+DEFAULT_INGEST_TIMEOUT = 600  # seconds — embedding a large doc can take 3-5 min
+
 
 class AriadneClient:
     """Python client for an Ariadne Core server."""
@@ -211,6 +213,7 @@ class AriadneClient:
         agent_metadata: dict[str, Any] | None,
         chunking_config: dict[str, Any] | None,
         force: bool,
+        timeout: int | None = None,
     ) -> Document:
         body: dict[str, Any] = {
             "uri": uri,
@@ -227,12 +230,15 @@ class AriadneClient:
                 agent_metadata=agent_metadata,
             )
         )
+        effective_timeout = (
+            timeout if timeout is not None else max(self.timeout, DEFAULT_INGEST_TIMEOUT)
+        )
         response = _http.json_request(
             "POST",
             self._endpoint("/api/documents"),
             headers=self._headers(),
             json_body=body,
-            timeout=self.timeout,
+            timeout=effective_timeout,
         )
         if not isinstance(response, dict):
             raise AriadneClientError(
@@ -269,6 +275,7 @@ class AriadneClient:
         agent_metadata: dict[str, Any] | None = None,
         chunking_config: dict[str, Any] | None = None,
         force: bool = False,
+        timeout: int | None = None,
     ) -> Document:
         effective_source = source if source is not None else url
         merged_metadata = self._handle_source(effective_source, agent_metadata)
@@ -280,6 +287,7 @@ class AriadneClient:
             agent_metadata=merged_metadata,
             chunking_config=chunking_config,
             force=force,
+            timeout=timeout,
         )
 
     def ingest_file(
@@ -293,6 +301,7 @@ class AriadneClient:
         agent_metadata: dict[str, Any] | None = None,
         chunking_config: dict[str, Any] | None = None,
         force: bool = False,
+        timeout: int | None = None,
     ) -> Document:
         local_path = Path(path)
         if not local_path.is_file():
@@ -307,6 +316,7 @@ class AriadneClient:
             agent_metadata=merged_metadata,
             chunking_config=chunking_config,
             force=force,
+            timeout=timeout,
         )
 
     def ingest_bytes(
@@ -321,6 +331,7 @@ class AriadneClient:
         agent_metadata: dict[str, Any] | None = None,
         chunking_config: dict[str, Any] | None = None,
         force: bool = False,
+        timeout: int | None = None,
     ) -> Document:
         if not isinstance(content, (bytes, bytearray)):
             raise AriadneClientError("ingest_bytes requires bytes content")
@@ -338,6 +349,7 @@ class AriadneClient:
             agent_metadata=merged_metadata,
             chunking_config=chunking_config,
             force=force,
+            timeout=timeout,
         )
 
     def search(

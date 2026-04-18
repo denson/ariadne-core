@@ -179,6 +179,70 @@ is resolved in BL-5a/5.5. Do not touch without a planning pass.
 
 ---
 
+## Phase 8 post-mortem — deferred items
+
+### BL-17 — NUL-byte `psycopg.DataError` on MarkItDown output
+
+**Priority. Denson wants to get to this soon.**
+
+Phase 8 V2 hit 11 files (of 574) where MarkItDown-extracted text
+contained NUL (`0x00`) bytes, causing `psycopg.DataError: PostgreSQL
+text fields cannot contain NUL (0x00) bytes` on insert and a naked
+HTTP 500 to the client. Confirmed via Railway logs — 11-for-11 match
+with Dave's 11 × HTTP 500 indices.
+
+Fix direction: strip `\x00` from the MarkItDown-converted Markdown
+(and any other text fields destined for Postgres) before handing the
+document to `_process_single_document`. Probably in
+`pipeline/extraction/markitdown.py` or a narrow post-processing step
+in `pipeline/extraction/text_encoding.py`.
+
+Out-of-scope alternatives to consider before fixing:
+- Whether `\x00` is ever meaningful in downstream chunks (almost
+  certainly not — pgvector, embeddings, and search all choke on it).
+- Whether the strip should be lossy (drop byte) or marked (replace
+  with `\ufffd`). Lossy is probably correct for pg-text destinations;
+  no agent will ever query for a NUL byte.
+
+**Blocker:** none. Ready to schedule.
+
+### BL-19 — `store_status="error"` writes a metadata-only documents row
+
+**Priority. Denson wants to get to this soon.**
+
+When embedding fails mid-ingest, `_process_single_document` still
+writes a `documents` row but skips the `chunks` / vectors inserts.
+The row is then invisible to search (no chunks) but visible to
+`list_documents` and `/api/stats` (inflates counts). Example from
+Phase 8 V2: 1 errored 429-slip file → 1 orphan row → `stats` reported
+561 for `world-bank-ree` vs 558 genuine stored + 2 timeout-but-landed.
+
+Fix direction: two options.
+(a) Do NOT write the `documents` row when the embed step fails —
+    treat ingest as transactional; either everything lands or
+    nothing does. Cleanest semantically; might need a rollback on
+    the documents insert.
+(b) Add a `status` column to `documents` (values like `stored`,
+    `embed_failed`, `partial`) and filter on `status = 'stored'` in
+    `list_documents` / `stats` / `search`. More invasive, but
+    preserves the forensic trail for operators debugging failures.
+
+Denson's call on (a) vs (b) is the blocker.
+
+**Blocker:** (a) vs (b) product decision.
+
+### BL-20 — `/api/stats` counts orphan rows as documents
+
+Subsumed by BL-19. When BL-19 lands, `list_documents` / `stats`
+naturally stop counting orphan rows (either because they don't exist
+anymore — option a — or because they're filtered by status — option
+b). No standalone fix needed; left here as a pointer so anyone
+reading "stats shows the wrong count" finds the right issue.
+
+**Blocker:** BL-19.
+
+---
+
 ## Explicitly NOT backlog — leave as-is
 
 The following files contain stale refs but are historical artifacts
