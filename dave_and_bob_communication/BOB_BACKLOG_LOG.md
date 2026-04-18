@@ -1,3 +1,45 @@
+# BOB — Create `docs/BACKLOG.md` deferred-work log
+
+Pure-doc commit. Create one new file at `docs/BACKLOG.md` with the
+exact content in Step 1 below, then commit and push. No source edits,
+no other files.
+
+**Why this exists:** across Phase 7 and the subsequent backlog sweep we
+accumulated a dozen "we've explicitly decided to defer this" items with
+no canonical home. They've been living in chat, in `DAVE_DONE.md`
+reports, and in Sam's head. Pattern-level lesson: if the next phase
+overlooks cruft it's because the cruft isn't written down anywhere
+the next agent will read. `docs/BACKLOG.md` is the fix — a single file
+future agents can grep for the list of known-deferred work.
+
+---
+
+## Step 0 — pre-flight
+
+```
+git status --short
+git rev-parse HEAD
+git rev-parse origin/main
+```
+
+**Expected:**
+- `HEAD` and `origin/main` both at `9095b18`
+- Modified/staged: nothing
+- Untracked: only the 4 helper scripts
+  - `scripts/_generate_encoding_fixtures.py`
+  - `scripts/_probe_embedder.py`
+  - `scripts/_probe_text_encoding.py`
+  - `scripts/_probe_vision.py`
+
+If anything else is present, **stop and report**.
+
+---
+
+## Step 1 — write `docs/BACKLOG.md`
+
+Create the file with **exactly** this content (a here-doc is easiest):
+
+```markdown
 # Backlog
 
 Work that has been explicitly deferred — not forgotten, not out of
@@ -179,40 +221,6 @@ is resolved in BL-5a/5.5. Do not touch without a planning pass.
 
 ---
 
-## Phase 8 post-mortem — deferred items
-
-### BL-17 — NUL-byte `psycopg.DataError` on MarkItDown output — RESOLVED
-
-Resolved in this commit. `MarkItDownExtractor.extract()` now strips
-`\x00` bytes from `markdown` and `title` at the extraction output
-convergence point and emits a warning with the stripped count. All
-downstream layers (chunking, dedup, storage) therefore never see
-NULs. Re-ingest of the 11 known-NUL-byte Phase 8 sha1s is expected
-to succeed after deploy.
-
-### BL-19 — `store_status="error"` writes a metadata-only documents row — RESOLVED
-
-Resolved in `2e22153`. `_process_single_document` now attempts
-embed BEFORE any documents-row write. On embed failure the function
-returns an error dict (HTTP 422 at the route) and no documents row,
-chunks, vectors, or interaction are written. Ingest is transactional:
-either everything lands or nothing does. Closes the BL-20 stats-
-count drift as a side effect (no orphan rows to count).
-
-Note: this is a client-visible change — embed-fail responses are now
-HTTP 422 instead of HTTP 200 with `store_status="error"`. Existing
-callers that wrap ingest calls in try/except continue to work; any
-caller relying on the 200 shape needs to move handling into the
-except branch.
-
-### BL-20 — `/api/stats` counts orphan rows as documents — RESOLVED
-
-Resolved by BL-19 in `2e22153`. Orphan rows no longer exist, so
-stats and list_documents naturally return correct counts. No
-standalone fix was needed.
-
----
-
 ## Explicitly NOT backlog — leave as-is
 
 The following files contain stale refs but are historical artifacts
@@ -240,3 +248,80 @@ per the Backlog-4 precedent. Do not sweep them:
 - If you're adding a new deferred item, place it under the right
   section and assign the next BL-* number. The number is permanent;
   don't reuse retired numbers.
+```
+
+---
+
+## Step 2 — stage, commit, push
+
+```
+git add docs/BACKLOG.md
+git status --short
+```
+
+Expected: one staged file (`A  docs/BACKLOG.md`), nothing else. The 4
+helper scripts remain `??`.
+
+```
+git commit -m "$(cat <<'EOF'
+Add docs/BACKLOG.md as the canonical deferred-work log
+
+Across Phase 7 and the post-migration backlog sweep we accumulated a
+dozen explicitly-deferred items. They were living in chat, in
+DAVE_DONE.md reports, and in the user's head. The "how did we
+overlook cruft" process failure from earlier in Phase 7 is partly
+because there was no canonical file where deferred items lived --
+the next agent had no way to grep for them.
+
+docs/BACKLOG.md is that file. Entries cover:
+
+- BL-5a: Tier-2 doc scrub (README, docint-architecture, scripts/setup.py)
+  blocked on provider-framing decision
+- BL-5.5: Onboarding redesign planning session (walkthrough skill,
+  walkthrough_html, .claude/ vs plugin skill drift, client-install flow)
+- BL-8: /api/health false positive
+- BL-9: Railway auto-deploy diagnostic (user task)
+- BL-10: ariadne-core serve console-script install failure
+- BL-11: Roadmap docs scrub (guardrailed)
+- BL-12: Spurious VISION_API_KEY warning on standalone images
+- BL-13: image_enrichment.images_processed counter semantics
+- BL-14: _generate_encoding_fixtures.py Windows cp1252 crash
+- BL-15: DAVE_PHASE_7_5_SMOKE_TEST.md method-name drift
+
+Also documents the "explicitly NOT backlog" list (historical artifacts
+that stay frozen per the Backlog-4 precedent) so future agents do not
+spend cycles re-proposing their removal.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+EOF
+)"
+git push origin main
+git log -1 --oneline
+git rev-parse origin/main
+git status --short
+```
+
+Final `git status --short`: only the 4 helper scripts as `??`.
+
+---
+
+## Report back
+
+- Step 0 output
+- Step 1 confirmation that `docs/BACKLOG.md` was written verbatim (you
+  can `diff` against the spec above if paranoid; otherwise just
+  confirm word-count roughly matches — the file is ~180 lines)
+- Stage-list `git status --short`
+- New commit SHA
+- `origin/main` confirmation
+- Final `git status --short`
+
+---
+
+## Do NOT
+
+- Edit any other file
+- Stage any helper script
+- Edit the content of `docs/BACKLOG.md` — if something looks wrong,
+  stop and report rather than "improving" it
+- Skip the trailing newline at the end of the file (conventional)

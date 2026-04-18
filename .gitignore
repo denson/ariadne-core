@@ -38,7 +38,3 @@ walkthrough_html/two_token_economies.png
 .claude.json
 .mcp.json
 
-# Agent communication (prompts, reviews, handoffs between Dave and Bob)
-dave_and_bob_communication/
-!dave_and_bob_communication/DAVE_DONE.md
-!dave_and_bob_communication/BOB_REVIEW.md

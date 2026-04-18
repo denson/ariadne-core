@@ -264,15 +264,53 @@ def _process_single_document(
         tags=tags,
         warnings=warnings,
     )
-    was_resurrected = _dedup_store.store_document(stored_doc)
-    doc_id = stored_doc.document_id
 
-    if was_resurrected:
-        warnings.append(
-            "This document was previously soft-deleted and has been "
-            "resurrected by re-ingest. Its deletion_scheduled_at has "
-            "been cleared."
+    # BL-19 transactional ingest: chunk + embed BEFORE any Postgres write.
+    # On embed failure we bail here — no documents row, no chunks, no
+    # vectors, no interaction are written.
+    chunks: list[Chunk] = []
+    if store:
+        chunk_cfg = None
+        if chunking_config:
+            chunk_cfg = ChunkingConfig(**chunking_config)
+
+        chunks = chunk_document(
+            markdown=markdown,
+            document_id=result.document_id,
+            collection_id=collection,
+            file_type=result.file_type,
+            config=chunk_cfg,
         )
+
+        if _embedding_client.enabled and chunks:
+            try:
+                texts = [c.text for c in chunks]
+                embed_result = _embedding_client.embed_texts(texts)
+                for chunk, embedding in zip(chunks, embed_result.embeddings):
+                    chunk.embedding = embedding
+                    chunk.embedding_model = _embedding_client.model
+                processing_chain.append(embed_result.processing_chain_entry)
+            except RuntimeError as e:
+                return {
+                    "error": True,
+                    "message": f"Embedding failed: {e}",
+                    "document_id": None,
+                    "source_file": result.source_file,
+                    "collection": collection,
+                    "store_status": "error",
+                    "chunks_count": 0,
+                    "warnings": warnings + [f"Embedding failed: {e}"],
+                }
+
+    if store:
+        was_resurrected = _dedup_store.store_document(stored_doc)
+        if was_resurrected:
+            warnings.append(
+                "This document was previously soft-deleted and has been "
+                "resurrected by re-ingest. Its deletion_scheduled_at has "
+                "been cleared."
+            )
+    doc_id = stored_doc.document_id
 
     # Warn when key metadata conventions aren't followed
     if collection == "default":
@@ -336,66 +374,35 @@ def _process_single_document(
         response["markdown"] = markdown
 
     if store:
-        chunk_cfg = None
-        if chunking_config:
-            chunk_cfg = ChunkingConfig(**chunking_config)
-
-        chunks = chunk_document(
-            markdown=markdown,
-            document_id=doc_id,
-            collection_id=collection,
-            file_type=result.file_type,
-            config=chunk_cfg,
-        )
-
+        if force:
+            _vector_store.delete_by_document(doc_id)
+        _vector_store.insert(chunks)
         response["chunks_count"] = len(chunks)
+        response["embedding_model"] = (
+            _embedding_client.model if _embedding_client.enabled else None
+        )
+        response["store_status"] = "stored"
 
-        embedding_failed = False
-        if _embedding_client.enabled and chunks:
-            try:
-                texts = [c.text for c in chunks]
-                embed_result = _embedding_client.embed_texts(texts)
-                for chunk, embedding in zip(chunks, embed_result.embeddings):
-                    chunk.embedding = embedding
-                    chunk.embedding_model = _embedding_client.model
-                processing_chain.append(embed_result.processing_chain_entry)
-                response["embedding_model"] = _embedding_client.model
-            except RuntimeError as e:
-                response.setdefault("warnings", []).append(
-                    f"Embedding failed: {e}"
-                )
-                embedding_failed = True
-
-        if chunks and not embedding_failed:
-            if force:
-                _vector_store.delete_by_document(doc_id)
-            _vector_store.insert(chunks)
-
-        if embedding_failed:
-            response["store_status"] = "error"
-            response["chunks_count"] = 0
-        else:
-            response["store_status"] = "stored"
-        response["provenance"]["processing_chain"] = processing_chain
+        # Record interaction AFTER all processing (SPEC pipeline step 7).
+        # Under BL-19 transactional ingest this only runs on the success
+        # path — store=False and embed-fail both skip the interaction row.
+        _dedup_store.record_interaction(
+            DocumentInteraction(
+                document_id=doc_id,
+                collection_id=collection,
+                agent_id=agent_id,
+                agent_type=agent_type,
+                model=model,
+                initiated_by=initiated_by,
+                agent_notes=agent_notes,
+                agent_metadata=agent_metadata,
+                action=action,
+                was_dedup_skip=False,
+            )
+        )
     else:
         response["store_status"] = "not_stored"
         response["chunks_count"] = 0
-
-    # Record interaction AFTER all processing (SPEC pipeline step 7)
-    _dedup_store.record_interaction(
-        DocumentInteraction(
-            document_id=doc_id,
-            collection_id=collection,
-            agent_id=agent_id,
-            agent_type=agent_type,
-            model=model,
-            initiated_by=initiated_by,
-            agent_notes=agent_notes,
-            agent_metadata=agent_metadata,
-            action=action,
-            was_dedup_skip=False,
-        )
-    )
 
     return response
 

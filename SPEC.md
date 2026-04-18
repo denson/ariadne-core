@@ -311,7 +311,7 @@ Common HTTP status codes:
 - `404` — Document or collection not found
 - `410` — Soft-delete window expired (restore too late)
 - `413` — File too large
-- `422` — Extraction failed (encoding error, unsupported format, corrupt file)
+- `422` — Extraction failed (encoding error, unsupported format, corrupt file), OR embedding failed (transient provider error). Ingest is transactional: on a 422 no document row is written.
 - `503` — Embedding not configured (search endpoint only)
 
 ---
