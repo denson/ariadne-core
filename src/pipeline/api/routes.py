@@ -438,6 +438,7 @@ async def get_document(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    warnings = list(doc.warnings) if doc.warnings else []
     response: dict[str, Any] = {
         "document_id": doc.document_id,
         "source_file": doc.source_file,
@@ -451,6 +452,8 @@ async def get_document(
         "collection": doc.collection_id,
         "tags": doc.tags,
         "processing_chain": doc.processing_chain,
+        "warnings": warnings,
+        "warnings_count": len(warnings),
         "content_markdown": doc.markdown,
     }
 
