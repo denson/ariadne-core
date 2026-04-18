@@ -181,30 +181,14 @@ is resolved in BL-5a/5.5. Do not touch without a planning pass.
 
 ## Phase 8 post-mortem — deferred items
 
-### BL-17 — NUL-byte `psycopg.DataError` on MarkItDown output
+### BL-17 — NUL-byte `psycopg.DataError` on MarkItDown output — RESOLVED
 
-**Priority. Denson wants to get to this soon.**
-
-Phase 8 V2 hit 11 files (of 574) where MarkItDown-extracted text
-contained NUL (`0x00`) bytes, causing `psycopg.DataError: PostgreSQL
-text fields cannot contain NUL (0x00) bytes` on insert and a naked
-HTTP 500 to the client. Confirmed via Railway logs — 11-for-11 match
-with Dave's 11 × HTTP 500 indices.
-
-Fix direction: strip `\x00` from the MarkItDown-converted Markdown
-(and any other text fields destined for Postgres) before handing the
-document to `_process_single_document`. Probably in
-`pipeline/extraction/markitdown.py` or a narrow post-processing step
-in `pipeline/extraction/text_encoding.py`.
-
-Out-of-scope alternatives to consider before fixing:
-- Whether `\x00` is ever meaningful in downstream chunks (almost
-  certainly not — pgvector, embeddings, and search all choke on it).
-- Whether the strip should be lossy (drop byte) or marked (replace
-  with `\ufffd`). Lossy is probably correct for pg-text destinations;
-  no agent will ever query for a NUL byte.
-
-**Blocker:** none. Ready to schedule.
+Resolved in this commit. `MarkItDownExtractor.extract()` now strips
+`\x00` bytes from `markdown` and `title` at the extraction output
+convergence point and emits a warning with the stripped count. All
+downstream layers (chunking, dedup, storage) therefore never see
+NULs. Re-ingest of the 11 known-NUL-byte Phase 8 sha1s is expected
+to succeed after deploy.
 
 ### BL-19 — `store_status="error"` writes a metadata-only documents row
 

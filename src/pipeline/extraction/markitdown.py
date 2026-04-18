@@ -125,6 +125,21 @@ class MarkItDownExtractor:
                     except OSError:
                         pass
 
+        # Strip NUL (0x00) bytes. Postgres TEXT columns reject NUL; nothing
+        # downstream benefits from a literal 0x00 in the content, so delete
+        # them outright (lossy but semantically a no-op for text corpora).
+        # Warn so the caller knows the source wasn't clean.
+        nul_count = markdown.count("\x00") + (title.count("\x00") if title else 0)
+        if nul_count:
+            markdown = markdown.replace("\x00", "")
+            if title:
+                title = title.replace("\x00", "")
+            warnings.append(
+                f"Source contained {nul_count} NUL (0x00) byte(s); stripped "
+                "before storage. NUL bytes are rejected by Postgres TEXT "
+                "columns and have no meaning in text content."
+            )
+
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         output_tokens = _estimate_tokens(markdown)
 

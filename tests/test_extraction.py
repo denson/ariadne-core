@@ -85,6 +85,22 @@ class TestMarkItDownExtractor:
         # The key assertion is that it doesn't crash and returns a result.
         assert isinstance(result.markdown, str)
 
+    def test_nul_bytes_stripped_from_markdown(self):
+        result = self.extractor.extract(str(FIXTURES / "nul_byte_sample.txt"))
+        assert "\x00" not in result.markdown
+
+    def test_nul_bytes_produce_warning(self):
+        result = self.extractor.extract(str(FIXTURES / "nul_byte_sample.txt"))
+        assert any(
+            ("NUL" in w or "0x00" in w) and "3" in w for w in result.warnings
+        ), f"Expected NUL-strip warning with count, got: {result.warnings}"
+
+    def test_clean_txt_no_nul_warning(self):
+        result = self.extractor.extract(str(FIXTURES / "sample.txt"))
+        assert not any(
+            "NUL" in w or "0x00" in w for w in result.warnings
+        ), f"No NUL warning expected on clean file, got: {result.warnings}"
+
 
 def test_encoding_detection_gate_overrides_llm_on_low_byte_confidence(
     tmp_path, monkeypatch
