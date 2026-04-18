@@ -192,7 +192,7 @@ to succeed after deploy.
 
 ### BL-19 — `store_status="error"` writes a metadata-only documents row — RESOLVED
 
-Resolved in `2e22153`. `_process_single_document` now attempts
+Resolved in `5b91150`. `_process_single_document` now attempts
 embed BEFORE any documents-row write. On embed failure the function
 returns an error dict (HTTP 422 at the route) and no documents row,
 chunks, vectors, or interaction are written. Ingest is transactional:
@@ -207,7 +207,7 @@ except branch.
 
 ### BL-20 — `/api/stats` counts orphan rows as documents — RESOLVED
 
-Resolved by BL-19 in `2e22153`. Orphan rows no longer exist, so
+Resolved by BL-19 in `5b91150`. Orphan rows no longer exist, so
 stats and list_documents naturally return correct counts. No
 standalone fix was needed.
 
