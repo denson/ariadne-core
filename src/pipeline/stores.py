@@ -73,92 +73,102 @@ def _get_or_create_pool(database_url: str):
 
 
 def _apply_migrations(pool) -> None:
-    """Apply all pending migrations on startup.
+    """Apply any pending migrations in migrations/*.sql.
 
-    Checks if the documents table exists (from 001_initial.sql). If not,
-    applies it automatically. Then applies subsequent migrations which are
-    all idempotent.
+    Uses a schema_migrations tracking table to record which migrations
+    have been applied to this database. Each migration file runs exactly
+    once, in filename-sorted order. The filesystem is the source of
+    truth for "what migrations exist"; the tracking table is the source
+    of truth for "what has been applied to this database".
+
+    Bootstrap behavior:
+      - Fresh database (no 'documents' table, no 'schema_migrations'):
+          creates schema_migrations, loops through every migration file
+          in order and applies each.
+      - Legacy database (pre-existing 'documents' table but no
+          'schema_migrations'): this is the pre-BL-25 state on Railway.
+          We backfill by recording every current migration file as
+          applied *without re-running the SQL*, since the state is
+          already correct.
+      - Post-bootstrap database (schema_migrations populated): loops
+          through migration files, skips any version already in the
+          table, applies any that aren't.
     """
     from pathlib import Path
 
+    migrations_dir = Path("migrations")
+    migration_files = sorted(migrations_dir.glob("*.sql"))
+
+    if not migration_files:
+        logger.warning("No migration files found in %s", migrations_dir)
+        return
+
     with pool.connection() as conn:
         with conn.cursor() as cur:
-            # Check if base schema exists
+            # Create the tracking table if it doesn't exist. This is the
+            # runner's own metadata — deliberately not itself a migration
+            # file, since migrations depend on it existing.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version TEXT PRIMARY KEY,
+                    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            conn.commit()
+
+            # Decide whether to backfill (legacy) or loop (fresh /
+            # post-bootstrap). Legacy detection: schema_migrations is
+            # empty but 'documents' already exists.
+            cur.execute("SELECT COUNT(*) FROM schema_migrations;")
+            tracking_count = cur.fetchone()[0]
+
             cur.execute(
                 "SELECT EXISTS ("
                 "  SELECT 1 FROM information_schema.tables"
                 "  WHERE table_name = 'documents'"
                 ");"
             )
-            if not cur.fetchone()[0]:
-                # Apply initial migration
-                migration_001 = Path("migrations/001_initial.sql")
-                if migration_001.exists():
-                    logger.info("Applying migration 001 (initial schema)")
-                    sql = migration_001.read_text(encoding="utf-8")
-                    cur.execute(sql)
-                    conn.commit()
-                else:
-                    raise RuntimeError(
-                        "Database schema not found and migrations/001_initial.sql "
-                        "is missing. Cannot initialize database."
-                    )
+            documents_exists = cur.fetchone()[0]
 
-            # Apply 002 (idempotent — uses IF NOT EXISTS / IF EXISTS checks)
-            migration_002 = Path("migrations/002_add_agent_notes.sql")
-
-            if migration_002.exists():
-                logger.info("Applying migration 002 (agent_notes) if needed")
-                sql = migration_002.read_text(encoding="utf-8")
-                cur.execute(sql)
-                conn.commit()
-            else:
-                # Apply inline (the migration is small and idempotent)
-                cur.execute(
-                    "ALTER TABLE document_interactions "
-                    "ADD COLUMN IF NOT EXISTS agent_notes TEXT;"
+            if tracking_count == 0 and documents_exists:
+                # Legacy DB — every current migration file has been applied
+                # via the old hardcoded runner. Record them without re-running.
+                versions = [p.name for p in migration_files]
+                logger.info(
+                    "Legacy database detected — backfilling "
+                    "schema_migrations with %d version(s): %s",
+                    len(versions),
+                    ", ".join(versions),
                 )
-                cur.execute("""
-                    DO $$
-                    BEGIN
-                        IF EXISTS (
-                            SELECT 1 FROM information_schema.columns
-                            WHERE table_name = 'document_interactions'
-                              AND column_name = 'metadata'
-                        ) AND NOT EXISTS (
-                            SELECT 1 FROM information_schema.columns
-                            WHERE table_name = 'document_interactions'
-                              AND column_name = 'agent_metadata'
-                        ) THEN
-                            ALTER TABLE document_interactions
-                                RENAME COLUMN metadata TO agent_metadata;
-                        END IF;
-                    END $$;
-                """)
+                for version in versions:
+                    cur.execute(
+                        "INSERT INTO schema_migrations (version) "
+                        "VALUES (%s) ON CONFLICT (version) DO NOTHING;",
+                        (version,),
+                    )
                 conn.commit()
+                return
 
-            # Apply 003 (idempotent — uses IF NOT EXISTS)
-            migration_003 = Path("migrations/003_search_log.sql")
-            if migration_003.exists():
-                logger.info("Applying migration 003 (search_log) if needed")
-                sql = migration_003.read_text(encoding="utf-8")
-                cur.execute(sql)
-                conn.commit()
+            # Normal path: apply any unapplied migrations.
+            cur.execute("SELECT version FROM schema_migrations;")
+            applied = {row[0] for row in cur.fetchall()}
 
-            # Apply 004 (idempotent — uses IF NOT EXISTS)
-            migration_004 = Path("migrations/004_soft_delete.sql")
-            if migration_004.exists():
-                logger.info("Applying migration 004 (soft_delete) if needed")
-                sql = migration_004.read_text(encoding="utf-8")
-                cur.execute(sql)
-                conn.commit()
+        # Apply each unapplied migration in its own transaction.
+        for path in migration_files:
+            version = path.name
+            if version in applied:
+                logger.debug("Migration %s already applied, skipping", version)
+                continue
 
-            # Apply 005 (idempotent — uses IF NOT EXISTS)
-            migration_005 = Path("migrations/005_warnings_column.sql")
-            if migration_005.exists():
-                logger.info("Applying migration 005 (warnings column) if needed")
-                sql = migration_005.read_text(encoding="utf-8")
+            logger.info("Applying migration %s", version)
+            sql = path.read_text(encoding="utf-8")
+
+            with conn.cursor() as cur:
                 cur.execute(sql)
+                cur.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (%s);",
+                    (version,),
+                )
                 conn.commit()
 
 

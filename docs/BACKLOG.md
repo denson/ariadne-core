@@ -204,29 +204,26 @@ see dave_and_bob_communication/BL24_SCHEMA_MOJIBAKE_ROOT_CAUSE.md.
 ASCII-only bodies so no mojibake risk. Address if/when error bodies gain
 non-ASCII content.
 
-### BL-25 — `docker-compose` `initdb.d` mount masks migration-runner gaps
+### BL-25 — Migration runner rewritten to dynamic discovery + tracking table — RESOLVED
 
-`docker-compose.yml` mounts `./migrations:/docker-entrypoint-initdb.d:ro`,
-so on a fresh `pgdata` volume Postgres applies every SQL file in
-`migrations/` at container init — *before* `_apply_migrations()` in
-`src/pipeline/stores.py` runs. That silently masks missing runner
-blocks locally: BL-22 shipped migration 005 but forgot to add the
-corresponding `_apply_migrations` block, and every local test (+ the
-fresh-Pg `down -v && up` cycle) still passed because the column had
-already been created by `initdb.d`. Production — Railway's managed
-Postgres, no `initdb.d` — 500'd on `d.warnings` missing until the
-runner block was added.
+Resolved in this commit. `_apply_migrations` in `src/pipeline/stores.py`
+now discovers `migrations/*.sql` dynamically and records applied
+versions in a `schema_migrations` tracking table. The hardcoded per-file
+if-ladder is gone. Dropping a new SQL file in `migrations/` is the only
+step required to add a migration — the runner picks it up on next boot.
 
-Fix directions: (a) drop the `initdb.d` mount so local + prod both
-rely solely on the Python runner (requires `001_initial.sql` to be
-guaranteed present before first connect); (b) add a CI smoke that
-brings up a vanilla pg16 image (no `initdb.d`) and runs the runner
-end-to-end; (c) add a runner-completeness check that diffs
-`migrations/NNN_*.sql` filenames against the hard-coded blocks in
-`_apply_migrations` and fails startup if they drift.
+Root cause of the BL-22 regression: the hardcoded ladder required an
+explicit block per migration file, so a spec that forgot to mention the
+runner wire-up (BL-22's did) shipped a dead SQL file to prod. The new
+runner removes the class of failure.
 
-Blocker: none — ready to schedule. (c) is probably the cheapest,
-highest-leverage option.
+Legacy-database backfill handles the one-time migration from the old
+runner to the new one: if `schema_migrations` is empty but `documents`
+already exists, every current migration file is recorded as applied
+without re-running its SQL.
+
+See `dave_and_bob_communication/DAVE_BL25_MIGRATION_RUNNER.md` for
+design notes and test coverage.
 
 ---
 
