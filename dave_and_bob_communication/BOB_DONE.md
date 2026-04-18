@@ -1,238 +1,118 @@
-# BOB_DONE — Query API Pass 2
+# BOB_DONE — Query API Pass 3 review + smoke
 
-**Status:** COMMITTED + PUSHED + DEPLOYED + SMOKED
-**Commit SHA:** `0e955c1`
-**Parent:** `2c9bace` (BL-19 SHA backfill)
-**Branch:** `main` on `origin`
+**Status:** REVIEWED + SMOKED (PASS)
+**Reviewed commit:** `01489e1` — *Query API Pass 3: client + skill catch-up* (on `main`)
+**Parent:** `c5903a3` (BL-25 migration runner rewrite)
+**Live server:** `https://ariadne-core-production-579a.up.railway.app` (post-redeploy 2026-04-18)
+**Scope per spec:** client + skill + one new test file. **No server / SPEC.md / CLI changes.**
 
 ---
 
-## Review gate
+## Review gate — Dave's diff vs. spec fences
 
 | Check | Result |
 |---|---|
-| Scope fences (`dedup.py`, `services.py`, `client/`, `skills/`, `migrations/`) | untouched |
-| `_VALID_INCLUDES` / `_LIST_DOCUMENTS_PARAMS` / `_AGGREGATE_PARAMS` derived from registries | yes |
-| `/schema` response serializes `dict(_FILTER_REGISTRY)` etc. | yes — no literal duplication |
-| Route order: `/aggregate` (271) and `/schema` (392) before `/{document_id}` (429) | yes |
-| `_has_source_reference` helper safe on None / non-dict / non-str / `"unknown"` / whitespace | yes |
-| Aggregate sort: count DESC, group ASC | yes |
-| Aggregate `total_documents`: distinct-doc for tags, sum otherwise | yes |
-| SPEC.md additive apart from Pass-1 disclaimer deletion | yes |
-| BL-21 / BL-22 / BL-23 added to BACKLOG.md between BL-15 and BL-9 | yes |
-| Pytest: **220 passed, 3 skipped** (205 baseline + 15 new) | matches spec prediction exactly |
-| Staged: 8 paths (6 source/spec/test/backlog + root `DAVE_DONE.md` + 2 comm specs) | yes |
+| Only `client/src/ariadne_core_client/{client,models}.py`, `client/tests/test_query_api_pass3.py`, `skills/ariadne-document-intelligence/SKILL.md`, `dave_and_bob_communication/DAVE_*.md` touched | ✅ (+826-line hand-off doc, spec'd) |
+| Server code (`src/pipeline/api/**`, `dedup.py`, `services.py`) untouched | ✅ |
+| `SPEC.md`, `migrations/`, `tests/` (server) untouched | ✅ |
+| `Document.warnings_count: int \| None` added alongside existing `warnings: list[str]` | ✅ `models.py:57` |
+| New dataclasses `DocumentListPage`, `AggregateBucket`, `AggregateResponse`, `QuerySchema` | ✅ `models.py:136-211` |
+| `list_documents()` returns `DocumentListPage` (breaking from `list[Document]`), iterable/len/getitem work | ✅ `models.py:148-155`, `client.py:502-512` |
+| Bool params (`has_warnings`, `has_source_reference`, `include_chunks`, `include_interactions`, `include_deleted`) serialize as lowercase `"true"/"false"`, never Python's `"True"/"False"` | ✅ `client.py:65-76`; test asserts `"True"`/`"False"` absent from URL (`test_query_api_pass3.py:47-48`) |
+| `include=[...]` emits one `include=` param per value (server does `getlist`) | ✅ `client.py:490-493` via `urlencode([("include", v), ...])` |
+| `_parse_document` reads `warnings_count` (passes through `None` when server omits key) | ✅ `client.py:157` + test pins the `None`-passthrough case (`test_query_api_pass3.py:106-109`) |
+| `aggregate()` hits `/api/documents/aggregate`, returns `AggregateResponse` with populated `filters`/`buckets`/`total_*` | ✅ `client.py:514-578` |
+| `schema()` hits `/api/documents/schema`, returns `QuerySchema` with all six fields | ✅ `client.py:580-616` |
+| Skill doc — new `## Query API` section with `schema()` → filter table → `include=` table → `aggregate()` → brute-force-fallback note; warnings-count called out as a cheap per-row field | ✅ `SKILL.md:493-593` |
+| Skill doc — search-filter table retitled `Search filters reference (chunks via /api/search)` and scoped to chunk-level retrieval with a pointer up to the Query API | ✅ `SKILL.md:609-622` |
+| Skill doc — "Browsing and managing documents" step 2 pointed at Query API for richer queries | ✅ `SKILL.md:456-458` |
+| Tests: 5 new, all in `client/tests/test_query_api_pass3.py` | ✅ |
+
+**Local test run:** `cd client && python -m pytest -q` → **12 passed** (7 prior timeout tests + 5 new Pass 3 tests), 0 failures.
 
 ---
 
-## Smoke test (post-deploy, 2026-04-18)
+## Live smoke against Railway (four checks per Dave's hand-off §"Bob handoff")
 
-Run after Denson confirmed Railway deploy live. Four curls against
-`https://ariadne-core-production-579a.up.railway.app`. All four green.
+All four checks green against the post-redeploy live server. No redeploy needed for Pass 3 itself — I re-ran after Denson's redeploy to confirm nothing moved.
 
-### 1. `/api/documents/schema`
-
-```json
-{
-    "list_endpoint": "/api/documents",
-    "aggregate_endpoint": "/api/documents/aggregate",
-    "filters": {
-        "collection": "Exact match on collection name.",
-        "file_type": "...",
-        "tag": "...",
-        "has_warnings": "...",
-        "has_source_reference": "... not literally 'unknown'. ...",
-        "include_deleted": "Include soft-deleted docs (default false)."
-    },
-    "includes": {
-        "agent_metadata": "...",
-        "tags": "...",
-        "last_interaction": "...",
-        "markdown": "..."
-    },
-    "aggregatable_fields": {
-        "collection": "One bucket per collection name.",
-        "file_type": "One bucket per file type.",
-        "tags": "One bucket per distinct tag. ..."
-    },
-    "caps": {
-        "list_default": 500,
-        "list_with_markdown": 50,
-        "aggregate_buckets_max": 1000
-    },
-    "brute_force_fallback": "If a question can't be expressed...",
-    "deferred": {
-        "store_status_filter": "BL-19 made store_status vestigial ...",
-        "agent_metadata_group_by": "Grouping by arbitrary JSON paths ...",
-        "date_range_filters": "created_after / created_before are a future pass."
-    }
-}
-```
-
-**Result:** PASS.
-- All 8 expected top-level keys present.
-- `filters.has_source_reference` present.
-- `aggregatable_fields` == exactly `{collection, file_type, tags}`.
-- `deferred` block present with the three expected subkeys.
-
-**Caveat (NOT a Pass-2 regression — separate issue):** the production
-response renders non-ASCII characters in the description strings as
-mojibake. Example: `\u00e2\u20ac\u201d` in place of an em-dash, and
-`\u00e2\u2020\u2019` in place of `→`. The bytes are UTF-8 encoded
-em-dashes and right-arrows being served as if they were latin-1 and
-re-encoded to JSON. Source literals in `src/pipeline/api/routes.py`
-contain the raw characters correctly (verified locally); the
-corruption happens somewhere in the serve path. This would affect
-any human-facing description in the response but does not affect
-any registry KEY or validator logic. Structure is correct; glyphs
-are wrong. Flag to Sam as a separate post-Pass-2 item — do not roll
-back Pass 2.
-
-### 2. `/api/documents/aggregate?group_by=file_type&collection=world-bank-ree`
-
-```json
-{
-    "group_by": "file_type",
-    "filters": {"collection": "world-bank-ree"},
-    "buckets": [{"group": "txt", "count": 571}],
-    "total_buckets": 1,
-    "total_documents": 571
-}
-```
-
-**Result:** PASS.
-- `total_documents == 571` — matches the post-BL-19 world-bank-ree
-  count exactly.
-- Sum of bucket counts == `total_documents` (571 == 571, all docs
-  single-file_type — single `.txt` bucket).
-- `total_buckets == 1`, matching spec prediction of "likely 1 or 2".
-- `filters` echoes applied filter.
-
-### 3. `/api/documents/aggregate?group_by=nope`
+### 1. `client.schema()` → `QuerySchema`
 
 ```
-HTTP 400
+list_endpoint:        /api/documents
+aggregate_endpoint:   /api/documents/aggregate
+filters:              ['collection', 'file_type', 'has_source_reference',
+                       'has_warnings', 'include_deleted', 'tag']
+includes:             ['agent_metadata', 'last_interaction', 'markdown', 'tags']
+aggregatable_fields:  ['collection', 'file_type', 'tags']
+caps:                 {'list_default': 500, 'list_with_markdown': 50,
+                       'aggregate_buckets_max': 1000}
+deferred:             ['agent_metadata_group_by', 'date_range_filters',
+                       'store_status_filter']
 ```
 
-```json
-{
-    "detail": {
-        "error": "Unknown group_by 'nope'.",
-        "valid_group_by": ["collection", "file_type", "tags"],
-        "see": "/api/documents/schema"
-    }
-}
-```
+- All six expected filters present (incl. `has_warnings`, `has_source_reference`, `tag`). ✅
+- Four includes, three aggregatable fields, `caps["list_default"] == 500`. ✅
+- Dataclass populated — no `None` on any field. ✅
 
-**Result:** PASS.
-- HTTP 400 (not 200 with empty buckets — whitelist check running).
-- `valid_group_by` lists the three registry keys sorted.
-- `see` points at `/api/documents/schema`.
-
-### 4. `/api/documents?collecton=world-bank-ree` (typo)
+### 2. `client.aggregate(group_by="collection")` → `AggregateResponse`
 
 ```
-HTTP 400
+total_buckets:    12
+total_documents:  586
+sum(b.count):     586           # matches total_documents ✅
+filters echoed:   {}            # correct — no filters passed
+top buckets:      [('world-bank-ree', 571), ('smoke_phase_7_5_20260417_post_fix', 3),
+                   ('smoke_phase_7_5_20260417d', 3), ('bl22-smoke-1776502083', 1),
+                   ('ghostprobe_20260417_144921', 1)]
 ```
 
-```json
-{
-    "detail": {
-        "error": "Unknown query param(s): ['collecton'].",
-        "valid_params": [
-            "collection", "file_type", "has_source_reference",
-            "has_warnings", "include", "include_deleted",
-            "limit", "offset", "tag"
-        ],
-        "endpoint": "/api/documents",
-        "see": "/api/documents/schema"
-    }
-}
+- Buckets iterable via `for b in resp`, sorted count DESC / group ASC as Pass 2 spec'd. ✅
+- `sum(bucket.count) == total_documents` — distinct-doc counting holds for non-tag group_by. ✅
+
+### 3. `client.list_documents(has_warnings=True)` → `DocumentListPage`
+
+```
+len(page):        1
+total_count:      1
+total_is_exact:   False
+limit:            5
+offset:           0
+rows:
+  fac256f9... src='bl22_nul_smoke.txt' warnings_count=2
 ```
 
-**Result:** PASS.
-- HTTP 400 (not 200 with full-corpus scan — `_reject_unknown_query_params`
-  is wired).
-- `valid_params` enumerates all 9 allowed keys sorted, including the
-  new `has_source_reference`.
-- `endpoint` and `see` populated.
+- Only the BL-22 pin surfaces — expected; it's the one doc with warnings on this corpus. ✅
+- Every returned row has `warnings_count >= 1`. ✅
+- Returned object is a `DocumentListPage`, iterable, with pagination metadata populated. ✅
+
+### 4. `client.get_document(<id>)` — `warnings_count` round-trip
+
+```
+id:                fac256f9-ea81-4ee9-98dc-b15e75208381
+source_file:       bl22_nul_smoke.txt
+warnings_count:    2
+len(warnings):     2
+warnings_count is not None?       True   ✅
+warnings_count == len(warnings)?  True   ✅
+warnings sample: ['Source contained 3 NUL (0x00) byte(s); stripped before storage. …',
+                  'Encoding validation: text may be garbled']
+```
+
+BL-22 pin still intact. `warnings_count` field lands on `Document` and matches the full list length. ✅
 
 ---
 
-## Summary
+## Observations / flags for the next author
 
-Pass 2 is live and correct.
-
-- Server surface: `/documents/aggregate`, `/documents/schema`,
-  `has_source_reference` filter, rich-400 on unknown query params.
-- Single source of truth: three registries drive both validators and
-  `/schema`. Drift guarded by two tests.
-- Route order bug (FastAPI first-match shadowing `/aggregate` behind
-  `/{document_id}`) caught and fixed by Dave pre-commit — validated
-  in smoke #3 (returns 400, not a stray param-route 404).
-- Backlog: BL-21 (SQL-push), BL-22 (`has_warnings` Pg no-op), BL-23
-  (`agent_metadata.*` group_by) recorded in the same commit.
-
-**Separate follow-up item to flag to Sam (not a blocker for Pass 3):**
-non-ASCII glyph mojibake in `/schema` response. Likely a response
-encoding / content-type default on the serve path, not anything Dave
-touched in Pass 2. Source is correct.
-
-— Bob
+1. **`total_is_exact: False` on a 1-row result** — `list_documents(has_warnings=True)` returns `total_count: 1` with `total_is_exact: False`. That's a server-side heuristic (probably "skip exact COUNT when the WHERE is cheap enough to not care"), not a Pass 3 client issue. Flagged only because the client now surfaces the `total_is_exact` field and a consumer might be surprised that "small exact result" comes back as approximate. No action needed in Pass 3; worth revisiting if the server ever exposes a `count_mode` hint.
+2. **Dave's own flag carried forward**: CLI (`src/pipeline/cli.py`) has no `aggregate` / `schema` subcommands and no `--tag` / `--has-warnings` / `--has-source-reference` / `--include` flags on `list`. Listed in Dave's "Known-deferred"; leaving it alone per Pass 3 fence.
+3. **Stale example URL in the original spec Step 0** — the spec still lists `ariadne-core-production.up.railway.app` (no `-579a`), which 404s. Dave noted it; noting again here for whoever writes the next Pass spec.
+4. **Breaking change is pre-1.0 and deliberate** — `list_documents()` no longer returns `list[Document]`. `DocumentListPage` is iterable + `len()` + subscriptable so naive for-loops and `len(page)` keep working; any caller that did `list(page)` + set/dict operations will need a one-liner fix. No shim, per spec.
+5. **`DAVE_DONE.md` changed shape**: Dave overwrote the prior Phase 8 hand-off per spec. If anyone was referencing the old content, it's in the earlier commit `01489e1^`. This `BOB_DONE.md` likewise overwrites my prior Pass 2 BOB_DONE.
 
 ---
 
-## Pass 2.1 — ASCII-sanitize /schema registry strings
+## Net
 
-**Status:** COMMITTED + PUSHED + DEPLOYED + SMOKED
-**Commit SHA:** `982f5dc`
-**Parent:** `0e955c1` (Pass 2)
-**Branch:** `main` on `origin`
-
-### What changed
-
-- `src/pipeline/api/routes.py`: 4 values inside `_FILTER_REGISTRY` had their
-  non-ASCII glyphs replaced with ASCII equivalents (em-dash `—` → ` - `,
-  arrow `→` → ` -> `). The section-header comment at line 492 was also
-  sanitized because it falls inside the verification regex span
-  (`_FILTER_REGISTRY.*?^_CAPS` matches starting from the first occurrence
-  of `_FILTER_REGISTRY` at line 400 inside `/schema`, not from the
-  registry definition itself). No logic change.
-- `_INCLUDE_REGISTRY`, `_AGGREGATE_REGISTRY`, `brute_force_fallback`, and
-  `deferred` literal values were already ASCII-clean (verified by a
-  per-line non-ASCII scan before editing).
-- `docs/BACKLOG.md`: BL-24 added — tracks the underlying Railway-runtime
-  encoding bug.
-
-### Verification
-
-```
-python -c "import re; data=open('src/pipeline/api/routes.py','rb').read(); \
-  m=re.search(rb'_FILTER_REGISTRY.*?^_CAPS', data, re.S|re.M); \
-  assert m, 'registry block not found'; \
-  bad=[b for b in m.group() if b>0x7F]; \
-  print('non-ASCII bytes in registry block:', len(bad)); \
-  assert not bad, 'still has non-ASCII'"
-# → non-ASCII bytes in registry block: 0
-```
-
-Pytest: **227 passed, 3 skipped** (no test changes; Sam's spec prediction
-of 220 was off — the actual post-Pass-2 baseline is 227).
-
-### Post-deploy smoke — `/api/documents/schema`
-
-First filter description, verbatim from production response:
-
-```
-file_type: "Exact match (leading dot stripped - 'pdf' and '.pdf' both match)."
-has_warnings: 'true -> only docs with >=1 warning; false -> only clean docs.'
-has_source_reference: "true -> latest interaction's agent_metadata has a non-empty 'source_reference' value that is not literally 'unknown'. false -> inverse."
-```
-
-**Result:** PASS. Mojibake is gone. Where previously the em-dash rendered
-as `\u00e2\u20ac\u201d` and the arrow as `\u00e2\u2020\u2019`, the
-responses are now clean ASCII with no escapes. The underlying encoding
-bug in Railway's serve pipeline is unresolved — sanitizing visible
-strings is the mitigation. BL-24 captures the real fix.
-
-— Bob
+Pass 3 is clean: client matches the Pass 2 surface, tests green locally, all four live checks PASS against the post-redeploy server, and the skill doc now tells agents to start with `schema()` before guessing. No server redeploy was needed for Pass 3 itself. — Bob
