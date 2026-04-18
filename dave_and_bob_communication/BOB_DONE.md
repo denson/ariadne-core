@@ -1,118 +1,154 @@
-# BOB_DONE — Query API Pass 3 review + smoke
+# BOB_DONE — Query API Pass 4 review + wipe + redeploy + smoke
 
-**Status:** REVIEWED + SMOKED (PASS)
-**Reviewed commit:** `01489e1` — *Query API Pass 3: client + skill catch-up* (on `main`)
-**Parent:** `c5903a3` (BL-25 migration runner rewrite)
-**Live server:** `https://ariadne-core-production-579a.up.railway.app` (post-redeploy 2026-04-18)
-**Scope per spec:** client + skill + one new test file. **No server / SPEC.md / CLI changes.**
+**Status:** REVIEWED + WIPED + REDEPLOYED + SMOKED (PASS)
+**Reviewed commit:** `4d7ddb7` — *Query API Pass 4: denormalize source_reference, push down filters, consolidate migrations* (on `main`)
+**Parent:** `01489e1` (Pass 3 client + skill catch-up)
+**Live server:** `https://ariadne-core-production-579a.up.railway.app`
+**Successful Pass 4 deployment id:** `6d9b7b9b…` (commitHash `4d7ddb77…`)
 
 ---
 
-## Review gate — Dave's diff vs. spec fences
+## 1. Review gate — diff vs. Dave's spec fences
+
+Scope fence: nothing in `client/`, `skills/`, `src/pipeline/cli.py`, `src/pipeline/services.py`, `src/pipeline/schema.py`, `src/pipeline/stores.py`, `docs/roadmap/`, or `.claude-plugin/`. Verified via `git show --stat 4d7ddb7 -- <each path>` → empty. ✅
 
 | Check | Result |
 |---|---|
-| Only `client/src/ariadne_core_client/{client,models}.py`, `client/tests/test_query_api_pass3.py`, `skills/ariadne-document-intelligence/SKILL.md`, `dave_and_bob_communication/DAVE_*.md` touched | ✅ (+826-line hand-off doc, spec'd) |
-| Server code (`src/pipeline/api/**`, `dedup.py`, `services.py`) untouched | ✅ |
-| `SPEC.md`, `migrations/`, `tests/` (server) untouched | ✅ |
-| `Document.warnings_count: int \| None` added alongside existing `warnings: list[str]` | ✅ `models.py:57` |
-| New dataclasses `DocumentListPage`, `AggregateBucket`, `AggregateResponse`, `QuerySchema` | ✅ `models.py:136-211` |
-| `list_documents()` returns `DocumentListPage` (breaking from `list[Document]`), iterable/len/getitem work | ✅ `models.py:148-155`, `client.py:502-512` |
-| Bool params (`has_warnings`, `has_source_reference`, `include_chunks`, `include_interactions`, `include_deleted`) serialize as lowercase `"true"/"false"`, never Python's `"True"/"False"` | ✅ `client.py:65-76`; test asserts `"True"`/`"False"` absent from URL (`test_query_api_pass3.py:47-48`) |
-| `include=[...]` emits one `include=` param per value (server does `getlist`) | ✅ `client.py:490-493` via `urlencode([("include", v), ...])` |
-| `_parse_document` reads `warnings_count` (passes through `None` when server omits key) | ✅ `client.py:157` + test pins the `None`-passthrough case (`test_query_api_pass3.py:106-109`) |
-| `aggregate()` hits `/api/documents/aggregate`, returns `AggregateResponse` with populated `filters`/`buckets`/`total_*` | ✅ `client.py:514-578` |
-| `schema()` hits `/api/documents/schema`, returns `QuerySchema` with all six fields | ✅ `client.py:580-616` |
-| Skill doc — new `## Query API` section with `schema()` → filter table → `include=` table → `aggregate()` → brute-force-fallback note; warnings-count called out as a cheap per-row field | ✅ `SKILL.md:493-593` |
-| Skill doc — search-filter table retitled `Search filters reference (chunks via /api/search)` and scoped to chunk-level retrieval with a pointer up to the Query API | ✅ `SKILL.md:609-622` |
-| Skill doc — "Browsing and managing documents" step 2 pointed at Query API for richer queries | ✅ `SKILL.md:456-458` |
-| Tests: 5 new, all in `client/tests/test_query_api_pass3.py` | ✅ |
-
-**Local test run:** `cd client && python -m pytest -q` → **12 passed** (7 prior timeout tests + 5 new Pass 3 tests), 0 failures.
+| `migrations/001_initial.sql` overwritten as the single source-of-truth file; drops dead `documents.pages` and `documents.markdown_path`; adds `documents.warnings TEXT[] NOT NULL DEFAULT '{}'`, `documents.source_reference TEXT`; adds partial index `idx_documents_source_reference` with predicate `IS NOT NULL AND <> '' AND <> 'unknown'`; adds GIN indexes on `tags` and `warnings`; folds in `document_interactions.agent_notes`/`agent_metadata` (prior 002), the `search_log` table (prior 003), and the soft-delete columns already present in base (prior 004) | ✅ |
+| `migrations/002_add_agent_notes.sql`, `003_search_log.sql`, `004_soft_delete.sql`, `005_warnings_column.sql` deleted — only `001_initial.sql` tracked under `migrations/` | ✅ `git ls-files migrations/ → 001_initial.sql` |
+| `src/pipeline/dedup.py::_extract_source_reference` helper — handles `None` / non-dict / non-string / whitespace-only correctly (returns `None`), preserves trimmed values including the literal `"unknown"` | ✅ `dedup.py:32-46` |
+| `PgDedupStore.record_interaction` propagates `agent_metadata.source_reference` into `documents.source_reference` via an `UPDATE` that also bumps `updated_at` (latest-wins) | ✅ `dedup.py:340-355` |
+| `PgDedupStore.update_document_metadata` does the symmetric propagation on the PATCH path | ✅ `dedup.py:801-812` |
+| `PgDedupStore.list_documents` accepts `tag`, `has_warnings`, `has_source_reference` as keyword-only filters pushed into SQL `WHERE`. Tag uses `d.tags @> ARRAY[%(tag)s]::text[]` (GIN-friendly). `has_warnings` uses `cardinality(d.warnings) > 0` / `= 0`. `has_source_reference` predicate matches the partial-index predicate verbatim (so the index is actually used). `COUNT(*)` is now always exact | ✅ `dedup.py:478-520` |
+| `InMemoryDedupStore` gains symmetric `list_documents` + `get_source_reference` + `_doc_source_ref` map so route code stops branching on backend; stable sort by `created_at DESC` mirrors Pg ordering | ✅ `dedup.py:860-960` |
+| `DedupStore` protocol extended with `list_documents(...)` signature | ✅ `dedup.py:148-160` |
+| `src/pipeline/api/routes.py` — `_has_source_reference` N+1 helper DELETED; the `PgDedupStore`-vs-`InMemoryDedupStore` isinstance branch in both `list_documents` and `aggregate_documents` DELETED; the post-query filter block DELETED; `total_is_exact` is unconditionally `True`. Both handlers call a single `_dedup_store.list_documents(...)` with all filters passed through | ✅ `routes.py:286-320, 558-621` |
+| Filter-registry description for `has_source_reference` rewritten from "latest interaction's agent_metadata" to "document has a non-empty 'source_reference' value (latest-wins from agent_metadata)" | ✅ `routes.py:481-486` |
+| `SPEC.md` — "`total_count` semantics" Pass-2 caveat paragraph removed | ✅ (single line delete) |
+| `tests/test_routes_list_documents.py` — `total_is_exact` assertion under tag filter flipped to `True`; new `test_list_documents_pagination_under_filter` (30 docs, 10 with warnings, `limit=5 offset=5 has_warnings=true` ⇒ 5 rows, `total_count==10`, `total_is_exact==True`) | ✅ |
+| New `tests/test_dedup_source_reference.py` — 4 Pg-integration tests covering record-interaction write, latest-wins overwrite, `"unknown"` sentinel preserved-but-excluded, and PATCH write path | ✅ |
 
 ---
 
-## Live smoke against Railway (four checks per Dave's hand-off §"Bob handoff")
+## 2. Live destructive deploy — actual sequence, not the planned one
 
-All four checks green against the post-redeploy live server. No redeploy needed for Pass 3 itself — I re-ran after Denson's redeploy to confirm nothing moved.
-
-### 1. `client.schema()` → `QuerySchema`
+The spec'd command — `railway run psql "$DATABASE_URL" -c "…"` — does not work in this project: the `ariadne-core` service only exposes `DATABASE_URL_PRIVATE` pointing at `pgvector.railway.internal`, and the `pgvector` service has no public TCP proxy. `railway run` executes locally, so the injected URL is unreachable. `railway connect pgvector` rejects the service with *"No supported database found in service"* (Railway CLI's connect only recognizes a short name-allowlist and `pgvector` isn't on it). Working alternative, used here:
 
 ```
-list_endpoint:        /api/documents
-aggregate_endpoint:   /api/documents/aggregate
-filters:              ['collection', 'file_type', 'has_source_reference',
-                       'has_warnings', 'include_deleted', 'tag']
-includes:             ['agent_metadata', 'last_interaction', 'markdown', 'tags']
-aggregatable_fields:  ['collection', 'file_type', 'tags']
-caps:                 {'list_default': 500, 'list_with_markdown': 50,
-                       'aggregate_buckets_max': 1000}
-deferred:             ['agent_metadata_group_by', 'date_range_filters',
-                       'store_status_filter']
+railway ssh --service pgvector "psql -U postgres -d railway -v ON_ERROR_STOP=1 --pset pager=off \
+    -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public; \
+        CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto;'"
 ```
 
-- All six expected filters present (incl. `has_warnings`, `has_source_reference`, `tag`). ✅
-- Four includes, three aggregatable fields, `caps["list_default"] == 500`. ✅
-- Dataclass populated — no `None` on any field. ✅
+One argv item so Railway's SSH transport doesn't strip the inner quoting (it space-joins argv when forwarding). Output: `NOTICE: drop cascades to 10 other objects; DROP SCHEMA; CREATE SCHEMA; CREATE EXTENSION; CREATE EXTENSION`. The 10 dropped objects include the two pgvector/pgcrypto extensions plus 8 tables (`collections`, `documents`, `document_interactions`, `chunks`, `jobs`, `api_keys`, `search_log`, `schema_migrations`).
 
-### 2. `client.aggregate(group_by="collection")` → `AggregateResponse`
+**First-attempt misstep, for the record:** I ran `railway redeploy --service ariadne-core --yes` immediately after the wipe, intending it to pick up Pass 4 from `origin/main`. `redeploy` instead rebuilt the *latest* deployment — which was still pinned at Pass 3 commit `01489e1` because Railway's GitHub auto-deploy had not fired for Pass 4 (consistent with Dave's BL-9 note that auto-deploy is unreliable). The Pass 3 image booted and its multi-file runner applied migrations 001 through 005, re-introducing Pass 3's schema on top of the wiped DB. A subsequent `railway up` from a clean `git worktree` at `4d7ddb7` did register as a Pass 4 deployment, but it crashed at first query: Pass 4's runner sees the version string `"001_initial.sql"` already present in `schema_migrations` (recorded by Pass 3's first migration) and skips applying — so the running Pass 4 code hit a Pass 3 schema missing `source_reference`, failing on the first query that touched the column.
 
-```
-total_buckets:    12
-total_documents:  586
-sum(b.count):     586           # matches total_documents ✅
-filters echoed:   {}            # correct — no filters passed
-top buckets:      [('world-bank-ree', 571), ('smoke_phase_7_5_20260417_post_fix', 3),
-                   ('smoke_phase_7_5_20260417d', 3), ('bl22-smoke-1776502083', 1),
-                   ('ghostprobe_20260417_144921', 1)]
-```
+**Recovery:** re-ran the same `DROP SCHEMA public CASCADE …` command, then `railway redeploy --service ariadne-core --yes` — because the latest deployment was now the Pass 4 one (`e9fa47e7…`), redeploy rebuilt Pass 4 code from Pass 4 commit, which applied its single consolidated `001_initial.sql` cleanly. Successful deployment id `6d9b7b9b…`, status `SUCCESS`.
 
-- Buckets iterable via `for b in resp`, sorted count DESC / group ASC as Pass 2 spec'd. ✅
-- `sum(bucket.count) == total_documents` — distinct-doc counting holds for non-tag group_by. ✅
-
-### 3. `client.list_documents(has_warnings=True)` → `DocumentListPage`
-
-```
-len(page):        1
-total_count:      1
-total_is_exact:   False
-limit:            5
-offset:           0
-rows:
-  fac256f9... src='bl22_nul_smoke.txt' warnings_count=2
-```
-
-- Only the BL-22 pin surfaces — expected; it's the one doc with warnings on this corpus. ✅
-- Every returned row has `warnings_count >= 1`. ✅
-- Returned object is a `DocumentListPage`, iterable, with pagination metadata populated. ✅
-
-### 4. `client.get_document(<id>)` — `warnings_count` round-trip
-
-```
-id:                fac256f9-ea81-4ee9-98dc-b15e75208381
-source_file:       bl22_nul_smoke.txt
-warnings_count:    2
-len(warnings):     2
-warnings_count is not None?       True   ✅
-warnings_count == len(warnings)?  True   ✅
-warnings sample: ['Source contained 3 NUL (0x00) byte(s); stripped before storage. …',
-                  'Encoding validation: text may be garbled']
-```
-
-BL-22 pin still intact. `warnings_count` field lands on `Document` and matches the full list length. ✅
+**Redeploy-semantics gotcha for whoever writes the next destructive-deploy spec:** `railway redeploy` replays the *latest* deployment's commit, not `origin/main`'s HEAD. If the last auto-deploy is stale, `redeploy` is a no-op relative to what you just merged; you need `railway up` from a clean tree at HEAD to seed the latest deployment with the target commit before `redeploy` does anything useful. The spec's `railway run psql` form should also be rewritten to the `railway ssh --service pgvector "…"` single-argv form for this project.
 
 ---
 
-## Observations / flags for the next author
+## 3. Post-redeploy DB proof — clean single-migration schema
 
-1. **`total_is_exact: False` on a 1-row result** — `list_documents(has_warnings=True)` returns `total_count: 1` with `total_is_exact: False`. That's a server-side heuristic (probably "skip exact COUNT when the WHERE is cheap enough to not care"), not a Pass 3 client issue. Flagged only because the client now surfaces the `total_is_exact` field and a consumer might be surprised that "small exact result" comes back as approximate. No action needed in Pass 3; worth revisiting if the server ever exposes a `count_mode` hint.
-2. **Dave's own flag carried forward**: CLI (`src/pipeline/cli.py`) has no `aggregate` / `schema` subcommands and no `--tag` / `--has-warnings` / `--has-source-reference` / `--include` flags on `list`. Listed in Dave's "Known-deferred"; leaving it alone per Pass 3 fence.
-3. **Stale example URL in the original spec Step 0** — the spec still lists `ariadne-core-production.up.railway.app` (no `-579a`), which 404s. Dave noted it; noting again here for whoever writes the next Pass spec.
-4. **Breaking change is pre-1.0 and deliberate** — `list_documents()` no longer returns `list[Document]`. `DocumentListPage` is iterable + `len()` + subscriptable so naive for-loops and `len(page)` keep working; any caller that did `list(page)` + set/dict operations will need a one-liner fix. No shim, per spec.
-5. **`DAVE_DONE.md` changed shape**: Dave overwrote the prior Phase 8 hand-off per spec. If anyone was referencing the old content, it's in the earlier commit `01489e1^`. This `BOB_DONE.md` likewise overwrites my prior Pass 2 BOB_DONE.
+```
+$ railway ssh --service pgvector "psql -U postgres -d railway --pset pager=off \
+    -c 'SELECT version FROM schema_migrations; \
+        SELECT column_name FROM information_schema.columns \
+        WHERE table_name=''documents'' \
+          AND column_name IN (''source_reference'',''pages'',''markdown_path'',''warnings'') \
+        ORDER BY column_name;'"
+
+     version
+-----------------
+ 001_initial.sql
+(1 row)
+
+   column_name
+------------------
+ source_reference
+ warnings
+(2 rows)
+```
+
+One migration recorded. `documents.source_reference` and `documents.warnings` present, `documents.pages` and `documents.markdown_path` gone — exactly the Pass 4 shape. ✅
+
+Container boot log (relevant lines):
+```
+2026-04-18 11:05:36 ariadne INFO Starting REST API on :8080
+2026-04-18 11:05:37 ariadne.stores INFO Initializing Postgres stores (backend=pgvector)
+2026-04-18 11:05:37 ariadne.stores INFO Creating connection pool for postgres://postgres:***@pgvector.railway.internal:5432/railway
+2026-04-18 11:05:37 ariadne.schema INFO Schema OK: chunks table exists with vector(1536)
+2026-04-18 11:05:37 ariadne.app INFO Stores initialized (backend=pgvector)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080
+```
+
+No migration-application log line surfaced in the tail (present under Pass 3 boots that applied 5 files — silent when there is nothing new to apply is plausible on re-boot, but on a wiped DB you would expect the line and I could not retrieve it from the streaming tail). The DB state is authoritative either way — single `001_initial.sql` row in `schema_migrations`, new columns present.
 
 ---
 
-## Net
+## 4. Smoke — four checks per the hand-off
 
-Pass 3 is clean: client matches the Pass 2 surface, tests green locally, all four live checks PASS against the post-redeploy server, and the skill doc now tells agents to start with `schema()` before guessing. No server redeploy was needed for Pass 3 itself. — Bob
+Script: `scripts/_smoke_pass4.py` (uncommitted, follows the `_`-prefixed scratch convention in `scripts/`). Runs against the live server with env from `../.env`.
+
+### 1. `/api/health` → 200
+
+```
+[1] /api/health HTTP 200 -> {"status":"healthy","version":"0.1.0","engine":"markitdown","embedding_enabled":true}
+```
+
+### 2. `client.schema()` → Pass 2 surface
+
+```
+[2] schema.filters:     ['collection', 'file_type', 'has_source_reference',
+                         'has_warnings', 'include_deleted', 'tag']
+    schema.includes:    ['agent_metadata', 'last_interaction', 'markdown', 'tags']
+    schema.aggregatable: ['collection', 'file_type', 'tags']
+    schema.caps:        {'list_default': 500, 'list_with_markdown': 50,
+                         'aggregate_buckets_max': 1000}
+    PASS (Pass 2 filter surface)
+```
+
+Six filters including the three Pass 2 ones, four includes, three aggregatable fields, `caps.list_default == 500`. ✅
+
+### 3. `client.list_documents(has_warnings=True)` → `total_is_exact: True`
+
+```
+[3] has_warnings=True total_count=1 total_is_exact=True rows=1
+    PASS (total_is_exact=True under filter)
+```
+
+The Pass 4 pin. **`total_is_exact` is structurally always `True` now**, even with a filter active — compare to Pass 3 where filters flipped it to `False` and the route post-filtered in Python. ✅
+
+(The `total_count=1` row is a leftover from a fresh scratch ingest during iteration — irrelevant to this assertion, but noted for transparency.)
+
+### 4. Ingest doc with `source_reference`, confirm `has_source_reference=True` finds it
+
+```
+[4a] ingested document_id=be5502d1-… collection=pass4-smoke-1776510397
+[4b] has_source_reference=True in scratch collection: total_count=1 total_is_exact=True
+     PASS (source_reference pushdown hits the new doc)
+[4c] has_source_reference=False in scratch collection: total_count=0 (expect 0)
+     PASS (negative filter excludes the doc)
+```
+
+Positive filter finds the new doc, negative filter excludes it. Both report `total_is_exact=True`. The round-trip proves `record_interaction` wrote the `source_reference` column during ingest, and `list_documents` now reads it directly from the column (no N+1 interaction trawl). ✅
+
+---
+
+## 5. Observations / flags for the next author
+
+1. **Destructive-deploy playbook needs the sequence tightened.** `wipe → up → redeploy-if-needed`, not `wipe → redeploy`. Redeploying without first seeding the latest deployment with the target commit burns an extra round-trip (mine cost: one extra wipe + one extra deploy). Calling out explicitly because Dave's §7 text is ambiguous on this — it says "Trigger a manual redeploy in Railway" without differentiating the Railway-dashboard *Deploy from latest commit* button (which targets `origin/main` HEAD) from the CLI `railway redeploy` (which replays the latest deployment's commit). The CLI path only works if the latest deployment is already at HEAD.
+2. **`railway run psql "$DATABASE_URL" …` form is unreachable in this project.** The pgvector service has no public TCP proxy, and `DATABASE_URL_PRIVATE` resolves to an internal-only hostname. The `railway ssh --service pgvector "psql …"` single-argv form is the portable path. Worth replacing in any future destructive-deploy spec.
+3. **Migration-runner log line for a clean wipe did not surface in the log tail.** The DB state is correct (one row in `schema_migrations`, Pass 4 columns present) so the migration unambiguously ran — but the "Applying migration 001_initial.sql" line that was visible under Pass 3 boots was not in my tail window. Might be a log-ordering / line-buffering quirk on Railway's side, might be a regression in how the Pass 4 runner logs. Non-blocking; worth a quick pass through `dedup.py`'s migration runner to confirm the log call is still there.
+4. **Aggregate still uses the `limit=100000` fetch-and-count hack.** Dave's Pass 4 known-deferred §8 calls this out — `aggregate_documents` now correctly pushes filters into `list_documents`, but the bucketing is still Python-side. A native SQL `GROUP BY` lands the same data in one query. Performance is fine at 586 docs; flagged for whenever the corpus grows past a few thousand.
+5. **The spec's stale example URL survives yet again.** Dave's hand-off correctly uses `ariadne-core-production-579a.up.railway.app`; the original Pass 2 spec's Step 0 example still points at `ariadne-core-production.up.railway.app` (no `-579a`), which 404s. Noted in my Pass 3 BOB_DONE too — still not fixed, presumably because the spec file hasn't been touched since.
+6. **One failed deployment artifact.** Before the recovery redeploy, there is a `FAILED` Pass 4 deployment (`e9fa47e7…`) in the service's history. It has no deploy-phase logs (Railway never got past image publish / runtime init). Harmless; does not affect the current live deployment. Mention only for auditing the service's deployment list.
+
+---
+
+## 6. Net
+
+Pass 4 is live on `ariadne-core-production-579a.up.railway.app` at commit `4d7ddb7`. DB schema is the clean single-file Pass 4 shape. All four smoke checks green. The Pass 4 pin — `total_is_exact: true` under any filter combination — verified against real data. The `source_reference` pushdown path end-to-end: ingest with `source=` → column written by `record_interaction` → `list_documents(has_source_reference=True)` finds it via the partial-index-backed SQL filter. Filter branch in `routes.py` gone, `_has_source_reference` N+1 helper gone, backend-isinstance branch gone. Scope fence clean. — Bob
