@@ -331,17 +331,62 @@ async def get_document(
     return response
 
 
+_VALID_INCLUDES = {"agent_metadata", "tags", "last_interaction", "markdown"}
+
+
 @router.get("/documents")
 async def list_documents(
     collection: Optional[str] = Query(None),
     file_type: Optional[str] = Query(None),
-    limit: int = Query(20, ge=1, le=100),
+    tag: Optional[str] = Query(
+        None,
+        description="Match docs with this tag in their tag list",
+    ),
+    has_warnings: Optional[bool] = Query(
+        None,
+        description="Filter to docs that have (or do not have) any warnings",
+    ),
+    include: list[str] = Query(
+        default_factory=list,
+        description=(
+            "Fields to include in each row. Accepted: "
+            "agent_metadata, tags, last_interaction, markdown"
+        ),
+    ),
+    limit: int = Query(20, ge=1),
     offset: int = Query(0, ge=0),
     include_deleted: bool = Query(False),
     api_key: APIKey | None = Depends(check_api_key),
 ):
     """List all documents, optionally filtered by collection or file type."""
     from pipeline.dedup import PgDedupStore
+
+    bad_includes = [i for i in include if i not in _VALID_INCLUDES]
+    if bad_includes:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Unknown include value(s): {bad_includes}.",
+                "valid_includes": sorted(_VALID_INCLUDES),
+                "see": "SPEC.md § Querying documents",
+            },
+        )
+    include_set = set(include)
+
+    cap = 50 if "markdown" in include_set else 500
+    if limit > cap:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"limit={limit} exceeds cap of {cap} for this include set.",
+                "cap_applied": cap,
+                "cap_rationale": (
+                    "50 when 'markdown' is included (full doc body per row); "
+                    "500 otherwise"
+                ),
+                "include_set": sorted(include_set),
+            },
+        )
 
     if isinstance(_svc._dedup_store, PgDedupStore):
         page_docs, total = _svc._dedup_store.list_documents(
@@ -364,24 +409,61 @@ async def list_documents(
         total = len(docs)
         page_docs = docs[offset:offset + limit]
 
+    # Post-query filters. Flag: push into SQL in a future pass for
+    # large-collection performance — for now this only scans the current page.
+    if tag is not None:
+        page_docs = [d for d in page_docs if d.tags and tag in d.tags]
+    if has_warnings is not None:
+        if has_warnings:
+            page_docs = [d for d in page_docs if d.warnings]
+        else:
+            page_docs = [d for d in page_docs if not d.warnings]
+
+    total_exact = True
+    if tag is not None or has_warnings is not None:
+        total = len(page_docs)
+        total_exact = False
+
+    def _build_row(d) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "document_id": d.document_id,
+            "source_file": d.source_file,
+            "title": d.title,
+            "file_type": d.file_type,
+            "collection": d.collection_id,
+            "content_fingerprint": d.content_fingerprint,
+            "chunk_count": _svc._count_chunks_for_document(d.document_id),
+            "interaction_count": len(
+                _svc._dedup_store.get_interactions(d.document_id)
+            ),
+            "created_at": d.created_at,
+            "warnings_count": len(d.warnings) if d.warnings else 0,
+        }
+        if "tags" in include_set:
+            row["tags"] = list(d.tags) if d.tags else []
+        if "markdown" in include_set:
+            row["markdown"] = d.markdown
+        if "agent_metadata" in include_set or "last_interaction" in include_set:
+            interactions = _svc._dedup_store.get_interactions(d.document_id)
+            latest = interactions[-1] if interactions else None
+            if "agent_metadata" in include_set:
+                row["agent_metadata"] = latest.agent_metadata if latest else None
+            if "last_interaction" in include_set:
+                row["last_interaction"] = (
+                    {
+                        "agent_notes": latest.agent_notes,
+                        "action": latest.action,
+                        "created_at": latest.created_at,
+                    }
+                    if latest
+                    else None
+                )
+        return row
+
     return {
-        "documents": [
-            {
-                "document_id": d.document_id,
-                "source_file": d.source_file,
-                "title": d.title,
-                "file_type": d.file_type,
-                "collection": d.collection_id,
-                "content_fingerprint": d.content_fingerprint,
-                "chunk_count": _svc._count_chunks_for_document(d.document_id),
-                "interaction_count": len(
-                    _svc._dedup_store.get_interactions(d.document_id)
-                ),
-                "created_at": d.created_at,
-            }
-            for d in page_docs
-        ],
+        "documents": [_build_row(d) for d in page_docs],
         "total_count": total,
+        "total_is_exact": total_exact,
         "limit": limit,
         "offset": offset,
     }

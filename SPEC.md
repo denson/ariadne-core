@@ -402,11 +402,88 @@ List stored documents. Returns metadata only — use `GET /api/documents/{id}` f
 |-----------|------|---------|-------------|
 | `collection` | string | `null` | Filter to a specific collection |
 | `file_type` | string | `null` | Filter by extension (e.g. `pdf`, `docx`) |
-| `limit` | int | `20` | Results per page (max 100) |
+| `tag` | string | `null` | Match docs whose tag list contains this tag |
+| `has_warnings` | bool | `null` | If `true`, only docs with at least one warning; if `false`, only docs with none |
+| `include` | list[string] | `[]` | Repeatable. Thickens each row. Accepted: `agent_metadata`, `tags`, `last_interaction`, `markdown` |
+| `limit` | int | `20` | Results per page (shape-dependent cap — see below) |
 | `offset` | int | `0` | Pagination offset |
 | `include_deleted` | bool | `false` | Include soft-deleted documents |
 
-**Response:** JSON with `total_count`, `documents` array (each: `document_id`, `collection`, `source_file`, `file_type`, `title`, `chunk_count`, `interaction_count`, `created_at`).
+**Response:** JSON with `total_count`, `total_is_exact`, `documents` array. Each row always contains `document_id`, `source_file`, `title`, `file_type`, `collection`, `content_fingerprint`, `chunk_count`, `interaction_count`, `created_at`, `warnings_count`. `include=` values add the corresponding fields.
+
+### Querying documents — filters, includes, and cap
+
+**Filters** (all optional query params on `GET /api/documents`):
+
+| Param | Type | Effect |
+|---|---|---|
+| `collection` | string | Exact match on collection name |
+| `file_type` | string | Exact match (leading dot stripped, so `pdf` and `.pdf` both work) |
+| `tag` | string | Match docs whose tag list contains this tag |
+| `has_warnings` | bool | If `true`, only docs with at least one warning; if `false`, only docs with none |
+| `include_deleted` | bool | Include soft-deleted docs (default `false`) |
+| `limit` | int | Max rows per page (shape-dependent cap — see below) |
+| `offset` | int | Pagination offset |
+
+Unknown filter keys are silently ignored by FastAPI's routing layer (per its standard behavior for query params not declared on the route). Future passes add stricter validation.
+
+**Includes** — use `include=` query param (repeatable) to thicken the returned row. Default row is always returned; `include=` adds fields.
+
+| Include value | Adds |
+|---|---|
+| `agent_metadata` | Latest interaction's `agent_metadata` dict |
+| `tags` | Full tag list |
+| `last_interaction` | `{agent_notes, action, created_at}` for the most recent interaction |
+| `markdown` | Full document markdown body |
+
+Unknown include values return `400` with a list of valid values.
+
+**Cap** — `limit` is bounded by the include set:
+
+| Include set contains | Cap |
+|---|---|
+| `markdown` | 50 |
+| anything else, or default | 500 |
+
+`limit > cap` returns `400` with the applicable cap and rationale.
+
+**Default row shape** (always returned):
+
+```json
+{
+  "document_id": "...",
+  "source_file": "...",
+  "title": "...",
+  "file_type": "...",
+  "collection": "...",
+  "content_fingerprint": "...",
+  "chunk_count": 42,
+  "interaction_count": 3,
+  "created_at": "...",
+  "warnings_count": 0
+}
+```
+
+**`total_count` semantics:** when `tag` or `has_warnings` is active, `total_count` reflects the current page's post-filter size, not the whole-collection total. The response includes `"total_is_exact": false` to signal this. Without these filters, `total_count` is the exact collection total. Pass-1 limitation; future passes push the filters into SQL and restore exact totals in all cases.
+
+**Brute-force fallback** — if the question you're asking can't be expressed with these filters, paginate `list_documents` with `include=[...]` covering the fields you need, then filter client-side:
+
+```python
+all_docs = []
+offset = 0
+while True:
+    page = client.list_documents(
+        collection="my-collection",
+        include=["agent_metadata", "tags"],
+        limit=500,
+        offset=offset,
+    )
+    all_docs.extend(page.documents)
+    if len(page.documents) < 500:
+        break
+    offset += 500
+# now filter client-side
+```
 
 ---
 
