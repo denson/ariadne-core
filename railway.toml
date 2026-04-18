@@ -1,0 +1,20 @@
+# Railway build configuration.
+#
+# This file exists specifically to pin the builder to the Dockerfile.
+# Without it, `railway up` defaults to Railpack, which misdetects this
+# project (Python code is under src/, not in the repo root) and ships a
+# Caddy static-site image — producing 404s on every /api/* endpoint.
+#
+# See dave_and_bob_communication/PLAYBOOK_DESTRUCTIVE_DEPLOY.md and the
+# post-mortem on deployment 0e56f9f0 for the full incident context.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Start command comes from the Dockerfile's CMD — no override needed.
+# Railway injects $PORT; the app reads config.api.port which defaults
+# to 8000 but Railway sets PORT=8080 via env.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
