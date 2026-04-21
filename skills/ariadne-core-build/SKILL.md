@@ -64,7 +64,6 @@ ariadne-core/
 │   └── pipeline/
 │       ├── __init__.py
 │       ├── __main__.py         # CLI entrypoint: `serve` starts MCP + REST
-│       ├── mcp_server.py       # MCP tool definitions (Streamable HTTP)
 │       ├── config.py           # Config file + env var loader
 │       ├── auth_oauth.py       # OAuth 2.1 Bearer JWT validation (Auth0 JWKS)
 │       ├── dedup.py            # SHA-256 fingerprinting + dedup gate
@@ -232,8 +231,10 @@ See SPEC.md for full parameter tables and response fields.
 - **Never store vectors from different embedding models in the same index without
   tracking which model produced them.** The `embedding_model` column on `chunks`
   must always be populated.
-- **OAuth 2.1 Bearer JWT auth is enforced on every endpoint** except `/api/health`
-  and `/.well-known/ariadne-config`. See `src/pipeline/auth_oauth.py`.
+- **OAuth 2.1 Bearer JWT auth is enforced on every endpoint** except `/api/health`,
+  `/.well-known/ariadne-config`, and `/api/upload/signed` — the last uses HMAC-signed
+  presigned-URL auth via `ARIADNE_UPLOAD_SIGNING_SECRET`, not JWT. See
+  `src/pipeline/auth_oauth.py` and `src/pipeline/api/routes.py:159-178`.
 
 ## Design decisions (settled — do not change)
 

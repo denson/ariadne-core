@@ -253,7 +253,7 @@ def print_env_summary(env_path):
     print(f"    Vision:        {vis_model}")
     print(f"    Dimensions:    {dimensions}")
     print(f"    Auth0 domain:  {auth0_domain or '(not set)'}")
-    print(f"    Auth0 audience:{auth0_audience or '(not set)'}")
+    print(f"    Auth0 audience: {auth0_audience or '(not set)'}")
     print(f"    Upload secret: {mask_key(upload_secret) if upload_secret else '(not set)'}")
     print()
 
@@ -1844,7 +1844,7 @@ def show_connection(url):
         step_header(4, "Done")
         print(f'  MCP server "{entry_name}" already configured in Claude Code.\n')
         options = [
-            "Update with new URL and key",
+            "Update with new URL and headersHelper",
             "Keep existing configuration",
         ]
         choice = prompt_choice(options, default=1)
@@ -1877,7 +1877,8 @@ def show_connection(url):
         tmp_path.replace(config_path)
     except Exception as e:
         print(f"  Warning: could not write {config_path}: {e}")
-        print("  Configure Claude Code manually with the URL and key above.")
+        print(f"  Configure Claude Code manually: point it at {url}/mcp and set")
+        print("  headersHelper to ariadne-core/scripts/mcp_auth.py.")
         return
 
     if scope == "project":
