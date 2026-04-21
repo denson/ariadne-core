@@ -92,8 +92,8 @@ Railway / Fly.io / VPS
 │  │  list         │   │  GET  /api/stats                    │   │
 │  │  ingest       │   │  GET  /api/health                   │   │
 │  │              │   │                                      │   │
-│  │  Transport:   │   │  Auth: X-API-Key header             │   │
-│  │  Streamable   │   │  (ARIADNE_API_KEY env var)          │   │
+│  │  Transport:   │   │  Auth: Authorization: Bearer <jwt>  │   │
+│  │  Streamable   │   │  (Auth0 OAuth 2.1, JWKS validation) │   │
 │  │  HTTP         │   │                                      │   │
 │  └──────┬───────┘   └──────────┬───────────────────────────┘   │
 │         │                      │                               │
@@ -527,9 +527,9 @@ Same functionality as MCP tools, for batch pipelines and custom integrations.
 | GET | /api/stats | Queue depth, throughput, storage per collection |
 | GET | /api/health | Health check (no auth) |
 
-Auth: API key in `X-API-Key` header. Keys stored hashed in Postgres. The key's `name` field is used as the `agent_id` in provenance tracking.
+Auth: OAuth 2.1 Bearer JWT via Auth0. All endpoints except `/api/health` and `/.well-known/ariadne-config` require an `Authorization: Bearer <jwt>` header; JWTs are validated against Auth0's JWKS (RS256, `iss`/`aud`/`exp` checked). On success the server derives a `Principal{user_id, email}` — `user_id` is the Auth0 `sub` claim and is used as the `agent_id` in provenance tracking. See `SPEC.md` → "Authentication" for the full contract.
 
-All POST endpoints accept the caller metadata fields (`agent_id`, `agent_type`, `model`, `collection`, `initiated_by`) in the request body. If not provided, they're inferred from the API key and connection context.
+All POST endpoints accept the caller metadata fields (`agent_id`, `agent_type`, `model`, `collection`, `initiated_by`) in the request body. If `agent_id` is not provided, it's inferred from the authenticated `Principal.user_id` (the Auth0 `sub` claim).
 
 ---
 
@@ -602,7 +602,7 @@ api:
   host: 0.0.0.0
   port: 8000
   mcp_port: 8000            # same as port for single-port mode on Railway
-  # Auth controlled by ARIADNE_API_KEY env var
+  # Auth controlled by AUTH0_DOMAIN / AUTH0_CLIENT_ID / AUTH0_AUDIENCE env vars
 
 # --- Paths ---
 paths:
@@ -635,10 +635,17 @@ The config file supports `${VAR}` syntax for referencing environment variables. 
 On Railway, set these environment variables. `DATABASE_URL` is provided automatically by the Postgres plugin.
 
 ```bash
-# Required
+# Required — provider keys
 EMBEDDING_API_KEY=sk-...
 VISION_API_KEY=sk-...
-ARIADNE_API_KEY=your-secret-key    # clients authenticate with this
+
+# Required — Auth0 OAuth (clients send Authorization: Bearer <jwt>)
+AUTH0_DOMAIN=your-tenant.us.auth0.com
+AUTH0_CLIENT_ID=your-native-app-client-id
+AUTH0_AUDIENCE=https://ariadne-core
+
+# Required — HMAC secret for presigned upload URLs (not an auth credential)
+ARIADNE_UPLOAD_SIGNING_SECRET=a-random-32-byte-secret
 
 # Optional overrides
 # EMBEDDING_MODEL=gemini-embedding-001
@@ -677,7 +684,17 @@ On Railway (and similar platforms that expose one port), set `MCP_PORT` equal to
 
 ### Authentication
 
-When `ARIADNE_API_KEY` is set, all endpoints except `/api/health` require a valid `X-API-Key` header. The key is hashed and stored on startup. `MCPAuthMiddleware` gates `/mcp` requests; FastAPI dependency injection gates `/api/*` requests.
+Authentication is **OAuth 2.1 Bearer JWT** via Auth0, implemented in `src/pipeline/auth_oauth.py`. The server validates JWTs against Auth0's JWKS on every request:
+
+- **Algorithm:** RS256 only (HS256 rejected — we don't share secrets with Auth0)
+- **Claims validated:** `iss` matches `https://{AUTH0_DOMAIN}/`, `aud` matches `AUTH0_AUDIENCE`, `exp` is in the future, `sub` is present (non-empty string)
+- **JWKS caching:** `PyJWKClient` with a 600-second TTL. On an unknown `kid`, the server forces one JWKS refresh (covers Auth0 key-rotation before TTL expiry)
+- **Principal:** on success, the `require_user` dependency yields a `Principal{user_id, email}`. `user_id` is the `sub` claim; `email` is the `email` claim if present (PII — never logged)
+- **Failure modes:** each 401 carries a specific `detail` string (`missing_token`, `wrong_scheme`, `malformed_token`, `invalid_signature`, `wrong_audience`, `wrong_issuer`, `expired_token`, `unknown_kid`, `missing_sub_claim`, `invalid_token`); a 500 `auth_misconfigured` is returned when `AUTH0_DOMAIN` / `AUTH0_AUDIENCE` aren't set on the server
+
+The same `require_user` dependency gates both `/api/*` routes (FastAPI dependency injection) and `/mcp` (mounted Starlette app). The unauthenticated endpoints are `GET /api/health` and `GET /.well-known/ariadne-config` — the latter returns the Auth0 tenant config (issuer, client_id, audience, scope) so clients can run the PKCE flow.
+
+The prior `X-API-Key` path was removed in Pass 2 of the `ariadne--xft` epic (commit `54165c9`); the legacy implementation is preserved on branch `legacy/api-key` and tag `v0.x-legacy-api-key` for reference.
 
 ### Hardware Requirements
 

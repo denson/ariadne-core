@@ -13,7 +13,7 @@ Three layers, applied in order (later layers override earlier ones):
 
 1. **Built-in defaults** — reasonable starting values baked into the code
 2. **Config file** (`ariadne.yaml`) — your settings, with `${VAR}` interpolation for secrets
-3. **Environment variables** — override any config value directly (e.g., `PORT`, `DATABASE_URL`, `ARIADNE_API_KEY`)
+3. **Environment variables** — override any config value directly (e.g., `PORT`, `DATABASE_URL`, `AUTH0_DOMAIN`)
 
 The config file lives at `config/ariadne.yaml` in the repo and is baked into the Docker image at build time.
 
@@ -27,7 +27,10 @@ Required variables:
 |----------|-----------|-----------------|
 | `ARIADNE_EMBEDDING_API_KEY` | API key for the embedding model | Any OpenAI-compatible provider (OpenAI, Gemini, Groq, DeepSeek, Together AI, etc.) |
 | `ARIADNE_IMAGE_ENRICHMENT_API_KEY` | API key for the vision model (image descriptions) | Same provider key works, or use a different provider |
-| `ARIADNE_API_KEY` | API key for client authentication | Pick any strong secret |
+| `AUTH0_DOMAIN` | Auth0 tenant domain (e.g. `dev-xxxxx.us.auth0.com`) for OAuth 2.1 Bearer JWT auth | Auth0 dashboard → Applications |
+| `AUTH0_CLIENT_ID` | Auth0 native-application client ID, returned by `/.well-known/ariadne-config` so clients can run the PKCE flow | Auth0 dashboard → Applications → your native app |
+| `AUTH0_AUDIENCE` | Auth0 API audience identifier (must match `aud` on every accepted JWT) | Auth0 dashboard → APIs → your API identifier |
+| `ARIADNE_UPLOAD_SIGNING_SECRET` | HMAC secret for presigned upload URLs. Not an auth credential — just a random secret. | Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 
 For backward compatibility, unprefixed names (`EMBEDDING_API_KEY`, `VISION_API_KEY`, ...) also work.
 
@@ -192,7 +195,7 @@ api:
 | `port` | int | `8000` | REST API port. Overridden by `PORT` env var on Railway. |
 | `mcp_port` | int | `8000` | MCP port. When equal to `port`, runs in single-port mode (MCP mounted inside FastAPI). |
 
-Authentication is controlled by the `ARIADNE_API_KEY` environment variable. When set, all endpoints except `/api/health` require a valid `X-API-Key` header.
+Authentication is OAuth 2.1 Bearer JWT via Auth0. All endpoints except `/api/health` and `/.well-known/ariadne-config` require an `Authorization: Bearer <jwt>` header; JWTs are validated against Auth0's JWKS (RS256, `iss`/`aud`/`exp` checked). Configure via the `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, and `AUTH0_AUDIENCE` env vars; see `SPEC.md` → "Authentication" for the full contract and error-response table.
 
 ### paths
 
@@ -252,7 +255,10 @@ Set these environment variables on Railway and the defaults handle everything el
 ```
 EMBEDDING_API_KEY=your-provider-api-key
 VISION_API_KEY=your-provider-api-key
-ARIADNE_API_KEY=your-secret-key
+AUTH0_DOMAIN=your-tenant.us.auth0.com
+AUTH0_CLIENT_ID=your-native-app-client-id
+AUTH0_AUDIENCE=https://ariadne-core
+ARIADNE_UPLOAD_SIGNING_SECRET=a-random-32-byte-secret
 ```
 
 Railway provides `DATABASE_URL`, `PORT` automatically.

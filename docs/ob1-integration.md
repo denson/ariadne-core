@@ -43,12 +43,20 @@ For remote deployments, use Streamable HTTP transport:
     "ariadne-core": {
       "url": "https://your-server.example.com/mcp",
       "headers": {
-        "X-API-Key": "your-api-key"
+        "Authorization": "Bearer your-jwt-here"
       }
     }
   }
 }
 ```
+
+Ariadne Core uses Auth0 OAuth 2.1 Bearer JWT as of the `ariadne--xft.2` merge.
+The `ariadne login` CLI that runs the Auth0 PKCE flow automatically is landing
+in ticket `ariadne--xft.5`. Until then, obtain a test JWT from Auth0 dashboard
+→ Applications → your app → Test tab → copy the access token, and paste it in
+place of `your-jwt-here`. Machine-to-machine OB1 agents should use Auth0's
+client-credentials flow once Pass 3 lands. Clients can discover the Auth0
+config via `curl https://your-server.example.com/.well-known/ariadne-config`.
 
 ### REST API
 
@@ -58,7 +66,7 @@ OB1 agents can also use the REST API directly:
 # Ingest a document
 curl -X POST http://localhost:8000/api/documents \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $ARIADNE_API_KEY" \
+  -H "Authorization: Bearer $ARIADNE_JWT" \
   -d '{
     "uri": "/path/to/document.pdf",
     "collection": "ob1-daily",
@@ -69,7 +77,7 @@ curl -X POST http://localhost:8000/api/documents \
 # Search for context
 curl -X POST http://localhost:8000/api/search \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $ARIADNE_API_KEY" \
+  -H "Authorization: Bearer $ARIADNE_JWT" \
   -d '{
     "query": "quarterly revenue trends",
     "collection": "ob1-daily",

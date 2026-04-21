@@ -16,7 +16,11 @@ Ariadne Core runs as a hosted service on Railway (or any Docker host). By the en
    - See [Compatible providers](../README.md#compatible-providers) in the README for base URLs and model names.
    - Cost: a few cents per month for personal use. Many providers offer free tiers. Local models cost nothing beyond hardware.
 
-3. **An API key for authentication** — pick any strong secret. All clients must include this in their requests.
+3. **An Auth0 tenant for authentication** — Ariadne Core uses OAuth 2.1 Bearer JWT via Auth0 as of the `ariadne--xft.2` merge. Sign up at [auth0.com](https://auth0.com) (free tier works for personal use), then create:
+   - a **native-application** client (gets you an `AUTH0_CLIENT_ID`)
+   - an **API** / audience (gets you an `AUTH0_AUDIENCE`, e.g. `https://ariadne-core`)
+
+   You'll paste the tenant domain, client ID, and audience into the Railway env vars in Step 3. The `ariadne login` CLI that runs the Auth0 PKCE flow automatically is landing in ticket `ariadne--xft.5`; until then, clients obtain a test JWT from Auth0 dashboard → Applications → your app → Test tab → copy the access token.
 
 ## Step 1: Get the code
 
@@ -43,19 +47,26 @@ Railway builds the Docker image from the `Dockerfile` in the repo and provisions
 In the Railway dashboard or via CLI:
 
 ```bash
+# Auth0 OAuth — required for all protected endpoints
+railway variables set AUTH0_DOMAIN=your-tenant.us.auth0.com
+railway variables set AUTH0_CLIENT_ID=your-native-app-client-id
+railway variables set AUTH0_AUDIENCE=https://ariadne-core
+railway variables set ARIADNE_UPLOAD_SIGNING_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+
+# Embedding + vision
 railway variables set EMBEDDING_API_KEY=your-gemini-api-key
 railway variables set VISION_API_KEY=your-gemini-api-key
 railway variables set EMBEDDING_MODEL=gemini-embedding-001
 railway variables set VISION_MODEL=gemini-2.0-flash
 railway variables set EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 railway variables set VISION_BASE_URL=https://generativelanguage.googleapis.com/v1beta
-railway variables set ARIADNE_API_KEY=your-secret-api-key
 ```
 
 Notes:
+- `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_AUDIENCE` configure the Auth0 tenant the server validates JWTs against. The native-app client ID is exposed via `GET /.well-known/ariadne-config` so clients can run the PKCE flow — keep the *client secret* (for M2M clients, not this native app) out of the env.
+- `ARIADNE_UPLOAD_SIGNING_SECRET` is an HMAC secret for presigned upload URLs. Not an auth credential — just a random secret.
 - `EMBEDDING_API_KEY` and `VISION_API_KEY` work with any OpenAI-compatible provider — not just OpenAI. Both can use the same key if you use the same provider.
 - If using a non-OpenAI provider, also set `EMBEDDING_BASE_URL` and `VISION_BASE_URL` to match your provider's endpoint (see [Compatible providers](../README.md#compatible-providers)).
-- `ARIADNE_API_KEY` is the key clients use to authenticate — pick any strong secret.
 - Railway provides `DATABASE_URL` automatically via the Postgres plugin. No manual database config needed.
 
 ## Step 4: Get your public URL
@@ -79,8 +90,10 @@ You should see `{"status": "healthy"}`.
 ```bash
 claude mcp add ariadne-core https://your-url.up.railway.app/mcp \
   --transport http --scope user \
-  --header "X-API-Key:your-api-key"
+  --header "Authorization:Bearer your-jwt-here"
 ```
+
+Until `ariadne login` lands in ticket `ariadne--xft.5`, grab a test JWT from Auth0 dashboard → Applications → your app → Test tab → copy the access token, and paste it in place of `your-jwt-here`.
 
 Restart Claude Code. The six Ariadne Core tools should appear. Verify with `claude mcp list`.
 
@@ -91,8 +104,14 @@ Open Brain, OpenClaw, or any HTTP client can use the REST API:
 ```bash
 curl -X POST https://your-url.up.railway.app/api/search \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer your-jwt-here" \
   -d '{"query": "quarterly revenue trends", "top_k": 5}'
+```
+
+Clients can discover the Auth0 config (issuer, client_id, audience, scope) via the unauthenticated discovery endpoint:
+
+```bash
+curl https://your-url.up.railway.app/.well-known/ariadne-config
 ```
 
 ## Verify everything works
@@ -102,7 +121,7 @@ curl -X POST https://your-url.up.railway.app/api/search \
 2. **Via REST API**, upload and convert a document:
    ```bash
    curl -X POST https://your-url/api/upload \
-     -H "X-API-Key: your-api-key" \
+     -H "Authorization: Bearer your-jwt-here" \
      -F "file=@report.pdf"
    ```
 
@@ -126,13 +145,14 @@ Railway / Fly.io / VPS
 └─────────────────────────┘
   MCP Server
      ▲  ▲  ▲  ▲
-     │  │  │  └── Claude Cowork (Managed edition or roll your own OAuth)
+     │  │  │  └── Claude Cowork
      │  │  └───── OpenClaw
      │  └──────── Open Brain
      └─────────── Claude Code
 
-Authentication is by API key for Personal edition and OAuth for Managed and higher
-editions. You can also create your own OAuth for the Personal edition.
+Authentication is OAuth 2.1 Bearer JWT (Auth0) across all editions. Clients
+discover the Auth0 config via `GET /.well-known/ariadne-config` (unauthenticated)
+and send `Authorization: Bearer <jwt>` on every request.
 ```
 
 | Component | Where | What |
@@ -181,9 +201,13 @@ Your data is preserved in Postgres. Migrations run automatically on startup.
 - Verify the URL: `curl https://your-url/api/health`
 - Check Railway logs for errors
 
-**401 or 403 errors**
-- Check that your `X-API-Key` header matches the `ARIADNE_API_KEY` environment variable on Railway
-- For Claude Code: verify the header in `claude mcp list` output
+**401 errors** — see the `detail` string in the response body for the specific reason:
+- `missing_token` — no `Authorization` header; add `Authorization: Bearer <jwt>`
+- `wrong_scheme` — header present but not `Bearer` (e.g. an old `X-API-Key` config); switch to `Authorization: Bearer <jwt>`
+- `wrong_audience` / `wrong_issuer` — the JWT was minted against a different Auth0 tenant/API than the server expects. Run `curl https://your-url/.well-known/ariadne-config` and compare the `audience` / `issuer` with the `aud` / `iss` claims on your JWT (decode at https://jwt.io)
+- `expired_token` — access tokens are short-lived; grab a fresh one from Auth0 dashboard → Test tab
+- `invalid_signature` — token signed by a different Auth0 tenant; re-issue from the correct tenant
+- 500 `auth_misconfigured` — the server's `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_AUDIENCE` aren't set; set them in Railway variables and redeploy
 
 **Embedding or vision errors**
 Your API key is missing, invalid, or the base URL doesn't match. Verify your key works by hitting the native Gemini endpoint directly:
@@ -201,7 +225,8 @@ If you're stuck, run this and share the output with a coding assistant or [open 
 
 ```bash
 echo "=== Health ===" && curl -s https://your-url/api/health 2>&1
-echo "=== MCP ===" && curl -s -o /dev/null -w "HTTP %{http_code}" -H "X-API-Key: your-key" https://your-url/mcp 2>&1
+echo "=== Auth0 config ===" && curl -s https://your-url/.well-known/ariadne-config 2>&1
+echo "=== MCP ===" && curl -s -o /dev/null -w "HTTP %{http_code}" -H "Authorization: Bearer your-jwt" https://your-url/mcp 2>&1
 ```
 
 ## Local development

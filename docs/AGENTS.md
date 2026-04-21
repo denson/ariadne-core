@@ -25,16 +25,16 @@ Beyond extraction, Ariadne chunks the Markdown, computes semantic embeddings, an
 Any MCP-compatible client can connect over Streamable HTTP. One command (syntax varies by client):
 
 ```
-URL:     https://<your-deployment>/mcp
+URL:       https://<your-deployment>/mcp
 Transport: streamable-http (or http)
-Header:  X-API-Key: <your-api-key>
+Header:    Authorization: Bearer <your-jwt>
 ```
 
 **Claude Code example:**
 ```bash
 claude mcp add ariadne-core https://your-deployment.up.railway.app/mcp \
   --transport http --scope user \
-  --header "X-API-Key:your-api-key"
+  --header "Authorization:Bearer your-jwt-here"
 ```
 
 **Cursor:** Settings > Tools & MCP > Add New MCP Server. Type: `streamable-http`. URL and header as above.
@@ -45,33 +45,48 @@ claude mcp add ariadne-core https://your-deployment.up.railway.app/mcp \
 
 ### REST API (fallback)
 
-For agents and scripts that don't support MCP, the full REST API is available at `https://<your-deployment>/api/`. All endpoints except `/api/health` require an `X-API-Key` header.
+For agents and scripts that don't support MCP, the full REST API is available at `https://<your-deployment>/api/`. All endpoints except `/api/health` and `/.well-known/ariadne-config` require an `Authorization: Bearer <jwt>` header.
 
 ```bash
 # Health check (no auth)
 curl https://your-deployment/api/health
 
+# Auth0 discovery (no auth — returns issuer, client_id, audience, scope)
+curl https://your-deployment/.well-known/ariadne-config
+
 # Search
 curl -X POST https://your-deployment/api/search \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer your-jwt-here" \
   -d '{"query": "quarterly revenue trends", "top_k": 5}'
 
 # Upload a file, then convert it
 curl -X POST https://your-deployment/api/upload \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer your-jwt-here" \
   -F "file=@report.pdf"
 
 # Convert (pass the path returned by upload)
 curl -X POST https://your-deployment/api/documents \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer your-jwt-here" \
   -d '{"uri": "/uploads/report.pdf", "collection": "research"}'
 ```
 
 ### Authentication
 
-All endpoints except `/api/health` require the `X-API-Key` header. The key matches the `ARIADNE_API_KEY` environment variable on the server. API keys are stored as SHA-256 hashes.
+Ariadne Core uses **OAuth 2.1 Bearer JWT** for all protected endpoints. Auth0 is the identity provider; the server validates JWTs against Auth0's JWKS (RS256, `iss`/`aud`/`exp` checked). All endpoints except `/api/health` and `/.well-known/ariadne-config` require an `Authorization: Bearer <jwt>` header.
+
+**Principal contract:** on success, the server derives a `Principal{user_id, email}` from the JWT — `user_id` is the Auth0 `sub` claim and is used as `agent_id` in provenance tracking.
+
+**Interim state (Pass 2 landed, Pass 3 pending):** the `ariadne login` CLI that runs the Auth0 PKCE flow automatically is landing in ticket `ariadne--xft.5`. Until then, agents obtain a test JWT from **Auth0 dashboard → Applications → your app → Test tab → copy the access token**, then pass it in the `Authorization: Bearer <jwt>` header. Machine-to-machine agents (OB1, OpenClaw, custom) should use Auth0's client-credentials flow once Pass 3 lands; until then, the test token path is the only option.
+
+**Discovery:** clients can fetch the Auth0 tenant config (issuer, client_id, audience, scope) from the unauthenticated discovery endpoint:
+
+```bash
+curl https://<your-deployment>/.well-known/ariadne-config
+```
+
+Full error-response contract (`detail` strings like `missing_token`, `wrong_audience`, `expired_token`, etc.): see [SPEC.md](../SPEC.md) → "Authentication".
 
 ---
 
@@ -94,7 +109,7 @@ All tools accept caller metadata for provenance tracking — see the next sectio
 
 The server runs remotely. Provide documents as:
 - **HTTP/HTTPS URLs** — pass directly to `convert_document`
-- **Local files** — upload first via `POST /api/upload` (multipart form data with `X-API-Key` header), then pass the returned server-side `path` to `convert_document`
+- **Local files** — upload first via `POST /api/upload` (multipart form data with `Authorization: Bearer <jwt>` header), then pass the returned server-side `path` to `convert_document`
 
 For batch ingestion of a local directory, use the helper script pattern documented in the project skills, or call `ingest` with a server-side directory path after uploading files.
 
