@@ -86,7 +86,6 @@ class ChunkingConfig:
 class APIConfig:
     host: str = "0.0.0.0"
     port: int = 8000
-    require_auth: bool = False
 
 
 @dataclass

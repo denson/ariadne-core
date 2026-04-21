@@ -6,6 +6,10 @@ reachable, tests that depend on the fixture are skipped rather than
 failing, so the full suite still runs cleanly on a machine without
 docker compose up.
 
+It also provides `override_auth(app)` — a helper that installs a
+dependency override so route tests can use `TestClient(app)` without
+a real Auth0 token. See the "OAuth override helper" section below.
+
 To run the Pg integration tests locally:
     docker compose up -d postgres
     export DB_PASSWORD=local-dev-only  # or whatever is in .env
@@ -23,6 +27,36 @@ import uuid
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+
+
+# ── OAuth override helper ────────────────────────────────────────────────────
+#
+# Route tests construct a fresh FastAPI and include the production
+# router, but they do not have a real Auth0 token — and spinning up
+# the JWKS client + signing fresh JWTs for every route test would be
+# overkill. `test_auth_oauth.py` is the one place that exercises the
+# real token-validation path; every other route test just needs the
+# routes to be reachable.
+#
+# FastAPI's standard escape hatch for this is `app.dependency_overrides`:
+# we register a fake that returns a fixed Principal, so `require_user`
+# resolves to that Principal without ever calling PyJWKClient.
+
+def override_auth(app: FastAPI, user_id: str = "test-user") -> None:
+    """Install a dependency override so TestClient requests authenticate
+    as a fixed test Principal instead of validating an Auth0 token.
+
+    Use this in any route-level test fixture that doesn't specifically
+    exercise auth. test_auth_oauth.py does NOT use this helper — it
+    drives the real require_user through a mocked JWKS.
+    """
+    from pipeline.auth_oauth import Principal, require_user
+
+    def _fake_principal() -> Principal:
+        return Principal(user_id=user_id, email=None)
+
+    app.dependency_overrides[require_user] = _fake_principal
 
 
 def _default_test_db_url() -> str:

@@ -104,24 +104,21 @@ def test_existing_http_exception_routes_still_work_through_real_router():
     still returns its pre-BL-21 shape via the real router, proving the generic handler
     didn't steal HTTPException responses from the production app."""
     from fastapi import FastAPI as _FastAPI
-    from pipeline.api.auth import set_require_auth
     from pipeline.api.routes import router
 
     # Build a fresh app that mirrors production — router + the same Exception handler.
+    # Routes unconditionally require an Auth0 Bearer token (OAuth Pass 2); no toggle
+    # needed — a request without a token must return 401.
     handler = real_app.exception_handlers[Exception]
-    set_require_auth(True)
-    try:
-        app = _FastAPI()
-        app.add_exception_handler(Exception, handler)
-        app.include_router(router, prefix="/api")
-        client = TestClient(app, raise_server_exceptions=False)
+    app = _FastAPI()
+    app.add_exception_handler(Exception, handler)
+    app.include_router(router, prefix="/api")
+    client = TestClient(app, raise_server_exceptions=False)
 
-        # No X-API-Key header → route raises HTTPException(401). That must NOT get
-        # reshaped into the generic handler's dict.
-        resp = client.get("/api/documents")
-        assert resp.status_code == 401, resp.text
-        body = resp.json()
-        # The existing auth error shape is a string detail, not our generic dict.
-        assert isinstance(body.get("detail"), str), body
-    finally:
-        set_require_auth(False)
+    # No Authorization header → require_user raises HTTPException(401). That must
+    # NOT get reshaped into the generic handler's dict.
+    resp = client.get("/api/documents")
+    assert resp.status_code == 401, resp.text
+    body = resp.json()
+    # The auth error shape is a string detail ("missing_token"), not our generic dict.
+    assert isinstance(body.get("detail"), str), body

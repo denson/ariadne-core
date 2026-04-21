@@ -6,13 +6,11 @@ Creates the FastAPI app with CORS, lifespan, and route mounting.
 from __future__ import annotations
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from pipeline.api.auth import get_key_store, set_require_auth
 from pipeline.api.discovery import router as discovery_router
 from pipeline.api.routes import router
 from pipeline.config import load_config
@@ -80,17 +78,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("No image enrichment API key — image descriptions disabled")
 
-    # Auth enforcement
-    api_key = os.environ.get("ARIADNE_API_KEY")
-    if api_key:
-        get_key_store().create_key("default", api_key)
-        set_require_auth(True)
-        logger.info("API key authentication is REQUIRED (key seeded from env)")
-    elif config.api.require_auth:
-        logger.info("API key authentication is REQUIRED")
-        set_require_auth(True)
-    else:
-        set_require_auth(False)
+    # Auth: every protected route uses Depends(require_user) which
+    # validates an Auth0 Bearer JWT against the JWKS on each request.
+    # No lifespan setup is needed — `pipeline.auth_oauth` reads
+    # AUTH0_DOMAIN / AUTH0_AUDIENCE lazily on first use. The discovery
+    # endpoint (`/.well-known/ariadne-config`) additionally needs
+    # AUTH0_CLIENT_ID. A deploy that forgot any of them surfaces as a
+    # 500 with detail="auth_misconfigured" on the first request that
+    # hits that path.
+    logger.info("OAuth Bearer JWT authentication is REQUIRED (Auth0)")
 
     yield
     # Shutdown: close connections

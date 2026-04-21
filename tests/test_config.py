@@ -106,7 +106,6 @@ class TestLoadConfigDefaults:
         assert config.chunking.default_strategy == "by_title"
         assert config.chunking.max_characters == 1500
         assert config.api.port == 8000
-        assert config.api.require_auth is False
         assert config.image_enrichment.model == "gemini-2.0-flash"
         assert config.logging.level == "info"
         assert config.database.url == "postgresql://app:changeme@localhost:5432/pipeline"
@@ -201,12 +200,16 @@ class TestEnvVarOverrides:
         assert config.embedding.dimensions == 768
         assert isinstance(config.embedding.dimensions, int)
 
-    def test_bool_coercion(self):
+    def test_bool_coercion_true(self):
+        # `image_enrichment.enabled` is now the canonical bool-coercion
+        # field to exercise. `api.require_auth` was removed in
+        # ariadne--xft.2 when the X-API-Key toggle went away — every
+        # route requires an OAuth Bearer JWT unconditionally.
         config = load_config(
             path="/nonexistent/path.yaml",
-            env={"ARIADNE_API_REQUIRE_AUTH": "true"},
+            env={"ARIADNE_IMAGE_ENRICHMENT_ENABLED": "true"},
         )
-        assert config.api.require_auth is True
+        assert config.image_enrichment.enabled is True
 
     def test_bool_coercion_false(self):
         config = load_config(
