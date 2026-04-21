@@ -66,13 +66,14 @@ ariadne-core/
 │       ├── __main__.py         # CLI entrypoint: `serve` starts MCP + REST
 │       ├── mcp_server.py       # MCP tool definitions (Streamable HTTP)
 │       ├── config.py           # Config file + env var loader
+│       ├── auth_oauth.py       # OAuth 2.1 Bearer JWT validation (Auth0 JWKS)
 │       ├── dedup.py            # SHA-256 fingerprinting + dedup gate
 │       ├── schema.py           # Pydantic models
 │       ├── stores.py           # Store orchestration
 │       ├── api/
-│       │   ├── app.py          # FastAPI application
+│       │   ├── app.py          # FastAPI application + OAuth middleware
 │       │   ├── routes.py       # REST endpoints (upload, documents, search, etc.)
-│       │   └── auth.py         # API key middleware
+│       │   └── discovery.py    # /.well-known/ariadne-config endpoint
 │       ├── extraction/
 │       │   └── markitdown.py   # MarkItDown wrapper
 │       ├── enrichment/
@@ -231,8 +232,8 @@ See SPEC.md for full parameter tables and response fields.
 - **Never store vectors from different embedding models in the same index without
   tracking which model produced them.** The `embedding_model` column on `chunks`
   must always be populated.
-- **All deployments should enable API key auth.** The `require_auth` config flag
-  gates all endpoints except `/api/health`.
+- **OAuth 2.1 Bearer JWT auth is enforced on every endpoint** except `/api/health`
+  and `/.well-known/ariadne-config`. See `src/pipeline/auth_oauth.py`.
 
 ## Design decisions (settled — do not change)
 

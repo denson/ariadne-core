@@ -3,6 +3,20 @@
 Ariadne Core — Setup Script
 Handles the entire deployment from a single terminal window.
 
+Auth: the server uses OAuth 2.1 Bearer JWTs issued by Auth0
+(see ``src/pipeline/auth_oauth.py``). This script configures the
+*server-side* Auth0 env vars (AUTH0_DOMAIN, AUTH0_CLIENT_ID,
+AUTH0_AUDIENCE) that the server advertises via
+``GET /.well-known/ariadne-config``. It does NOT mint a client JWT.
+
+Until the ``ariadne login`` CLI lands in ticket ``ariadne--xft.5``
+(which will run the PKCE flow and cache a refresh token in the OS
+keyring), end users obtain a test JWT from Auth0 dashboard →
+Applications → your app → Test tab → copy the access token, and
+paste it into ``ARIADNE_ACCESS_TOKEN`` in their .env. The MCP
+headersHelper (``scripts/mcp_auth.py``) reads that token and emits
+``Authorization: Bearer <jwt>`` for Claude Code.
+
 Author: Denson Smith
 
 Usage:
@@ -90,6 +104,15 @@ Provider defaults:
     Vision:    Llama-3.2-11B-Vision (cheapest) or Qwen2.5-VL-7B (best OCR)
     Docs:      https://docs.together.ai/docs/inference-models
 """
+
+# Auth0 tenant defaults — captured during Auth0 tenant setup
+# (OAUTH_PLAN.md Pass 1). These are the Native `Ariadne CLI`
+# application values — NOT secrets, safe to commit. Clients fetch
+# them via GET /.well-known/ariadne-config. Users on a private
+# Auth0 tenant can override via interactive prompt.
+DEFAULT_AUTH0_DOMAIN = "dev-1inpk4rtyzwxmcgm.us.auth0.com"
+DEFAULT_AUTH0_CLIENT_ID = "ixpErHZnMADzV7wTEcO48N3oaiNCjNUj"
+DEFAULT_AUTH0_AUDIENCE = "https://ariadne-core"
 
 # Railway GraphQL API
 RAILWAY_GQL_ENDPOINT = "https://backboard.railway.com/graphql/v2"
@@ -212,7 +235,9 @@ def print_env_summary(env_path):
     emb_model = values.get("ARIADNE_EMBEDDING_MODEL", "") or values.get("EMBEDDING_MODEL", "?")
     vis_model = values.get("ARIADNE_IMAGE_ENRICHMENT_MODEL", "") or values.get("VISION_MODEL", "?")
     dimensions = values.get("ARIADNE_EMBEDDING_DIMENSIONS", "?")
-    ariadne_key = values.get("ARIADNE_API_KEY", "")
+    auth0_domain = values.get("AUTH0_DOMAIN", "")
+    auth0_audience = values.get("AUTH0_AUDIENCE", "")
+    upload_secret = values.get("ARIADNE_UPLOAD_SIGNING_SECRET", "")
 
     print()
     print("  Existing configuration found at:")
@@ -227,7 +252,9 @@ def print_env_summary(env_path):
         print(f"    Vision key:    {mask_key(vis_key) if vis_key else '(not set)'}")
     print(f"    Vision:        {vis_model}")
     print(f"    Dimensions:    {dimensions}")
-    print(f"    Ariadne key:   {mask_key(ariadne_key) if ariadne_key else '(not set)'}")
+    print(f"    Auth0 domain:  {auth0_domain or '(not set)'}")
+    print(f"    Auth0 audience:{auth0_audience or '(not set)'}")
+    print(f"    Upload secret: {mask_key(upload_secret) if upload_secret else '(not set)'}")
     print()
 
 
@@ -300,7 +327,10 @@ def edit_env(env_path, repo_root):
         dimensions = int(dimensions_raw)
     except (TypeError, ValueError):
         dimensions = None
-    ariadne_key = values.get("ARIADNE_API_KEY", "")
+    auth0_domain = values.get("AUTH0_DOMAIN", "") or DEFAULT_AUTH0_DOMAIN
+    auth0_client_id = values.get("AUTH0_CLIENT_ID", "") or DEFAULT_AUTH0_CLIENT_ID
+    auth0_audience = values.get("AUTH0_AUDIENCE", "") or DEFAULT_AUTH0_AUDIENCE
+    upload_secret = values.get("ARIADNE_UPLOAD_SIGNING_SECRET", "")
 
     provider_key = _provider_key_from_base_url(emb_base)
 
@@ -390,11 +420,35 @@ def edit_env(env_path, repo_root):
         dimensions = dim_choices[idx]
         success(f"Dimensions: {dimensions}")
 
-    print(f"\n  Client key (ARIADNE_API_KEY): {mask_key(ariadne_key) if ariadne_key else '(not set)'}")
-    options = ["Keep existing key", "Regenerate"]
+    if _keep_or_change("Auth0 domain (AUTH0_DOMAIN)", auth0_domain):
+        entered = input(f"  Auth0 domain [{auth0_domain}]: ").strip()
+        if entered:
+            auth0_domain = entered
+        success(f"Auth0 domain: {auth0_domain}")
+
+    if _keep_or_change("Auth0 client ID (AUTH0_CLIENT_ID)", auth0_client_id):
+        entered = input(f"  Auth0 client ID [{auth0_client_id}]: ").strip()
+        if entered:
+            auth0_client_id = entered
+        success(f"Auth0 client ID: {auth0_client_id}")
+
+    if _keep_or_change("Auth0 audience (AUTH0_AUDIENCE)", auth0_audience):
+        entered = input(f"  Auth0 audience [{auth0_audience}]: ").strip()
+        if entered:
+            auth0_audience = entered
+        success(f"Auth0 audience: {auth0_audience}")
+
+    print(
+        f"\n  Upload signing secret (ARIADNE_UPLOAD_SIGNING_SECRET): "
+        f"{mask_key(upload_secret) if upload_secret else '(not set)'}"
+    )
+    if not upload_secret:
+        options = ["Generate (recommended)", "Leave unset"]
+    else:
+        options = ["Keep existing", "Regenerate"]
     if prompt_choice(options, default=1) == 1:
-        ariadne_key = secrets.token_urlsafe(32)
-        success(f"Regenerated: {mask_key(ariadne_key)}")
+        upload_secret = secrets.token_urlsafe(32)
+        success(f"Upload signing secret: {mask_key(upload_secret)}")
 
     if dimensions is None:
         dimensions = DIMENSION_OPTIONS[0][0]
@@ -403,34 +457,25 @@ def edit_env(env_path, repo_root):
     print(f"\n  Backed up previous .env to:")
     print(f"    {backup_path}")
 
-    env_content = f"""# .env -- generated by setup.py
-# Do NOT commit this file (it's in .gitignore)
-
-# Database (local development only -- for docker compose)
-# Railway users: skip this. Railway injects DATABASE_URL automatically.
-DB_PASSWORD=local-dev-only
-
-# --- Embedding Provider ---
-ARIADNE_EMBEDDING_API_KEY={emb_key}
-ARIADNE_EMBEDDING_MODEL={emb_model}
-ARIADNE_EMBEDDING_BASE_URL={emb_base}
-ARIADNE_EMBEDDING_DIMENSIONS={dimensions}
-
-# --- Vision Provider (for image descriptions in documents) ---
-ARIADNE_IMAGE_ENRICHMENT_API_KEY={vis_key}
-ARIADNE_IMAGE_ENRICHMENT_MODEL={vis_model}
-ARIADNE_IMAGE_ENRICHMENT_BASE_URL={vis_base}
-
-# --- Client Authentication ---
-# Auto-generated. Clients connect with this key via X-API-Key header.
-ARIADNE_API_KEY={ariadne_key}
-"""
+    env_content = _render_env_content(
+        emb_key=emb_key,
+        emb_model=emb_model,
+        emb_base=emb_base,
+        dimensions=dimensions,
+        vis_key=vis_key,
+        vis_model=vis_model,
+        vis_base=vis_base,
+        auth0_domain=auth0_domain,
+        auth0_client_id=auth0_client_id,
+        auth0_audience=auth0_audience,
+        upload_secret=upload_secret,
+    )
     env_path.write_text(env_content)
     success(".env updated")
     print(f"    {env_path}")
     verify_gitignore(repo_root)
 
-    return ariadne_key, read_env_as_vars(env_path)
+    return read_env_as_vars(env_path)
 
 
 def prompt_choice(options, default=1):
@@ -778,6 +823,47 @@ def choose_models(provider_key, provider_config, api_key):
     return emb_model, vis_model
 
 
+def choose_auth0_config():
+    """Prompt for Auth0 tenant values. Returns (domain, client_id, audience).
+
+    Defaults are the public Native `Ariadne CLI` application values
+    from OAUTH_PLAN.md Pass 1 — safe to commit and to use unchanged
+    for the normal install path. Advanced users running their own
+    Auth0 tenant can override.
+
+    None of these are secrets. Clients fetch them via
+    GET /.well-known/ariadne-config. Any real secrecy boundary is on
+    the tokens the client obtains from Auth0 itself.
+    """
+    print()
+    print("  Auth0 config (OAuth 2.1 server-side settings):")
+    print()
+    print("  The server validates incoming Authorization: Bearer <jwt>")
+    print("  headers against an Auth0 tenant's JWKS. The default values")
+    print("  below come from the public Ariadne CLI tenant — use them")
+    print("  unchanged unless you're running your own Auth0 tenant.")
+    print()
+    options = [
+        "Use defaults (recommended — public Ariadne CLI tenant)",
+        "Enter custom values (private Auth0 tenant)",
+    ]
+    choice = prompt_choice(options, default=1)
+
+    if choice == 0:
+        success(f"Auth0 domain:   {DEFAULT_AUTH0_DOMAIN}")
+        success(f"Auth0 client:   {DEFAULT_AUTH0_CLIENT_ID}")
+        success(f"Auth0 audience: {DEFAULT_AUTH0_AUDIENCE}")
+        return DEFAULT_AUTH0_DOMAIN, DEFAULT_AUTH0_CLIENT_ID, DEFAULT_AUTH0_AUDIENCE
+
+    domain = input(f"  AUTH0_DOMAIN    [{DEFAULT_AUTH0_DOMAIN}]: ").strip() or DEFAULT_AUTH0_DOMAIN
+    client_id = input(f"  AUTH0_CLIENT_ID [{DEFAULT_AUTH0_CLIENT_ID}]: ").strip() or DEFAULT_AUTH0_CLIENT_ID
+    audience = input(f"  AUTH0_AUDIENCE  [{DEFAULT_AUTH0_AUDIENCE}]: ").strip() or DEFAULT_AUTH0_AUDIENCE
+    success(f"Auth0 domain:   {domain}")
+    success(f"Auth0 client:   {client_id}")
+    success(f"Auth0 audience: {audience}")
+    return domain, client_id, audience
+
+
 def choose_dimensions():
     print("\n  Embedding dimensions:\n")
     print("  Your embedding model supports up to 3072 dimensions, but pgvector's")
@@ -879,6 +965,60 @@ def read_env_as_vars(env_path, exclude=None):
     return env_vars
 
 
+def _render_env_content(
+    *,
+    emb_key,
+    emb_model,
+    emb_base,
+    dimensions,
+    vis_key,
+    vis_model,
+    vis_base,
+    auth0_domain,
+    auth0_client_id,
+    auth0_audience,
+    upload_secret,
+):
+    """Render the full .env file body.
+
+    Single source of truth for the .env layout used by both write_env()
+    (fresh setup) and edit_env() (update mode). Shape matches .env.example.
+    """
+    return f"""# .env -- generated by setup.py
+# Do NOT commit this file (it's in .gitignore)
+
+# Database (local development only -- for docker compose)
+# Railway users: skip this. Railway injects DATABASE_URL automatically.
+DB_PASSWORD=local-dev-only
+
+# --- Embedding Provider ---
+ARIADNE_EMBEDDING_API_KEY={emb_key}
+ARIADNE_EMBEDDING_MODEL={emb_model}
+ARIADNE_EMBEDDING_BASE_URL={emb_base}
+ARIADNE_EMBEDDING_DIMENSIONS={dimensions}
+
+# --- Vision Provider (for image descriptions in documents) ---
+ARIADNE_IMAGE_ENRICHMENT_API_KEY={vis_key}
+ARIADNE_IMAGE_ENRICHMENT_MODEL={vis_model}
+ARIADNE_IMAGE_ENRICHMENT_BASE_URL={vis_base}
+
+# --- Auth (OAuth 2.1 via Auth0) ---
+# NOT secrets — clients fetch these via GET /.well-known/ariadne-config.
+# The server validates incoming Authorization: Bearer <jwt> headers
+# against this tenant's JWKS. See src/pipeline/auth_oauth.py.
+AUTH0_DOMAIN={auth0_domain}
+AUTH0_CLIENT_ID={auth0_client_id}
+AUTH0_AUDIENCE={auth0_audience}
+
+# --- Upload signing secret ---
+# HMAC key for presigned upload URLs (/api/upload/signed). NOT an
+# auth credential — just signs short-lived upload tokens. If unset,
+# the presigned-upload endpoint returns 503 (the authenticated
+# /api/upload endpoint is unaffected).
+ARIADNE_UPLOAD_SIGNING_SECRET={upload_secret}
+"""
+
+
 def write_env(
     env_path,
     repo_root,
@@ -889,7 +1029,10 @@ def write_env(
     emb_base_url,
     vis_base_url,
     dimensions,
-    ariadne_key,
+    auth0_domain,
+    auth0_client_id,
+    auth0_audience,
+    upload_secret,
 ):
     print()
     verify_gitignore(repo_root)
@@ -902,28 +1045,19 @@ def write_env(
             success(".env kept as-is")
             return
 
-    env_content = f"""# .env -- generated by setup.py
-# Do NOT commit this file (it's in .gitignore)
-
-# Database (local development only -- for docker compose)
-# Railway users: skip this. Railway injects DATABASE_URL automatically.
-DB_PASSWORD=local-dev-only
-
-# --- Embedding Provider ---
-ARIADNE_EMBEDDING_API_KEY={emb_key}
-ARIADNE_EMBEDDING_MODEL={emb_model}
-ARIADNE_EMBEDDING_BASE_URL={emb_base_url}
-ARIADNE_EMBEDDING_DIMENSIONS={dimensions}
-
-# --- Vision Provider (for image descriptions in documents) ---
-ARIADNE_IMAGE_ENRICHMENT_API_KEY={vis_key}
-ARIADNE_IMAGE_ENRICHMENT_MODEL={vis_model}
-ARIADNE_IMAGE_ENRICHMENT_BASE_URL={vis_base_url}
-
-# --- Client Authentication ---
-# Auto-generated. Clients connect with this key via X-API-Key header.
-ARIADNE_API_KEY={ariadne_key}
-"""
+    env_content = _render_env_content(
+        emb_key=emb_key,
+        emb_model=emb_model,
+        emb_base=emb_base_url,
+        dimensions=dimensions,
+        vis_key=vis_key,
+        vis_model=vis_model,
+        vis_base=vis_base_url,
+        auth0_domain=auth0_domain,
+        auth0_client_id=auth0_client_id,
+        auth0_audience=auth0_audience,
+        upload_secret=upload_secret,
+    )
 
     env_path.write_text(env_content)
 
@@ -1618,7 +1752,7 @@ def deploy_railway(env_path, env_vars):
 # Step 6: Output connection command
 # ─────────────────────────────────────────────────────────────────
 
-def show_connection(url, ariadne_key):
+def show_connection(url):
     # --- Ask for connection name ---
     print()
     print(f"  OK Live at: {url}")
@@ -1755,19 +1889,43 @@ def show_connection(url, ariadne_key):
         print(f'     Connection "{entry_name}" will appear in all Claude Code sessions.')
     print(f"     (MCP config written to {config_path})")
     print()
+    print("  Auth note: the MCP config points headersHelper at")
+    print("    scripts/mcp_auth.py")
+    print("  which reads ARIADNE_ACCESS_TOKEN from your .env and emits")
+    print("    Authorization: Bearer <jwt>")
+    print("  for Claude Code. You still need to put a JWT in .env:")
+    print()
+    print("    1. Open Auth0 dashboard → Applications → your app → Test tab")
+    print("    2. Copy the access token")
+    print("    3. Add to .env:  ARIADNE_ACCESS_TOKEN=<paste-here>")
+    print()
+    print("  The `ariadne login` CLI (ticket ariadne--xft.5) will automate")
+    print("  this via PKCE + OS keyring. Until then, the Test-tab token is")
+    print("  the interim path.")
+    print()
 
 
 def show_connection_template():
     """Show connection command with placeholder URL (for non-Railway deploys)."""
     step_header(4, "Done")
 
-    print("  After deploying, run this command (replace YOUR-URL and YOUR-API-KEY):\n")
+    print("  After deploying, get a test JWT:")
+    print("    1. Open Auth0 dashboard → Applications → your app → Test tab")
+    print("    2. Copy the access token")
+    print()
+    print("  Then run this command (replace YOUR-URL and YOUR-JWT):\n")
     print("  claude mcp add ariadne-core \\")
     print("    https://YOUR-URL/mcp \\")
     print("    --transport http --scope user \\")
-    print('    --header "X-API-Key:YOUR-API-KEY"')
+    print('    --header "Authorization:Bearer YOUR-JWT"')
     print()
-    print("  Your ARIADNE_API_KEY is in your .env file.")
+    print("  Alternative: set ARIADNE_ACCESS_TOKEN=<jwt> in your .env and")
+    print("  point Claude Code at scripts/mcp_auth.py via headersHelper")
+    print("  in .mcp.json — see scripts/mcp_auth.py docstring for the shape.")
+    print()
+    print("  The `ariadne login` CLI (ticket ariadne--xft.5) will automate")
+    print("  the Auth0 PKCE flow and cache a keyring-backed refresh token.")
+    print("  Until then, the Test-tab token is the interim path.")
     print()
     print("  Then restart Claude Code.\n")
 
@@ -1852,9 +2010,8 @@ Document extraction + vector search for AI agents
 
         if choice == 0 or choice == 1:
             if choice == 1:
-                ariadne_key, env_vars = edit_env(env_path, repo_root)
+                env_vars = edit_env(env_path, repo_root)
             else:
-                ariadne_key = read_env_value(env_path, "ARIADNE_API_KEY") or secrets.token_urlsafe(32)
                 env_vars = read_env_as_vars(env_path)
 
             if args.skip_deploy:
@@ -1867,7 +2024,7 @@ Document extraction + vector search for AI agents
 
             url, health_ok = deploy_railway(env_path, env_vars)
             if url:
-                show_connection(url, ariadne_key)
+                show_connection(url)
                 final_banner(health_ok, url)
             else:
                 show_connection_template()
@@ -1891,11 +2048,10 @@ Document extraction + vector search for AI agents
             print(f"  Copied .env.example to .env -- edit it with your values.\n")
 
         if not args.skip_deploy:
-            ariadne_key = read_env_value(env_path, "ARIADNE_API_KEY") or secrets.token_urlsafe(32)
             env_vars = read_env_as_vars(env_path)
             url, health_ok = deploy_railway(env_path, env_vars)
             if url:
-                show_connection(url, ariadne_key)
+                show_connection(url)
                 final_banner(health_ok, url)
             else:
                 show_connection_template()
@@ -1922,8 +2078,14 @@ Document extraction + vector search for AI agents
     else:
         dimensions = choose_dimensions()
 
-    # Generate ARIADNE_API_KEY
-    ariadne_key = secrets.token_urlsafe(32)
+    # Auth0 config — defaults are the public Native `Ariadne CLI`
+    # tenant (OAUTH_PLAN.md Pass 1). Override via prompt for a
+    # private tenant.
+    auth0_domain, auth0_client_id, auth0_audience = choose_auth0_config()
+
+    # Upload signing secret — HMAC for presigned uploads. Not an
+    # auth credential.
+    upload_secret = secrets.token_urlsafe(32)
 
     # Determine base URLs
     emb_base_url = provider_config["base_url"]
@@ -1940,7 +2102,10 @@ Document extraction + vector search for AI agents
         emb_base_url=emb_base_url,
         vis_base_url=vis_base_url,
         dimensions=dimensions,
-        ariadne_key=ariadne_key,
+        auth0_domain=auth0_domain,
+        auth0_client_id=auth0_client_id,
+        auth0_audience=auth0_audience,
+        upload_secret=upload_secret,
     )
 
     if args.skip_deploy:
@@ -1962,7 +2127,10 @@ Document extraction + vector search for AI agents
         "ARIADNE_IMAGE_ENRICHMENT_API_KEY": vis_key,
         "ARIADNE_IMAGE_ENRICHMENT_MODEL": vis_model,
         "ARIADNE_IMAGE_ENRICHMENT_BASE_URL": vis_base_url,
-        "ARIADNE_API_KEY": ariadne_key,
+        "AUTH0_DOMAIN": auth0_domain,
+        "AUTH0_CLIENT_ID": auth0_client_id,
+        "AUTH0_AUDIENCE": auth0_audience,
+        "ARIADNE_UPLOAD_SIGNING_SECRET": upload_secret,
     }
 
     # Steps 2-3: Deploy (includes Connect)
@@ -1973,7 +2141,7 @@ Document extraction + vector search for AI agents
         return
 
     # Step 4: Connection info
-    show_connection(url, ariadne_key)
+    show_connection(url)
 
     final_banner(health_ok, url)
 
