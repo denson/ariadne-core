@@ -132,7 +132,7 @@ Ariadne Core uses **OAuth 2.1 Bearer JWT** for all protected endpoints. Auth0 is
 | `AUTH0_CLIENT_ID` | Auth0 Native Application client ID. Exposed verbatim via `/.well-known/ariadne-config` so clients can run the PKCE flow. | `ixpErHZnMADzV7wTEcO48N3oaiNCjNUj` |
 | `AUTH0_AUDIENCE` | Auth0 API identifier. Must match the `aud` claim on issued JWTs. | `https://ariadne-core` |
 
-`ARIADNE_UPLOAD_SIGNING_SECRET` is a separate HMAC secret for presigned upload URLs (`POST /api/upload` signing layer) — not an auth credential. It does not grant access to any endpoint and is never handed to clients.
+`ARIADNE_UPLOAD_SIGNING_SECRET` is a separate HMAC secret for presigned upload URLs (the HMAC-authenticated `POST /api/upload/signed` endpoint) — not an auth credential. It does not grant access to any endpoint and is never handed to clients.
 
 **Wire format.** Protected endpoints expect:
 

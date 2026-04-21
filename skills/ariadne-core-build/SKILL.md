@@ -68,11 +68,13 @@ ariadne-core/
 │       ├── auth_oauth.py       # OAuth 2.1 Bearer JWT validation (Auth0 JWKS)
 │       ├── dedup.py            # SHA-256 fingerprinting + dedup gate
 │       ├── schema.py           # Pydantic models
+│       ├── services.py         # Service-layer orchestration
 │       ├── stores.py           # Store orchestration
 │       ├── api/
 │       │   ├── app.py          # FastAPI application + OAuth middleware
 │       │   ├── routes.py       # REST endpoints (upload, documents, search, etc.)
-│       │   └── discovery.py    # /.well-known/ariadne-config endpoint
+│       │   ├── discovery.py    # /.well-known/ariadne-config endpoint
+│       │   └── signing.py      # HMAC signing for presigned uploads
 │       ├── extraction/
 │       │   └── markitdown.py   # MarkItDown wrapper
 │       ├── enrichment/

@@ -990,14 +990,17 @@ ariadne-core/
 │   ├── pipeline/
 │   │   ├── __init__.py
 │   │   ├── __main__.py        # CLI entrypoint (serve command)
-│   │   ├── pipeline.py        # Extract → enrich → chunk → embed → store
-│   │   ├── mcp_server.py      # MCP tool definitions
 │   │   ├── config.py          # Config file + env var loader
 │   │   ├── auth_oauth.py      # OAuth 2.1 Bearer JWT validation (Auth0 JWKS)
+│   │   ├── dedup.py           # SHA-256 fingerprinting + dedup gate
+│   │   ├── schema.py          # Pydantic models
+│   │   ├── services.py        # Service-layer orchestration (extract → enrich → chunk → embed → store)
+│   │   ├── stores.py          # Store orchestration
 │   │   ├── api/
-│   │   │   ├── app.py         # FastAPI application + MCP auth middleware
+│   │   │   ├── app.py         # FastAPI application + OAuth middleware
 │   │   │   ├── routes.py      # REST endpoints (including /api/upload)
-│   │   │   └── discovery.py   # /.well-known/ariadne-config endpoint
+│   │   │   ├── discovery.py   # /.well-known/ariadne-config endpoint
+│   │   │   └── signing.py     # HMAC signing for presigned uploads (feeds /api/upload/signed)
 │   │   ├── extraction/
 │   │   │   └── markitdown.py  # MarkItDown wrapper
 │   │   ├── enrichment/
