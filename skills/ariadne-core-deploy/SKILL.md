@@ -29,8 +29,12 @@ Ariadne Core is a document extraction and retrieval pipeline. It needs:
 - **A public HTTPS URL** so clients (Claude Code, Open Brain, OpenClaw, etc.) can connect
 
 The deployment exposes two endpoints from one process:
-- **MCP server** at `/mcp` — for Claude Code, Cursor, any MCP client (with `X-API-Key` header)
-- **REST API** at `/api/*` — for scripts, health checks, and automation (with `X-API-Key` header)
+- **MCP server** at `/mcp` — for Claude Code, Cursor, any MCP client (with `Authorization: Bearer <jwt>` header)
+- **REST API** at `/api/*` — for scripts, health checks, and automation (with `Authorization: Bearer <jwt>` header)
+
+Authentication is OAuth 2.1 Bearer JWT via Auth0. See the "Auth0 configuration"
+section below for the env vars the server needs; clients discover those via
+`GET /.well-known/ariadne-config` (unauthenticated).
 
 ## Railway deployment (primary path)
 
@@ -67,6 +71,13 @@ The deployment exposes two endpoints from one process:
 
 5. **Set environment variables:**
    ```bash
+   # Auth0 OAuth — required for all protected endpoints
+   railway variables set AUTH0_DOMAIN=your-tenant.us.auth0.com
+   railway variables set AUTH0_CLIENT_ID=your-native-app-client-id
+   railway variables set AUTH0_AUDIENCE=https://ariadne-core
+   railway variables set ARIADNE_UPLOAD_SIGNING_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+
+   # Embedding + vision
    railway variables set ARIADNE_EMBEDDING_API_KEY=your-gemini-api-key
    railway variables set ARIADNE_IMAGE_ENRICHMENT_API_KEY=your-gemini-api-key
    railway variables set ARIADNE_EMBEDDING_MODEL=gemini-embedding-001
@@ -77,6 +88,11 @@ The deployment exposes two endpoints from one process:
    ```
 
    `DB_PASSWORD` is not needed — Railway provides `DATABASE_URL` directly.
+
+   `AUTH0_*` values come from your Auth0 dashboard: create a native-application
+   client and an API (audience), then copy the domain, native-app client ID,
+   and API identifier. `ARIADNE_UPLOAD_SIGNING_SECRET` is an HMAC key for
+   presigned upload URLs — it is NOT an auth credential, just a random secret.
 
    All three base URLs point at the Gemini native API root, not the OpenAI-compat shim at `/v1beta/openai`. Google's current `AQ.*`-format API keys reject every auth variant on the shim — use native only. See `SPEC.md` → `### Provider constraints` for the full contract. Reusing the same Gemini key for both `ARIADNE_EMBEDDING_API_KEY` and `ARIADNE_IMAGE_ENRICHMENT_API_KEY` is fine; use different keys only if you want separate usage tracking.
 
@@ -122,6 +138,10 @@ railway logs --tail 50  # last 50 lines
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | Auto | Set by Railway's Postgres plugin |
+| `AUTH0_DOMAIN` | Yes | Auth0 tenant domain (e.g. `dev-xxxxx.us.auth0.com`). Used to build the JWKS URL and the expected `iss` claim. |
+| `AUTH0_CLIENT_ID` | Yes | Auth0 native-app client ID. Returned by `/.well-known/ariadne-config` so clients can run the PKCE flow. |
+| `AUTH0_AUDIENCE` | Yes | Auth0 API audience identifier (must match `aud` on every accepted JWT). |
+| `ARIADNE_UPLOAD_SIGNING_SECRET` | Yes | HMAC secret for presigned upload URLs — generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Not an auth credential. |
 | `ARIADNE_EMBEDDING_API_KEY` | Yes | API key for chunk embeddings (Google Gemini, `AQ.*` or `AIza*` format) |
 | `ARIADNE_IMAGE_ENRICHMENT_API_KEY` | Yes | API key for image descriptions (Google Gemini, `AQ.*` or `AIza*` format) |
 | `ARIADNE_EMBEDDING_MODEL` | No | Default: `gemini-embedding-001` |
@@ -188,9 +208,16 @@ both the app and Postgres.
 
 Once the deployment is live, connect clients using the HTTPS URL:
 
-- **Claude Code:** Add `"url"` and `"headers": {"X-API-Key": "..."}` to `~/.claude/mcp.json`
-- **All MCP clients (Open Brain, OpenClaw, Claude Code, Cursor):** Connect via MCP at `https://your-url/mcp` with `X-API-Key` header
-- **Scripts and automation:** Use REST API at `https://your-url/api/*` with `X-API-Key` header
+- **Claude Code:** Add `"url"` and `"headers": {"Authorization": "Bearer <jwt>"}` to `~/.claude/mcp.json`
+- **All MCP clients (Open Brain, OpenClaw, Claude Code, Cursor):** Connect via MCP at `https://your-url/mcp` with `Authorization: Bearer <jwt>` header
+- **Scripts and automation:** Use REST API at `https://your-url/api/*` with `Authorization: Bearer <jwt>` header
+
+Interim state (Pass 2 landed, Pass 3 pending): the `ariadne login` CLI that
+runs Auth0 PKCE and caches a refresh token in the OS keyring lands in ticket
+`ariadne--xft.5`. Until then, obtain a test JWT from Auth0 dashboard →
+Applications → your app → Test tab → copy the access token, and paste it in
+place of `<jwt>`. Clients can discover the Auth0 config via
+`curl https://your-url/.well-known/ariadne-config`.
 
 See the **ariadne-core-install** skill for detailed client connection instructions.
 

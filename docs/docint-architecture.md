@@ -36,7 +36,7 @@ The expensive model only enters the picture when a human or agent asks a questio
 ### Target Users
 
 - **Personal use:** Individual running Claude Code who processes documents regularly. Deploy on Railway's free tier — no local setup required.
-- **Agentic systems:** Open Brain, OpenClaw, or any system that needs document memory. Connect via MCP with API key auth.
+- **Agentic systems:** Open Brain, OpenClaw, or any system that needs document memory. Connect via MCP with `Authorization: Bearer` JWT auth.
 
 For enterprise scale (thousands of users, millions of documents, managed SLA), Unstructured's Platform + Pinecone/Weaviate Cloud is the right answer. This project is not competing at that tier — it's serving everyone below it who currently has nothing.
 
@@ -92,8 +92,8 @@ Railway / Fly.io / VPS
 │  │  list         │   │  GET  /api/stats                    │   │
 │  │  ingest       │   │  GET  /api/health                   │   │
 │  │              │   │                                      │   │
-│  │  Transport:   │   │  Auth: X-API-Key header             │   │
-│  │  Streamable   │   │  (ARIADNE_API_KEY env var)          │   │
+│  │  Transport:   │   │  Auth: Authorization: Bearer <jwt>  │   │
+│  │  Streamable   │   │  (Auth0 OAuth 2.1, JWKS validation) │   │
 │  │  HTTP         │   │                                      │   │
 │  └──────┬───────┘   └──────────┬───────────────────────────┘   │
 │         │                      │                               │
@@ -131,13 +131,13 @@ Railway / Fly.io / VPS
 └─────────────────────────────────────────────────────────────────┘
   MCP Server
      ▲  ▲  ▲  ▲
-     │  │  │  └── Claude Cowork (Managed edition or roll your own OAuth)
+     │  │  │  └── Claude Cowork
      │  │  └───── OpenClaw
      │  └──────── Open Brain
      └─────────── Claude Code
 
-Authentication is by API key for Personal edition and OAuth for Managed and higher
-editions. You can also create your own OAuth for the Personal edition.
+Authentication is OAuth 2.1 Bearer JWT (Auth0) across all editions. Clients
+discover the Auth0 tenant config via `GET /.well-known/ariadne-config`.
 ```
 
 ---
@@ -437,13 +437,13 @@ Every tool accepts optional caller metadata. This is how provenance tracking wor
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| agent_id | string | no | Caller's identity (e.g., "code-project-abc", "ob1-agent-daily", "api-key:research-bot") |
+| agent_id | string | no | Caller's identity (e.g., "code-project-abc", "ob1-agent-daily", "auth0:<auth0-sub-claim>") |
 | agent_type | string | no | Client type: "claude-code", "ob1", "openclaw", "cursor", "api", "cli", etc. |
 | model | string | no | The LLM model the caller is running (e.g., "claude-sonnet-4-6"). Useful for tracing which model initiated the processing. |
 | collection | string | no | Logical grouping for the documents (e.g., "q4-research", "onboarding-docs", "daily-capture"). Acts as a namespace for search and organization. |
 | initiated_by | string | no | Human or system identity (e.g., "user:denson", "cron:nightly-ingest") |
 
-If not provided, the server infers what it can from the connection context (API key name, MCP client headers) and defaults the rest. The `collection` parameter is particularly important — it's how different agents and workflows keep their documents organized without stepping on each other.
+If not provided, the server derives `agent_id` from `Principal.user_id` (as `auth0:<sub>`) and defaults the rest. The `collection` parameter is particularly important — it's how different agents and workflows keep their documents organized without stepping on each other.
 
 ### Tools
 
@@ -527,9 +527,9 @@ Same functionality as MCP tools, for batch pipelines and custom integrations.
 | GET | /api/stats | Queue depth, throughput, storage per collection |
 | GET | /api/health | Health check (no auth) |
 
-Auth: API key in `X-API-Key` header. Keys stored hashed in Postgres. The key's `name` field is used as the `agent_id` in provenance tracking.
+Auth: OAuth 2.1 Bearer JWT via Auth0. All endpoints except `/api/health` and `/.well-known/ariadne-config` require an `Authorization: Bearer <jwt>` header; JWTs are validated against Auth0's JWKS (RS256, `iss`/`aud`/`exp` checked). On success the server derives a `Principal{user_id, email}` — `user_id` is the Auth0 `sub` claim and is used as the `agent_id` in provenance tracking. See `SPEC.md` → "Authentication" for the full contract.
 
-All POST endpoints accept the caller metadata fields (`agent_id`, `agent_type`, `model`, `collection`, `initiated_by`) in the request body. If not provided, they're inferred from the API key and connection context.
+All POST endpoints accept the caller metadata fields (`agent_id`, `agent_type`, `model`, `collection`, `initiated_by`) in the request body. If `agent_id` is not provided, it's inferred from the authenticated `Principal.user_id` (the Auth0 `sub` claim).
 
 ---
 
@@ -602,7 +602,7 @@ api:
   host: 0.0.0.0
   port: 8000
   mcp_port: 8000            # same as port for single-port mode on Railway
-  # Auth controlled by ARIADNE_API_KEY env var
+  # Auth controlled by AUTH0_DOMAIN / AUTH0_CLIENT_ID / AUTH0_AUDIENCE env vars
 
 # --- Paths ---
 paths:
@@ -635,10 +635,17 @@ The config file supports `${VAR}` syntax for referencing environment variables. 
 On Railway, set these environment variables. `DATABASE_URL` is provided automatically by the Postgres plugin.
 
 ```bash
-# Required
+# Required — provider keys
 EMBEDDING_API_KEY=sk-...
 VISION_API_KEY=sk-...
-ARIADNE_API_KEY=your-secret-key    # clients authenticate with this
+
+# Required — Auth0 OAuth (clients send Authorization: Bearer <jwt>)
+AUTH0_DOMAIN=your-tenant.us.auth0.com
+AUTH0_CLIENT_ID=your-native-app-client-id
+AUTH0_AUDIENCE=https://ariadne-core
+
+# Required — HMAC secret for presigned upload URLs (not an auth credential)
+ARIADNE_UPLOAD_SIGNING_SECRET=a-random-32-byte-secret
 
 # Optional overrides
 # EMBEDDING_MODEL=gemini-embedding-001
@@ -677,7 +684,17 @@ On Railway (and similar platforms that expose one port), set `MCP_PORT` equal to
 
 ### Authentication
 
-When `ARIADNE_API_KEY` is set, all endpoints except `/api/health` require a valid `X-API-Key` header. The key is hashed and stored on startup. `MCPAuthMiddleware` gates `/mcp` requests; FastAPI dependency injection gates `/api/*` requests.
+Authentication is **OAuth 2.1 Bearer JWT** via Auth0, implemented in `src/pipeline/auth_oauth.py`. The server validates JWTs against Auth0's JWKS on every request:
+
+- **Algorithm:** RS256 only (HS256 rejected — we don't share secrets with Auth0)
+- **Claims validated:** `iss` matches `https://{AUTH0_DOMAIN}/`, `aud` matches `AUTH0_AUDIENCE`, `exp` is in the future, `sub` is present (non-empty string)
+- **JWKS caching:** `PyJWKClient` with a 600-second TTL. On an unknown `kid`, the server forces one JWKS refresh (covers Auth0 key-rotation before TTL expiry)
+- **Principal:** on success, the `require_user` dependency yields a `Principal{user_id, email}`. `user_id` is the `sub` claim; `email` is the `email` claim if present (PII — never logged)
+- **Failure modes:** each 401 carries a specific `detail` string (`missing_token`, `wrong_scheme`, `malformed_token`, `invalid_signature`, `wrong_audience`, `wrong_issuer`, `expired_token`, `unknown_kid`, `missing_sub_claim`, `invalid_token`); a 500 `auth_misconfigured` is returned when `AUTH0_DOMAIN` / `AUTH0_AUDIENCE` aren't set on the server
+
+The same `require_user` dependency gates both `/api/*` routes (FastAPI dependency injection) and `/mcp` (mounted Starlette app). The unauthenticated endpoints are `GET /api/health` and `GET /.well-known/ariadne-config` — the latter returns the Auth0 tenant config (issuer, client_id, audience, scope) so clients can run the PKCE flow.
+
+The prior `X-API-Key` path was removed in Pass 2 of the `ariadne--xft` epic (commit `54165c9`); the legacy implementation is preserved on branch `legacy/api-key` and tag `v0.x-legacy-api-key` for reference.
 
 ### Hardware Requirements
 
@@ -700,7 +717,7 @@ The traditional multi-tenant model uses `tenant_id` to mean "organization." That
 Ariadne Core uses two dimensions for partitioning:
 
 - **`collection`** — a logical namespace for documents. "q4-research", "onboarding-docs", "daily-capture", "project-alpha". Collections are how different workflows and purposes stay organized. An OB1 agent's daily capture goes into one collection. A Claude Code project researching a topic goes into another. Search can span collections or be scoped to one.
-- **`agent_id`** (on `document_interactions`) — the identity of whatever touched the document. A Claude Code session, an OB1 agent, a cron job, an API key. Every agent call creates an interaction row, even if the document was already processed (dedup skip). This is for provenance, not access control — you can always see everything, but you can ask "what did agent X do?"
+- **`agent_id`** (on `document_interactions`) — the identity of whatever touched the document. A Claude Code session, an OB1 agent, or a cron job. Every agent call creates an interaction row, even if the document was already processed (dedup skip). This is for provenance, not access control — you can always see everything, but you can ask "what did agent X do?"
 
 For organizational multi-tenancy (the Fortune 50 case), add `org_id` via row-level security on top of this. The schema is ready for it but doesn't enforce it in Phase 1.
 
@@ -976,10 +993,11 @@ ariadne-core/
 │   │   ├── pipeline.py        # Extract → enrich → chunk → embed → store
 │   │   ├── mcp_server.py      # MCP tool definitions
 │   │   ├── config.py          # Config file + env var loader
+│   │   ├── auth_oauth.py      # OAuth 2.1 Bearer JWT validation (Auth0 JWKS)
 │   │   ├── api/
 │   │   │   ├── app.py         # FastAPI application + MCP auth middleware
 │   │   │   ├── routes.py      # REST endpoints (including /api/upload)
-│   │   │   └── auth.py        # API key store and verification
+│   │   │   └── discovery.py   # /.well-known/ariadne-config endpoint
 │   │   ├── extraction/
 │   │   │   └── markitdown.py  # MarkItDown wrapper
 │   │   ├── enrichment/

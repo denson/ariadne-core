@@ -4,7 +4,7 @@ This guide covers how to connect AI clients to your Ariadne Core deployment. The
 
 ## Architecture
 
-Ariadne Core runs as a hosted service. All clients connect over HTTPS with API key authentication.
+Ariadne Core runs as a hosted service. All clients connect over HTTPS with OAuth 2.1 Bearer JWT authentication (Auth0).
 
 ```
 Railway / Fly.io / VPS
@@ -16,21 +16,35 @@ Railway / Fly.io / VPS
 └─────────────────────────┘
   MCP Server
      ▲  ▲  ▲  ▲
-     │  │  │  └── Claude Cowork (Managed edition or roll your own OAuth)
+     │  │  │  └── Claude Cowork
      │  │  └───── OpenClaw
      │  └──────── Open Brain
      └─────────── Claude Code
 
-Authentication is by API key for Personal edition and OAuth for Managed and higher
-editions. You can also create your own OAuth for the Personal edition.
+Authentication is OAuth 2.1 Bearer JWT (Auth0) across all editions. Clients
+discover the Auth0 config via `GET /.well-known/ariadne-config` (unauthenticated)
+and send `Authorization: Bearer <jwt>` on every request.
 ```
 
-All endpoints (except `/api/health`) require an `X-API-Key` header.
+All endpoints except `/api/health` and `/.well-known/ariadne-config` require an `Authorization: Bearer <jwt>` header.
+
+## Interim state (Pass 2 landed, Pass 3 pending)
+
+Ariadne Core uses Auth0 OAuth 2.1 Bearer JWT as of the `ariadne--xft.2` merge
+(commit `54165c9`). The `ariadne login` CLI that runs the PKCE flow and caches a
+refresh token in the OS keyring is landing in ticket `ariadne--xft.5`. Until
+then, obtain a test JWT from **Auth0 dashboard → Applications → your app → Test
+tab → copy the access token**, then paste it into `Authorization: Bearer <jwt>`
+in your client. Clients can discover what tenant/audience a server expects via:
+
+```bash
+curl https://your-url.up.railway.app/.well-known/ariadne-config
+```
 
 ## Prerequisites
 
 1. **Ariadne Core deployed** with a public HTTPS URL (e.g., `https://ariadne-core-production.up.railway.app`)
-2. **Your API key** — the `ARIADNE_API_KEY` value set during deployment
+2. **Your JWT** — a test access token from Auth0 dashboard → Applications → your app → Test tab (for now; post-xft.5, `ariadne login` handles this)
 
 ---
 
@@ -41,7 +55,7 @@ Claude Code connects via MCP. Use the CLI to configure:
 ```bash
 claude mcp add ariadne-core https://your-url.up.railway.app/mcp \
   --transport http --scope user \
-  --header "X-API-Key:your-api-key"
+  --header "Authorization:Bearer your-jwt-here"
 ```
 
 Restart Claude Code. Verify the connection:
@@ -62,22 +76,22 @@ claude mcp remove ariadne-core
 
 ## Open Brain (MCP or REST API)
 
-Open Brain connects via MCP or the REST API with the `X-API-Key` header on all requests.
+Open Brain connects via MCP or the REST API with the `Authorization: Bearer <jwt>` header on all requests.
 
 ```bash
 # Search documents
 curl -X POST https://your-url/api/search \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer your-jwt-here" \
   -d '{"query": "quarterly revenue trends", "top_k": 5}'
 
 # Upload and convert a document
 curl -X POST https://your-url/api/upload \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer your-jwt-here" \
   -F "file=@report.pdf"
 
 # List collections
-curl -H "X-API-Key: your-api-key" https://your-url/api/collections
+curl -H "Authorization: Bearer your-jwt-here" https://your-url/api/collections
 ```
 
 OB1 agents should pass `agent_type: "ob1"` and `initiated_by: "user:name"` in request bodies for provenance tracking.
@@ -86,7 +100,7 @@ OB1 agents should pass `agent_type: "ob1"` and `initiated_by: "user:name"` in re
 
 ## OpenClaw (MCP or REST API)
 
-Same as Open Brain — connect via MCP or REST API with the `X-API-Key` header. OpenClaw agents should use `agent_type: "openclaw"` for provenance.
+Same as Open Brain — connect via MCP or REST API with the `Authorization: Bearer <jwt>` header. OpenClaw agents should use `agent_type: "openclaw"` for provenance.
 
 ---
 
@@ -99,7 +113,7 @@ Cursor supports MCP. Add the server via Cursor Settings:
 3. Click **+ Add New MCP Server**
 4. Set type to **streamable-http**
 5. URL: `https://your-url.up.railway.app/mcp`
-6. Add header: `X-API-Key: your-api-key`
+6. Add header: `Authorization: Bearer your-jwt-here`
 
 Restart Cursor and check the MCP Logs output panel.
 
@@ -111,7 +125,7 @@ Any MCP client that supports Streamable HTTP transport can connect. The general 
 
 - **URL:** `https://your-url.up.railway.app/mcp`
 - **Transport:** Streamable HTTP
-- **Auth header:** `X-API-Key: your-api-key`
+- **Auth header:** `Authorization: Bearer your-jwt-here`
 
 Check your client's documentation for how to set custom headers on MCP connections.
 
@@ -119,9 +133,14 @@ Check your client's documentation for how to set custom headers on MCP connectio
 
 ## Environment Variables
 
+These are the server-side env vars your Ariadne Core deployment reads (not the client):
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ARIADNE_API_KEY` | (none) | API key that clients must provide in `X-API-Key` header |
+| `AUTH0_DOMAIN` | (none) | Auth0 tenant domain (e.g. `dev-xxxxx.us.auth0.com`). Used to build the JWKS URL and expected `iss` claim. |
+| `AUTH0_CLIENT_ID` | (none) | Auth0 native-app client ID. Returned by `/.well-known/ariadne-config` so clients can run PKCE. |
+| `AUTH0_AUDIENCE` | (none) | Auth0 API audience identifier (must match `aud` on every accepted JWT). |
+| `ARIADNE_UPLOAD_SIGNING_SECRET` | (none) | HMAC secret for presigned upload URLs. Not an auth credential. |
 | `PORT` | `8000` | HTTP port (Railway sets this automatically) |
 | `MCP_PORT` | `8000` | MCP port (set equal to PORT for single-port mode on Railway) |
 
@@ -137,34 +156,49 @@ Check your client's documentation for how to set custom headers on MCP connectio
 4. Test the endpoint directly:
    ```bash
    curl -s -o /dev/null -w "HTTP %{http_code}" \
-     -H "X-API-Key: your-api-key" \
+     -H "Authorization: Bearer your-jwt-here" \
      https://your-url/mcp
    ```
 
 ### 401 Unauthorized
 
-Your API key is missing. Make sure:
-- The `X-API-Key` header is set in your client config
-- The key matches the `ARIADNE_API_KEY` environment variable on the server
+The server returns a specific `detail` string in the JSON body — that tells you exactly which part of the auth chain failed:
 
-### 403 Forbidden
+- `missing_token` — no `Authorization` header; add `Authorization: Bearer <jwt>`
+- `wrong_scheme` — header present but not `Bearer` (e.g. old `X-API-Key` config); switch to `Authorization: Bearer <jwt>`
+- `malformed_token` — JWT is not structurally valid (not three base64 parts)
+- `invalid_signature` — signature doesn't verify against the JWKS; token likely signed by a different Auth0 tenant
+- `wrong_audience` — JWT `aud` doesn't match the server's `AUTH0_AUDIENCE`
+- `wrong_issuer` — JWT `iss` doesn't match `https://<AUTH0_DOMAIN>/`
+- `expired_token` — JWT `exp` is in the past; grab a fresh test token from Auth0 dashboard
+- `unknown_kid` — key ID in the JWT header isn't in the JWKS (even after a forced refresh)
+- `missing_sub_claim` — token is valid but has no `sub` (shouldn't happen for Auth0)
+- `invalid_token` — catch-all for any other JWT error
 
-Your API key is wrong or revoked. Check:
-- The key value matches exactly (no extra spaces or quotes)
-- The `ARIADNE_API_KEY` env var is set on the deployment
+Compare your JWT's claims (decode at https://jwt.io) against the expected values:
+
+```bash
+curl https://your-url/.well-known/ariadne-config
+```
+
+### 500 `auth_misconfigured`
+
+The server's `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, or `AUTH0_AUDIENCE` env var is unset. Set all three in your Railway variables and redeploy.
 
 ### Connection timeout
 
 - Is the deployment running? Check your hosting dashboard.
 - Health check: `curl https://your-url/api/health` (no auth needed)
+- Discovery check: `curl https://your-url/.well-known/ariadne-config` (no auth needed; confirms Auth0 config is set on server)
 - Check deployment logs for startup errors
 
 ### Collecting diagnostics
 
 ```bash
 echo "=== Health ===" && curl -s https://your-url/api/health 2>&1
-echo "=== Auth ===" && curl -s -o /dev/null -w "HTTP %{http_code}" -H "X-API-Key: your-key" https://your-url/api/stats 2>&1
-echo "=== MCP ===" && curl -s -o /dev/null -w "HTTP %{http_code}" -H "X-API-Key: your-key" https://your-url/mcp 2>&1
+echo "=== Auth0 config ===" && curl -s https://your-url/.well-known/ariadne-config 2>&1
+echo "=== Stats (auth) ===" && curl -s -o /dev/null -w "HTTP %{http_code}" -H "Authorization: Bearer your-jwt" https://your-url/api/stats 2>&1
+echo "=== MCP (auth) ===" && curl -s -o /dev/null -w "HTTP %{http_code}" -H "Authorization: Bearer your-jwt" https://your-url/mcp 2>&1
 ```
 
 Share this output when [opening an issue](https://github.com/anthropics/ariadne-core/issues).

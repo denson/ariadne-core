@@ -63,16 +63,27 @@ Railway / Fly.io / VPS
 └─────────────────────────┘
   MCP Server
      ▲  ▲  ▲  ▲
-     │  │  │  └── Claude Cowork (Managed edition or roll your own OAuth)
+     │  │  │  └── Claude Cowork
      │  │  └───── OpenClaw
      │  └──────── Open Brain
      └─────────── Claude Code
 
-Authentication is by API key for Personal edition and OAuth for Managed and higher
-editions. You can also create your own OAuth for the Personal edition.
+Authentication is OAuth 2.1 Bearer JWT (Auth0) across all editions. Clients run a
+PKCE flow against Auth0 and send `Authorization: Bearer <jwt>` on every request.
 ```
 
-Runs as a hosted service. All endpoints except `/api/health` require `X-API-Key` header.
+Runs as a hosted service. All endpoints except `/api/health` and
+`/.well-known/ariadne-config` require an `Authorization: Bearer <jwt>` header.
+
+### Auth interim state (Pass 2 landed, Pass 3 pending)
+
+Ariadne Core uses Auth0 OAuth 2.1 Bearer JWT as of the `ariadne--xft.2` merge
+(commit `54165c9`). The `ariadne login` CLI that runs the PKCE flow and caches a
+refresh token in the OS keyring is landing in ticket `ariadne--xft.5`. Until
+then, obtain a test JWT from **Auth0 dashboard → Applications → your app → Test
+tab → copy the access token**, then pass it as `Authorization: Bearer <jwt>` in
+your MCP header or REST client. Clients can discover the Auth0 config via
+`GET /.well-known/ariadne-config` (unauthenticated).
 
 ---
 
@@ -119,18 +130,20 @@ curl -s https://THE-URL/api/health
 ```
 
 To connect MCP, tell the user to run this in their terminal (they need to paste
-their own `ARIADNE_API_KEY` — you do NOT handle it):
+their own JWT — you do NOT handle it):
 
 ```bash
 claude mcp add ariadne-core https://THE-URL/mcp \
   --transport http --scope user \
-  --header "X-API-Key:PASTE-YOUR-ARIADNE-API-KEY-HERE"
+  --header "Authorization:Bearer PASTE-YOUR-JWT-HERE"
 ```
 
-Tell them: *"Your `ARIADNE_API_KEY` was auto-generated during deploy. Find it in
-the Railway dashboard under your ariadne-core service → Variables tab (or in
-`.env` if they used the setup script). Copy it and paste it in place of
-`PASTE-YOUR-ARIADNE-API-KEY-HERE`."*
+Tell them: *"Ariadne Core uses Auth0 OAuth 2.1 Bearer JWT. The `ariadne login`
+CLI that runs the PKCE flow automatically is landing in ticket `ariadne--xft.5`.
+Until then, grab a test JWT from Auth0 dashboard → Applications → your app →
+Test tab → copy the access token, and paste it in place of `PASTE-YOUR-JWT-HERE`.
+You can also run `curl https://THE-URL/.well-known/ariadne-config` to see the
+Auth0 config the server expects."*
 
 ### AI path — deploy via API
 
@@ -166,12 +179,14 @@ See the **ariadne-core-deploy** skill for Fly.io and VPS instructions.
 
 ## Path 2: Connect to an existing deployment
 
-The user already has a URL and API key. They just need to connect a client.
+The user already has a URL and a JWT (test-tab token from Auth0 for now; a
+keyring-cached access token once `ariadne--xft.5` lands). They just need to
+connect a client.
 
 ### Quickest path — copy `.mcp.json.template`
 
 Copy `.mcp.json.template` to `.mcp.json` in the project directory, then fill in
-the deployment URL and API key. The setup script (`python scripts/setup.py`)
+the deployment URL and JWT. The setup script (`python scripts/setup.py`)
 does this automatically. This replaces the manual `claude mcp add` step below
 when a project-scoped `.mcp.json` is acceptable.
 
@@ -180,7 +195,7 @@ when a project-scoped `.mcp.json` is acceptable.
 ```bash
 claude mcp add ariadne-core https://<URL>/mcp \
   --transport http --scope user \
-  --header "X-API-Key:<ARIADNE_API_KEY>"
+  --header "Authorization:Bearer <JWT>"
 ```
 
 Restart Claude Code. Verify:
@@ -191,31 +206,38 @@ claude mcp list
 
 **If tools don't appear:**
 1. Check URL ends with `/mcp` (not `/api/mcp`)
-2. Check API key matches the `ARIADNE_API_KEY` env var on the server
+2. Check the JWT is valid: decode it at https://jwt.io and verify `iss`
+   matches `https://<AUTH0_DOMAIN>/` and `aud` matches the server's
+   `AUTH0_AUDIENCE` (run `curl https://<URL>/.well-known/ariadne-config` to
+   see the expected values)
 3. Restart Claude Code (required after `claude mcp add`)
-4. Test endpoint directly: `curl -s -H "X-API-Key: <key>" https://<URL>/mcp`
+4. Test endpoint directly: `curl -s -H "Authorization: Bearer <jwt>" https://<URL>/mcp`
 
 ### AI path — connect other MCP clients or REST API
 
 All MCP clients connect the same way as Claude Code. REST API is also available
-for scripts and automation. All endpoints use `X-API-Key` header. Base URL pattern: `https://<URL>/api/`.
+for scripts and automation. All endpoints use the `Authorization: Bearer <jwt>`
+header. Base URL pattern: `https://<URL>/api/`.
 
 ```bash
+# Discovery (no auth required — returns Auth0 config for the PKCE flow)
+curl https://<URL>/.well-known/ariadne-config
+
 # Search
 curl -X POST https://<URL>/api/search \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: <key>" \
+  -H "Authorization: Bearer <jwt>" \
   -d '{"query": "search terms", "top_k": 5}'
 
 # Upload a file (canonical path for any local file). The response includes
 # a server-side path; pass it to convert_document via MCP or REST. Never
 # base64-encode file content into an MCP tool call.
 curl -X POST https://<URL>/api/upload \
-  -H "X-API-Key: <key>" \
+  -H "Authorization: Bearer <jwt>" \
   -F "file=@document.pdf"
 
 # List collections
-curl -H "X-API-Key: <key>" https://<URL>/api/collections
+curl -H "Authorization: Bearer <jwt>" https://<URL>/api/collections
 
 # Health check (no auth needed)
 curl https://<URL>/api/health
@@ -237,10 +259,13 @@ One command in their terminal:
 ```bash
 claude mcp add ariadne-core https://their-url.up.railway.app/mcp \
   --transport http --scope user \
-  --header "X-API-Key:their-api-key"
+  --header "Authorization:Bearer their-jwt"
 ```
 
 Tell them:
+- The `ariadne login` CLI (ticket `ariadne--xft.5`) isn't out yet. Until
+  then, grab a test JWT from Auth0 dashboard → Applications → your app →
+  Test tab → copy the access token, and paste it in place of `their-jwt`.
 - Restart Claude Code after running this
 - Check it worked with `claude mcp list`
 - Try asking Claude Code: "List the Ariadne Core collections"
@@ -255,7 +280,7 @@ Same URL and auth, different config method:
 2. Tools & MCP → Add New MCP Server
 3. Type: streamable-http
 4. URL: `https://their-url/mcp`
-5. Header: `X-API-Key: their-key`
+5. Header: `Authorization: Bearer their-jwt`
 
 ---
 
@@ -280,8 +305,9 @@ claude mcp remove ariadne-core
 
 ```bash
 curl -s https://<URL>/api/health
-curl -s -o /dev/null -w "HTTP %{http_code}" -H "X-API-Key: <key>" https://<URL>/api/stats
-curl -s -o /dev/null -w "HTTP %{http_code}" -H "X-API-Key: <key>" https://<URL>/mcp
+curl -s https://<URL>/.well-known/ariadne-config     # confirms Auth0 config is set on server
+curl -s -o /dev/null -w "HTTP %{http_code}" -H "Authorization: Bearer <jwt>" https://<URL>/api/stats
+curl -s -o /dev/null -w "HTTP %{http_code}" -H "Authorization: Bearer <jwt>" https://<URL>/mcp
 ```
 
 ### Common issues
@@ -290,8 +316,12 @@ curl -s -o /dev/null -w "HTTP %{http_code}" -H "X-API-Key: <key>" https://<URL>/
 |---------|-------|-----|
 | Health returns nothing | Deployment not running | Check Railway dashboard, run `railway logs` |
 | Health returns 502 | Database connection error | Make sure Postgres is attached (`railway add --database postgres`) and check `railway logs` |
-| 401 on all requests | Missing API key | Add `X-API-Key` header |
-| 403 on all requests | Wrong API key | Check key matches `ARIADNE_API_KEY` in `.env` |
+| `/.well-known/ariadne-config` returns 500 `auth_misconfigured` | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_AUDIENCE` unset on the server | Set all three in Railway variables and redeploy |
+| 401 `missing_token` | No `Authorization` header on the request | Add `Authorization: Bearer <jwt>` |
+| 401 `wrong_scheme` | Header present but not `Bearer` (e.g. old `X-API-Key` config) | Use `Authorization: Bearer <jwt>` — X-API-Key was removed in Pass 2 |
+| 401 `wrong_audience` or `wrong_issuer` | JWT was minted against a different Auth0 tenant/API | Re-issue the test token from the correct Auth0 app; check `/.well-known/ariadne-config` for the expected values |
+| 401 `expired_token` | JWT has expired | Issue a fresh test token (Auth0 access tokens default to 24h) |
+| 401 `invalid_signature` | Token signed by a different key (wrong tenant) | Check `iss`, re-issue from the right tenant |
 | MCP_PORT errors in logs | MCP_PORT set explicitly | Delete `MCP_PORT` from `.env` — the app defaults to Railway's `PORT` automatically |
 | Tools don't appear in Claude Code | Config not loaded | Run `claude mcp list`, restart Claude Code |
 | MCP URL wrong | Missing `/mcp` suffix | URL must end in `/mcp` for MCP clients |

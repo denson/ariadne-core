@@ -152,13 +152,15 @@ Railway / Fly.io / VPS
 └─────────────────────────┘
   MCP Server
      ▲  ▲  ▲  ▲
-     │  │  │  └── Claude Cowork (Managed edition or roll your own OAuth)
+     │  │  │  └── Claude Cowork
      │  │  └───── OpenClaw
      │  └──────── Open Brain
      └─────────── Claude Code
 
-Authentication is by API key for Personal edition and OAuth for Managed and higher
-editions. You can also create your own OAuth for the Personal edition.
+Authentication is OAuth 2.1 Bearer JWT (Auth0) across all editions. Clients run a
+PKCE flow against Auth0 (via the `ariadne login` CLI landing in `ariadne--xft.5`)
+and send `Authorization: Bearer <jwt>` on every request. Clients discover the
+Auth0 config via `GET /.well-known/ariadne-config` (unauthenticated).
 ```
 
 No local installation required for end users. No Docker on the user's machine.
@@ -168,13 +170,13 @@ No STDIO. One HTTPS URL for everything.
 
 | Client | How it connects |
 |--------|----------------|
-| Claude Code | MCP with API key |
-| Claude Cowork | MCP + OAuth (Managed edition or roll your own) |
-| Open Brain | MCP with API key |
-| OpenClaw | MCP with API key |
-| Cursor | MCP with API key |
-| Any MCP client | MCP over HTTPS with API key |
-| Any HTTP client | REST API over HTTPS with `X-API-Key` header |
+| Claude Code | MCP with `Authorization: Bearer <jwt>` |
+| Claude Cowork | MCP + OAuth (Auth0 PKCE via `ariadne login`) |
+| Open Brain | MCP with `Authorization: Bearer <jwt>` |
+| OpenClaw | MCP with `Authorization: Bearer <jwt>` |
+| Cursor | MCP with `Authorization: Bearer <jwt>` |
+| Any MCP client | MCP over HTTPS with `Authorization: Bearer <jwt>` |
+| Any HTTP client | REST API over HTTPS with `Authorization: Bearer <jwt>` header |
 
 **References:**
 - MCP transports: https://modelcontextprotocol.io/docs/concepts/transports

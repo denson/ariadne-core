@@ -127,16 +127,18 @@ Railway / Fly.io / VPS
 └─────────────────────────┘
   MCP Server
      ▲  ▲  ▲  ▲
-     │  │  │  └── Claude Cowork (Managed edition or roll your own OAuth)
+     │  │  │  └── Claude Cowork
      │  │  └───── OpenClaw
      │  └──────── Open Brain
      └─────────── Claude Code
 
-Authentication is by API key for Personal edition and OAuth for Managed and higher
-editions. You can also create your own OAuth for the Personal edition.
+Authentication is OAuth 2.1 Bearer JWT (Auth0) across all editions. Clients
+discover the Auth0 tenant config via `GET /.well-known/ariadne-config`.
 ```
 
-All endpoints require API key authentication via `X-API-Key` header (except `/api/health`).
+All protected endpoints require OAuth 2.1 Bearer JWT auth via the
+`Authorization: Bearer <jwt>` header. Open (no auth) endpoints: `/api/health` and
+`/.well-known/ariadne-config`.
 
 ## Manual setup (if you prefer doing it yourself)
 
@@ -144,7 +146,7 @@ All endpoints require API key authentication via `X-API-Key` header (except `/ap
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/ariadne-core)
 
-Click the button, fill in your API keys, done. Everything else has sensible defaults. After deploy, copy your `ARIADNE_API_KEY` from the Variables tab to connect clients.
+Click the button, fill in your API keys (embedding/vision) and the Auth0 tenant values (`AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_AUDIENCE`), done. Everything else has sensible defaults. After deploy, clients discover the Auth0 config at `https://<your-url>/.well-known/ariadne-config`.
 
 ### Prerequisites (for manual CLI setup)
 
@@ -166,18 +168,28 @@ railway up
 In the Railway dashboard or via CLI:
 
 ```bash
+# Upstream model/API config
 railway variables set ARIADNE_EMBEDDING_API_KEY=your-gemini-api-key
 railway variables set ARIADNE_IMAGE_ENRICHMENT_API_KEY=your-gemini-api-key
 railway variables set ARIADNE_EMBEDDING_MODEL=gemini-embedding-001
 railway variables set ARIADNE_IMAGE_ENRICHMENT_MODEL=gemini-2.0-flash
 railway variables set ARIADNE_EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 railway variables set ARIADNE_IMAGE_ENRICHMENT_BASE_URL=https://generativelanguage.googleapis.com/v1beta
-railway variables set ARIADNE_API_KEY=your-secret-api-key
+
+# OAuth 2.1 / Auth0 tenant config (server-side auth)
+railway variables set AUTH0_DOMAIN=your-tenant.us.auth0.com
+railway variables set AUTH0_CLIENT_ID=your-native-app-client-id
+railway variables set AUTH0_AUDIENCE=https://ariadne-core
+
+# HMAC secret for presigned upload URLs (separate from auth)
+railway variables set ARIADNE_UPLOAD_SIGNING_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
 ```
 
 `ARIADNE_EMBEDDING_API_KEY` and `ARIADNE_IMAGE_ENRICHMENT_API_KEY` work with any OpenAI-compatible provider — they don't have to be OpenAI. Both can use the same key if you use the same provider for both. If you use a non-OpenAI provider, also set `ARIADNE_EMBEDDING_BASE_URL` and/or `ARIADNE_IMAGE_ENRICHMENT_BASE_URL` to match (see [Compatible providers](#compatible-providers)). For backward compatibility, unprefixed names (`EMBEDDING_API_KEY`, `VISION_API_KEY`, ...) also work.
 
-`ARIADNE_API_KEY` is the key clients use to authenticate — pick any strong secret.
+`AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, and `AUTH0_AUDIENCE` configure OAuth 2.1 Bearer JWT auth. The server validates JWTs against Auth0's JWKS; clients fetch `/.well-known/ariadne-config` to discover these values and then run the PKCE flow. The `ariadne login` CLI that wraps this is landing in `ariadne--xft.5` (Pass 3 client work) — until then, obtain a test JWT from the Auth0 dashboard → Applications → your app → Test tab → copy the access token, and pass it as `Authorization: Bearer <token>` in every request.
+
+`ARIADNE_UPLOAD_SIGNING_SECRET` is the HMAC secret used to sign presigned upload URLs. It is not an auth credential and must not be shared with clients — pick any strong random secret (e.g., 32 URL-safe bytes).
 
 Railway provides `DATABASE_URL` automatically via the Postgres plugin.
 
@@ -202,8 +214,10 @@ You should see `{"status": "healthy"}`.
 ```bash
 claude mcp add ariadne-core https://your-url.up.railway.app/mcp \
   --transport http --scope user \
-  --header "X-API-Key:your-api-key"
+  --header "Authorization:Bearer YOUR_JWT_HERE"
 ```
+
+Where `YOUR_JWT_HERE` is an access token issued by your Auth0 tenant with audience `https://ariadne-core`. Until the `ariadne login` CLI lands (`ariadne--xft.5`), obtain a test token from Auth0 dashboard → Applications → your app → Test tab → copy the access token. Once the CLI lands, you'll run `ariadne login` once and the client package will attach tokens automatically — you won't edit the MCP config by hand.
 
 Restart Claude Code. The Ariadne Core tools should appear. Verify with `claude mcp list`.
 
@@ -214,7 +228,7 @@ All clients (Open Brain, OpenClaw, Cursor, etc.) connect via MCP the same way as
 ```bash
 curl -X POST https://your-url.up.railway.app/api/search \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer YOUR_JWT_HERE" \
   -d '{"query": "quarterly revenue trends", "top_k": 5}'
 ```
 
@@ -246,7 +260,7 @@ All tools accept caller metadata (`agent_id`, `agent_type`, `model`, `initiated_
 
 ## REST API
 
-The REST API mirrors MCP tool functionality and adds collection management and stats. All endpoints require `X-API-Key` header except `/api/health`.
+The REST API mirrors MCP tool functionality and adds collection management and stats. All endpoints require an `Authorization: Bearer <jwt>` header except `/api/health` and `/.well-known/ariadne-config` (the OAuth discovery endpoint).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -264,23 +278,26 @@ The REST API mirrors MCP tool functionality and adds collection management and s
 ```bash
 # Upload a file
 curl -X POST https://your-url/api/upload \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer YOUR_JWT_HERE" \
   -F "file=@report.pdf"
 
 # Convert and store
 curl -X POST https://your-url/api/documents \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer YOUR_JWT_HERE" \
   -d '{"uri": "https://example.com/report.pdf", "collection": "research"}'
 
 # Search
 curl -X POST https://your-url/api/search \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer YOUR_JWT_HERE" \
   -d '{"query": "quarterly revenue trends", "top_k": 5}'
 
 # Health check (no auth)
 curl https://your-url/api/health
+
+# OAuth discovery (no auth) — clients fetch this to learn AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_AUDIENCE
+curl https://your-url/.well-known/ariadne-config
 ```
 
 ## How dedup works

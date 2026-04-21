@@ -61,4 +61,4 @@ ariadne-core serve            # start REST API (:8000)
 
 Deploy: `railway up` or `docker compose up -d` on any Docker host.
 
-All endpoints require API key auth via `X-API-Key` header (except `/api/health`).
+All protected endpoints require OAuth 2.1 Bearer JWT auth via `Authorization: Bearer <jwt>` header. Open endpoints (no auth): `/api/health` and `/.well-known/ariadne-config` (OAuth discovery). The server needs `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, and `AUTH0_AUDIENCE` set; clients discover these by `GET /.well-known/ariadne-config`. The `ariadne login` CLI that does PKCE + keyring storage is landing in ticket `ariadne--xft.5` (Pass 3 client work) — until then, obtain a test JWT from Auth0 dashboard → Applications → your app → Test tab → copy the access token, then pass it as `Authorization: Bearer <token>`.
