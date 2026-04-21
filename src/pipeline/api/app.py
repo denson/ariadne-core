@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from pipeline.api.auth import get_key_store, set_require_auth
+from pipeline.api.discovery import router as discovery_router
 from pipeline.api.routes import router
 from pipeline.config import load_config
 from pipeline.embedding.embedder import EmbeddingConfig
@@ -133,3 +134,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(router, prefix="/api")
+# `/.well-known/ariadne-config` lives at the app root, not under /api.
+# Unauthenticated by construction — a client that can't auth yet must
+# be able to read how to auth.
+app.include_router(discovery_router)
