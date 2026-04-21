@@ -112,9 +112,7 @@ def _get_jwks_client(domain: str) -> jwt.PyJWKClient:
     the JWKS URL matches. The lock protects the rare concurrent
     first-use case.
 
-    `lifespan=600` is the cache TTL in seconds. `max_cached_keys=16`
-    is the upper bound on distinct signing keys we cache across
-    Auth0 rotations; 16 covers months of rotations comfortably.
+    `lifespan=600` is the cache TTL in seconds.
     """
     global _jwks_client, _jwks_client_domain
     with _jwks_lock:
@@ -124,7 +122,6 @@ def _get_jwks_client(domain: str) -> jwt.PyJWKClient:
                 jwks_url,
                 cache_jwk_set=True,
                 lifespan=600,
-                max_cached_keys=16,
             )
             _jwks_client_domain = domain
         return _jwks_client

@@ -25,7 +25,6 @@ so stale state from a prior test doesn't leak across.
 from __future__ import annotations
 
 import base64
-import json
 import time
 import uuid
 from typing import Any
