@@ -36,7 +36,8 @@ Railway / Fly.io / VPS
 │  └── Chunking/Embedding  │
 └─────────────────────────┘
          ▲
-         │  HTTPS + X-API-Key
+         │  HTTPS + Authorization: Bearer <jwt>
+         │  (Auth0 OAuth 2.1; discovery at /.well-known/ariadne-config)
          │
 ┌────────┴─────────────────┐
 │  Clients                 │
@@ -54,9 +55,9 @@ The server and client live in the same monorepo (`denson/ariadne-core`) as separ
 
 All clients connect to the same HTTPS endpoint. The URL depends on where you deploy (e.g., `https://ariadne-core.up.railway.app`).
 
-All endpoints except `/api/health` require authentication via `X-API-Key` header.
+All endpoints except `/api/health` and `/.well-known/ariadne-config` require authentication via an `Authorization: Bearer <jwt>` header. JWTs are issued by Auth0 — see the `Authentication` section below for the full contract.
 
-**LLM agents (Claude Code, Cursor, etc.):** Install the client package and use the Python API. The client reads server URL and API key from environment variables or `.env` file.
+**LLM agents (Claude Code, Cursor, etc.):** Install the client package and use the Python API. The client obtains and refreshes access tokens via the PKCE flow (CLI command `ariadne login`, landing in `ariadne--xft.5`) and reads server URL from environment variables or `.env` file.
 
 ```bash
 pip install ariadne-core-client
@@ -66,7 +67,7 @@ uv add ariadne-core-client
 
 **Scripts and CI:** Use the client package or call the REST API directly.
 
-**Any HTTP client:** Call the REST API endpoints with `X-API-Key` header. See the REST API section for full endpoint documentation.
+**Any HTTP client:** Call the REST API endpoints with an `Authorization: Bearer <jwt>` header. See the REST API section for full endpoint documentation and the `Authentication` section for how to obtain a token.
 
 ### Document input — three paths
 
@@ -121,26 +122,83 @@ The `docker-compose.yml` runs the application and Postgres together. Environment
 
 ### Authentication
 
-All deployments should enable API key auth:
+Ariadne Core uses **OAuth 2.1 Bearer JWT** for all protected endpoints. Auth0 is the identity provider; the server validates JWTs against Auth0's JWKS. The prior `X-API-Key` path was removed in Pass 2 of the `ariadne--xft` epic (commit `54165c9`); the legacy implementation is preserved on branch `legacy/api-key` and tag `v0.x-legacy-api-key` for reference.
 
-```yaml
-# config/ariadne.yaml
-api:
-  require_auth: true
+**Server environment variables** (required; the server returns a structured `500 auth_misconfigured` on any protected request if any is unset):
+
+| Variable | Description | Example |
+|---|---|---|
+| `AUTH0_DOMAIN` | Auth0 tenant domain (no scheme, no trailing slash). The server computes the issuer as `https://{AUTH0_DOMAIN}/` and the JWKS URL as `https://{AUTH0_DOMAIN}/.well-known/jwks.json`. | `dev-1inpk4rtyzwxmcgm.us.auth0.com` |
+| `AUTH0_CLIENT_ID` | Auth0 Native Application client ID. Exposed verbatim via `/.well-known/ariadne-config` so clients can run the PKCE flow. | `ixpErHZnMADzV7wTEcO48N3oaiNCjNUj` |
+| `AUTH0_AUDIENCE` | Auth0 API identifier. Must match the `aud` claim on issued JWTs. | `https://ariadne-core` |
+
+`ARIADNE_UPLOAD_SIGNING_SECRET` is a separate HMAC secret for presigned upload URLs (`POST /api/upload` signing layer) — not an auth credential. It does not grant access to any endpoint and is never handed to clients.
+
+**Wire format.** Protected endpoints expect:
+
+```
+Authorization: Bearer <jwt>
 ```
 
-API keys are stored as SHA-256 hashes on the server. `/api/health` is the only unauthenticated endpoint — all other endpoints require an `X-API-Key` header when auth is enabled.
+**Accepted algorithms.** `RS256` only. Symmetric algorithms (`HS256`) are rejected — Auth0 signs with its private key and the server verifies with the public key fetched from JWKS.
 
-**Client-side authentication:** The client package resolves credentials in this order:
+**Claims the server checks.** On each request the server validates:
 
-1. Explicit parameters: `AriadneClient(url="...", api_key="...")`
-2. Environment variables: `ARIADNE_URL`, `ARIADNE_API_KEY`
-3. `.env` file in current directory or parent directories
-4. `.mcp.json` file (extracts URL from ariadne server config — legacy support)
+- Signature matches a key in Auth0's JWKS (fetched from `https://{AUTH0_DOMAIN}/.well-known/jwks.json`, cached 600s with forced-refresh on unknown `kid`)
+- `iss` equals `https://{AUTH0_DOMAIN}/` (trailing slash — Auth0 emits it)
+- `aud` equals `AUTH0_AUDIENCE`
+- `exp` is in the future
+- `sub` is present and is a non-empty string
 
-Agents and scripts should set `ARIADNE_URL` and `ARIADNE_API_KEY` in their environment or `.env` file. The client never prints, logs, or exposes credentials.
+On success the server exposes a `Principal{user_id, email}` to route handlers. `user_id` is the Auth0 `sub` claim (stable across refreshes) and is used for `agent_id` provenance attribution. `email` is PII; it is available at the request boundary but never written to stdout/logs.
 
-**OAuth:** Partially implemented. OAuth token validation is supported but not yet documented or exposed in the client package. API key auth is the primary authentication method.
+**Error responses.** Every auth failure returns `{"detail": "<reason>"}` with HTTP 401, using one of these detail strings (stable contract — test suites assert on them):
+
+| Detail string | Status | Meaning |
+|---|---|---|
+| `missing_token` | 401 | No `Authorization` header at all. |
+| `wrong_scheme` | 401 | `Authorization` header present but scheme is not `Bearer`. |
+| `malformed_token` | 401 | JWT not parseable as three base64 parts / header missing `kid`. |
+| `invalid_signature` | 401 | Signature does not verify against the JWKS key. |
+| `wrong_audience` | 401 | `aud` claim does not match `AUTH0_AUDIENCE`. |
+| `wrong_issuer` | 401 | `iss` claim does not match `https://{AUTH0_DOMAIN}/`. |
+| `expired_token` | 401 | `exp` claim is in the past. |
+| `kid_not_in_jwks` (emitted as `unknown_kid`) | 401 | Token's `kid` not in JWKS even after a forced JWKS refresh. |
+| `invalid_token` | 401 | Catch-all for PyJWT `InvalidTokenError` subclasses not covered above. |
+| `missing_sub_claim` | 401 | Token otherwise valid but has no `sub` claim. |
+| `auth_misconfigured` | 500 | `AUTH0_DOMAIN` or `AUTH0_AUDIENCE` unset on the server at request time. Deploy error, not a client error. |
+
+Response bodies never echo token contents, header values, or Auth0 error payloads.
+
+**Sources:** `src/pipeline/auth_oauth.py` (the middleware and Principal contract), `src/pipeline/api/discovery.py` (the `/.well-known/ariadne-config` endpoint), `OAUTH_PLAN.md` (design doc — auth passes 1 through 3 of epic `ariadne--xft`).
+
+### Discovery endpoint — `GET /.well-known/ariadne-config`
+
+Unauthenticated. Returns the Auth0 tenant config a client needs to run the login flow:
+
+```json
+{
+  "auth": {
+    "issuer":    "https://<AUTH0_DOMAIN>/",
+    "client_id": "<AUTH0_CLIENT_ID>",
+    "audience":  "<AUTH0_AUDIENCE>",
+    "scope":     "openid profile email offline_access"
+  }
+}
+```
+
+`offline_access` is what makes Auth0 issue a refresh token alongside the access token — the `ariadne login` CLI (landing in `ariadne--xft.5`) caches the refresh token in the OS keyring and exchanges it for fresh access tokens without user interaction.
+
+If any of `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_AUDIENCE` is unset, the endpoint returns `500 {"detail": "auth_misconfigured"}` — the same server-misconfiguration signal as the Bearer path. Because this endpoint is unauthenticated, a deploy that forgot to set the Auth0 env vars is caught by the first client GET rather than the first authenticated request.
+
+**Client-side authentication (Pass 3 — landing in `ariadne--xft.5`):** The client package will resolve credentials in this order:
+
+1. Explicit parameters: `AriadneClient(url="...", access_token="...")`
+2. Access token cached on disk + refresh token in OS keyring (populated by `ariadne login`)
+3. Environment variable: `ARIADNE_URL` for the server URL; `ARIADNE_ACCESS_TOKEN` as an escape hatch for CI where the interactive PKCE flow isn't viable
+4. `.env` file in current directory or parent directories
+
+Until Pass 3 lands, agents and scripts should set `ARIADNE_URL` in their environment and pass `Authorization: Bearer <jwt>` manually with a test token obtained from Auth0 dashboard → Applications → your app → Test tab → copy the access token. The client never prints, logs, or exposes credentials.
 
 ## Configuration
 
@@ -151,7 +209,10 @@ All configuration is controlled via environment variables. The config file (`con
 | Variable | Description |
 |----------|-------------|
 | `DB_PASSWORD` | Postgres password |
-| `ARIADNE_API_KEY` | API key for authenticating client requests. Stored as SHA-256 hash on the server. |
+| `AUTH0_DOMAIN` | Auth0 tenant domain (e.g. `dev-xxxxx.us.auth0.com`). Used to build the JWKS URL and the expected `iss` claim. |
+| `AUTH0_CLIENT_ID` | Auth0 native-app client ID. Returned by `/.well-known/ariadne-config` so clients can run the PKCE flow. |
+| `AUTH0_AUDIENCE` | Auth0 API audience identifier (e.g. `https://ariadne-core`). Must match the `aud` claim on every accepted JWT. |
+| `ARIADNE_UPLOAD_SIGNING_SECRET` | HMAC secret for presigned upload URLs. Not an auth credential — used only to sign short-lived upload tokens. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. |
 
 ### Embedding
 
@@ -272,7 +333,7 @@ Pointing the embedder or vision client at a non-Gemini OpenAI-compatible provide
 
 The REST API is the server's only interface. All endpoints are under `/api/`. All processing is synchronous — the endpoint returns the full result when it completes.
 
-When `require_auth` is enabled, all endpoints except `/api/health` require an `X-API-Key` header. API keys are stored as SHA-256 hashes.
+All endpoints except `/api/health` and `/.well-known/ariadne-config` require an `Authorization: Bearer <jwt>` header. JWTs are validated against Auth0's JWKS (RS256, `iss`/`aud`/`exp` checked). See the [Authentication](#authentication) section above for the full contract and error-response table.
 
 ### Endpoint summary
 
@@ -306,8 +367,7 @@ All endpoints return errors as JSON with this structure:
 
 Common HTTP status codes:
 - `400` — Invalid request (missing required fields, malformed JSON)
-- `401` — Missing API key
-- `403` — Invalid API key
+- `401` — Authentication failed (see [Authentication](#authentication) for the full `detail` string table — `missing_token`, `wrong_scheme`, `malformed_token`, `invalid_signature`, `wrong_audience`, `wrong_issuer`, `expired_token`, `unknown_kid`, `missing_sub_claim`, `invalid_token`)
 - `404` — Document or collection not found
 - `410` — Soft-delete window expired (restore too late)
 - `413` — File too large
@@ -337,7 +397,7 @@ Upload a local file to the server. Returns a server-side path for use with `POST
 
 ```bash
 curl -s -X POST "$ARIADNE_URL/api/upload" \
-  -H "X-API-Key:$ARIADNE_API_KEY" \
+  -H "Authorization: Bearer $ARIADNE_JWT" \
   -F "file=@path/to/document.pdf"
 ```
 
@@ -770,14 +830,14 @@ pip install git+https://github.com/denson/ariadne-core.git#subdirectory=client
 
 ### Credential resolution
 
-The client resolves server URL and API key in this order:
+Pass 3 (ticket `ariadne--xft.5`) lands the `ariadne login` CLI + OS-keyring-backed refresh-token cache. Until then, the client accepts a bearer token directly; the resolution order for the server URL and the JWT is:
 
-1. Explicit params: `AriadneClient(url="...", api_key="...")`
-2. Environment variables: `ARIADNE_URL`, `ARIADNE_API_KEY`
+1. Explicit params: `AriadneClient(url="...", bearer_token="...")`
+2. Environment variables: `ARIADNE_URL`, `ARIADNE_BEARER_TOKEN` (a JWT obtained from Auth0 dashboard → Applications → your app → Test tab)
 3. `.env` file in current directory or parent directories
 4. `.mcp.json` file (legacy — extracts URL from ariadne server config)
 
-Never prints, logs, or exposes credentials.
+Post-xft.5, step 2 becomes "keyring-cached access token refreshed via Auth0 refresh token" — `ARIADNE_BEARER_TOKEN` remains as an escape hatch for headless / CI contexts. The client never prints, logs, or exposes credentials.
 
 ### Default caller metadata
 
