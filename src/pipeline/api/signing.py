@@ -1,8 +1,12 @@
 """Presigned upload URL signing and verification.
 
-Agents never see the API key. Instead they call `request_upload_url`,
-which returns a time-limited HMAC-signed URL that the agent can POST
-a file to with no auth header.
+Uploaders never need a per-user credential for /api/upload/signed —
+instead they receive a time-limited HMAC-signed URL that they POST to
+with no Authorization header. The server-side HMAC secret is
+`ARIADNE_UPLOAD_SIGNING_SECRET` (previously `ARIADNE_API_KEY`, renamed
+in ariadne--xft.2 to decouple the URL-signing concern from per-user
+auth). If the secret is unset the /api/upload/signed route returns
+503 rather than failing silently.
 """
 
 from __future__ import annotations

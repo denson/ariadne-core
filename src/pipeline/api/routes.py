@@ -1,8 +1,16 @@
 """REST API routes for document extraction and retrieval.
 
 All POST endpoints accept caller metadata (agent_id, agent_type, model,
-initiated_by). GET /api/health requires no auth. All other endpoints
-use optional auth in Phase 1 (require_auth=false by default).
+initiated_by). Auth model:
+
+- `GET /api/health` is unauthenticated (liveness probe).
+- `POST /api/upload/signed` uses a presigned HMAC query-param
+  signature and therefore takes no Authorization header (the signing
+  secret is a server-side shared secret, not a user credential).
+- Every other route requires a valid Auth0 Bearer JWT via
+  `Depends(require_user)` from `pipeline.auth_oauth`. A valid JWT
+  resolves to a `Principal` whose `user_id` (Auth0 `sub`) is used as
+  the fallback agent_id when the request doesn't supply one.
 """
 
 from __future__ import annotations
@@ -13,8 +21,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from pydantic import BaseModel, Field
 
-from pipeline.api.auth import APIKey, check_api_key
 from pipeline.api.signing import mark_signature_used, verify_signature
+from pipeline.auth_oauth import Principal, require_user
 import pipeline.services as _svc
 
 router = APIRouter()
@@ -86,13 +94,20 @@ _collections: dict[str, CollectionResponse] = {
 
 
 def _resolve_agent_id(
-    metadata: CallerMetadata, api_key: APIKey | None
+    metadata: CallerMetadata, principal: Principal | None
 ) -> str | None:
-    """Use explicit agent_id if provided, else infer from API key name."""
+    """Use explicit agent_id if provided, else derive from the Auth0 principal.
+
+    The fallback shape is `auth0:<sub>`, matching the prior
+    `api-key:<name>` shape (prefix:identifier) so the interaction log
+    stays grep-parseable across the X-API-Key → OAuth transition. The
+    semantic drift from key-name to Auth0 sub is intentional — it is
+    the clean-break replacement, not a rename.
+    """
     if metadata.agent_id:
         return metadata.agent_id
-    if api_key:
-        return f"api-key:{api_key.name}"
+    if principal:
+        return f"auth0:{principal.user_id}"
     return None
 
 
@@ -102,7 +117,7 @@ def _resolve_agent_id(
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Upload a file to the server for processing.
 
@@ -149,20 +164,28 @@ async def upload_file_signed(
     max_size: int = Query(...),
     signature: str = Query(...),
 ):
-    """Upload a file using a presigned URL. No X-API-Key header required.
+    """Upload a file using a presigned URL. No Authorization header required.
 
     The signature must have been generated server-side via
     `pipeline.api.signing.generate_presigned_url` using the server's
-    ARIADNE_API_KEY as the secret. Each signature is single-use.
+    ARIADNE_UPLOAD_SIGNING_SECRET. Each signature is single-use.
+
+    Note: this endpoint uses a server-side HMAC shared secret for URL
+    signing. It is intentionally separate from the per-user OAuth auth
+    that protects the other routes — a presigned URL can be handed to
+    an uploader that does NOT hold a user credential. In the OAuth
+    world the client already has a short-lived JWT, so this
+    value-proposition may be worth revisiting; see ariadne--xft.2
+    follow-ups.
     """
     import os
     from pathlib import Path as _Path
 
-    secret_key = os.environ.get("ARIADNE_API_KEY")
+    secret_key = os.environ.get("ARIADNE_UPLOAD_SIGNING_SECRET")
     if not secret_key:
         raise HTTPException(
             status_code=503,
-            detail="Signed uploads are not available: no server API key configured.",
+            detail="Signed uploads are not available: no upload signing secret configured.",
         )
 
     if not verify_signature(filename, expires, max_size, signature, secret_key):
@@ -233,12 +256,12 @@ async def health():
 @router.post("/documents")
 async def submit_document(
     req: DocumentRequest,
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Submit a single document for extraction and processing."""
     from pipeline.services import _process_single_document
 
-    agent_id = _resolve_agent_id(req, api_key)
+    agent_id = _resolve_agent_id(req, principal)
 
     result = _process_single_document(
         uri=req.uri,
@@ -283,7 +306,7 @@ async def aggregate_documents(
     has_warnings: Optional[bool] = Query(None),
     has_source_reference: Optional[bool] = Query(None),
     include_deleted: bool = Query(False),
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Group-by summary over /documents filters. Returns [{group, count}, ...]."""
     import collections as _py_collections
@@ -372,7 +395,7 @@ async def aggregate_documents(
 
 @router.get("/documents/schema")
 async def documents_schema(
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Return the list/aggregate query surface. Call this first from an agent."""
     return {
@@ -412,7 +435,7 @@ async def get_document(
     document_id: str,
     include_chunks: bool = Query(True),
     include_interactions: bool = Query(True),
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Retrieve the full processed document by ID."""
     doc = _svc._find_document_by_id(document_id)
@@ -572,7 +595,7 @@ async def list_documents(
     limit: int = Query(20, ge=1),
     offset: int = Query(0, ge=0),
     include_deleted: bool = Query(False),
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """List all documents, optionally filtered by collection or file type."""
     _reject_unknown_query_params(
@@ -666,7 +689,7 @@ async def list_documents(
 async def update_document(
     document_id: str,
     req: UpdateDocumentRequest,
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Patch a stored document's metadata.
 
@@ -702,7 +725,7 @@ async def update_document(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    agent_id = _resolve_agent_id(req, api_key)
+    agent_id = _resolve_agent_id(req, principal)
     _svc._dedup_store.record_interaction(
         DocumentInteraction(
             document_id=document_id,
@@ -731,7 +754,7 @@ async def update_document(
 async def delete_document(
     document_id: str,
     req: Optional[CallerMetadata] = None,
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Soft-delete a document. Hidden immediately, purged after 48 hours."""
     from datetime import datetime, timezone
@@ -745,7 +768,7 @@ async def delete_document(
     _svc._dedup_store.soft_delete_document(document_id)
     scheduled_at = datetime.now(timezone.utc).isoformat()
 
-    agent_id = _resolve_agent_id(req, api_key)
+    agent_id = _resolve_agent_id(req, principal)
     _svc._dedup_store.record_interaction(
         DocumentInteraction(
             document_id=document_id,
@@ -773,7 +796,7 @@ async def delete_document(
 async def restore_document(
     document_id: str,
     req: Optional[CallerMetadata] = None,
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Undo a soft-delete within the 48-hour grace window."""
     from pipeline.dedup import DocumentInteraction, PgDedupStore
@@ -800,7 +823,7 @@ async def restore_document(
             raise HTTPException(status_code=410, detail=msg)
         raise HTTPException(status_code=404, detail=msg)
 
-    agent_id = _resolve_agent_id(req, api_key)
+    agent_id = _resolve_agent_id(req, principal)
     _svc._dedup_store.record_interaction(
         DocumentInteraction(
             document_id=document_id,
@@ -825,7 +848,7 @@ async def restore_document(
 @router.post("/search")
 async def search_documents(
     req: SearchRequest,
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Semantic search over the document knowledge store."""
     if not _svc._embedding_client.enabled:
@@ -893,7 +916,7 @@ async def search_documents(
 
     # Record search in search_log (non-blocking — failures are logged, not raised)
     from pipeline.dedup import SearchLogEntry
-    agent_id = _resolve_agent_id(req, api_key)
+    agent_id = _resolve_agent_id(req, principal)
     _svc._dedup_store.record_search(
         SearchLogEntry(
             query=req.query,
@@ -926,14 +949,14 @@ async def search_documents(
 @router.post("/ingest")
 async def ingest_directory(
     req: IngestRequest,
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Batch-ingest a directory of documents."""
     from pipeline.services import SUPPORTED_EXTENSIONS, _process_single_document
     from pathlib import Path as _Path
     import os as _os
 
-    agent_id = _resolve_agent_id(req, api_key)
+    agent_id = _resolve_agent_id(req, principal)
     dir_path = _Path(req.path)
     if not dir_path.is_dir():
         raise HTTPException(status_code=400, detail=f"Not a directory: {req.path}")
@@ -1035,7 +1058,7 @@ async def ingest_directory(
 
 @router.get("/collections")
 async def list_collections(
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """List all collections with document counts."""
     from pipeline.dedup import PgDedupStore
@@ -1073,7 +1096,7 @@ async def list_collections(
 @router.post("/collections", status_code=201)
 async def create_collection(
     req: CollectionCreate,
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Create a new collection."""
     if req.name in _collections:
@@ -1101,7 +1124,7 @@ async def delete_collection(
         ),
     ),
     req: Optional[CallerMetadata] = None,
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Soft-delete every document in a collection (or hard-delete with ?purge=true).
 
@@ -1142,7 +1165,7 @@ async def delete_collection(
 async def restore_collection(
     collection_name: str,
     req: Optional[CallerMetadata] = None,
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """Restore soft-deleted documents in a collection within the 48h window."""
     _ = req or CallerMetadata()
@@ -1158,7 +1181,7 @@ async def restore_collection(
 
 @router.get("/stats")
 async def get_stats(
-    api_key: APIKey | None = Depends(check_api_key),
+    principal: Principal = Depends(require_user),
 ):
     """System statistics."""
     from pipeline.dedup import PgDedupStore

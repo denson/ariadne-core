@@ -12,16 +12,17 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from pipeline import services
-from pipeline.api.auth import set_require_auth
 from pipeline.api.routes import router
 from pipeline.dedup import InMemoryDedupStore, StoredDocument, compute_fingerprint
 from pipeline.storage.base import InMemoryVectorStore
 
+from tests.conftest import override_auth
+
 
 def _build_app() -> FastAPI:
-    set_require_auth(False)
     app = FastAPI()
     app.include_router(router, prefix="/api")
+    override_auth(app)
     return app
 
 
@@ -51,7 +52,6 @@ def _make_doc(
 
 
 def test_get_document_includes_warnings_and_count():
-    set_require_auth(False)
     app = _build_app()
     client = TestClient(app)
     dedup = InMemoryDedupStore()

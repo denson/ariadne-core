@@ -14,7 +14,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from pipeline import services
-from pipeline.api.auth import set_require_auth
 from pipeline.api.routes import router
 from pipeline.dedup import (
     InMemoryDedupStore,
@@ -23,11 +22,13 @@ from pipeline.dedup import (
 )
 from pipeline.storage.base import InMemoryVectorStore
 
+from tests.conftest import override_auth
+
 
 def _build_app() -> FastAPI:
-    set_require_auth(False)
     app = FastAPI()
     app.include_router(router, prefix="/api")
+    override_auth(app)
     return app
 
 
