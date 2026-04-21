@@ -993,16 +993,17 @@ ariadne-core/
 │   │   ├── config.py          # Config file + env var loader
 │   │   ├── auth_oauth.py      # OAuth 2.1 Bearer JWT validation (Auth0 JWKS)
 │   │   ├── dedup.py           # SHA-256 fingerprinting + dedup gate
-│   │   ├── schema.py          # Pydantic models
+│   │   ├── schema.py          # DB schema validation + dimension check
 │   │   ├── services.py        # Service-layer orchestration (extract → enrich → chunk → embed → store)
 │   │   ├── stores.py          # Store orchestration
 │   │   ├── api/
-│   │   │   ├── app.py         # FastAPI application + OAuth middleware
+│   │   │   ├── app.py         # FastAPI app + lifespan + router mount
 │   │   │   ├── routes.py      # REST endpoints (including /api/upload)
 │   │   │   ├── discovery.py   # /.well-known/ariadne-config endpoint
 │   │   │   └── signing.py     # HMAC signing for presigned uploads (feeds /api/upload/signed)
 │   │   ├── extraction/
-│   │   │   └── markitdown.py  # MarkItDown wrapper
+│   │   │   ├── markitdown.py  # MarkItDown wrapper
+│   │   │   └── text_encoding.py  # Text encoding detection + language validation
 │   │   ├── enrichment/
 │   │   │   ├── images.py      # Image enrichment post-processing
 │   │   │   └── vision.py      # Vision API client (any OpenAI-compat)
@@ -1012,9 +1013,7 @@ ariadne-core/
 │   │   │   └── embedder.py    # Embedding API client
 │   │   └── storage/
 │   │       ├── base.py        # VectorStore protocol
-│   │       ├── pgvector.py
-│   │       ├── qdrant.py
-│   │       └── weaviate.py
+│   │       └── pgvector.py    # Default implementation
 │   └── pyproject.toml
 ├── migrations/
 │   └── 001_initial.sql        # Database schema (auto-applied on startup)
