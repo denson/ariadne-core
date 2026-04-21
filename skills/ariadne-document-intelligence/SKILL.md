@@ -41,7 +41,7 @@ deployed and connected. Point them to the installation docs or the
 **ariadne-core-install** skill.
 
 The client resolves the server URL and JWT automatically from:
-1. Environment variables: `ARIADNE_URL`, `ARIADNE_BEARER_TOKEN` (a JWT)
+1. Environment variables: `ARIADNE_URL`, `ARIADNE_ACCESS_TOKEN` (a JWT)
 2. `.env` file in current directory or parent directories
 3. `.mcp.json` file (legacy support)
 
@@ -49,7 +49,7 @@ Ariadne Core uses Auth0 OAuth 2.1 Bearer JWT as of the `ariadne--xft.2` merge
 (commit `54165c9`). The `ariadne login` CLI that runs the PKCE flow and caches a
 refresh token in the OS keyring is landing in ticket `ariadne--xft.5`. Until
 then, obtain a test JWT from **Auth0 dashboard → Applications → your app → Test
-tab → copy the access token**, then set `ARIADNE_BEARER_TOKEN=<jwt>` in your
+tab → copy the access token**, then set `ARIADNE_ACCESS_TOKEN=<jwt>` in your
 `.env`.
 
 If no credentials are configured yet, the client CLI can create a `.env` from the
@@ -60,7 +60,7 @@ ariadne setup
 ```
 
 This copies `.env.example` to `.env` in the current directory. Edit it to fill in
-your `ARIADNE_URL` and `ARIADNE_BEARER_TOKEN`. The full `.env.example` also
+your `ARIADNE_URL` and `ARIADNE_ACCESS_TOKEN`. The full `.env.example` also
 includes server-side configuration (embedding provider, vision provider, database,
 Auth0 tenant) for users running their own Ariadne Core deployment.
 

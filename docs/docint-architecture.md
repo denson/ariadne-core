@@ -36,7 +36,7 @@ The expensive model only enters the picture when a human or agent asks a questio
 ### Target Users
 
 - **Personal use:** Individual running Claude Code who processes documents regularly. Deploy on Railway's free tier — no local setup required.
-- **Agentic systems:** Open Brain, OpenClaw, or any system that needs document memory. Connect via MCP with API key auth.
+- **Agentic systems:** Open Brain, OpenClaw, or any system that needs document memory. Connect via MCP with `Authorization: Bearer` JWT auth.
 
 For enterprise scale (thousands of users, millions of documents, managed SLA), Unstructured's Platform + Pinecone/Weaviate Cloud is the right answer. This project is not competing at that tier — it's serving everyone below it who currently has nothing.
 
@@ -131,13 +131,13 @@ Railway / Fly.io / VPS
 └─────────────────────────────────────────────────────────────────┘
   MCP Server
      ▲  ▲  ▲  ▲
-     │  │  │  └── Claude Cowork (Managed edition or roll your own OAuth)
+     │  │  │  └── Claude Cowork
      │  │  └───── OpenClaw
      │  └──────── Open Brain
      └─────────── Claude Code
 
-Authentication is by API key for Personal edition and OAuth for Managed and higher
-editions. You can also create your own OAuth for the Personal edition.
+Authentication is OAuth 2.1 Bearer JWT (Auth0) across all editions. Clients
+discover the Auth0 tenant config via `GET /.well-known/ariadne-config`.
 ```
 
 ---
@@ -437,13 +437,13 @@ Every tool accepts optional caller metadata. This is how provenance tracking wor
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| agent_id | string | no | Caller's identity (e.g., "code-project-abc", "ob1-agent-daily", "api-key:research-bot") |
+| agent_id | string | no | Caller's identity (e.g., "code-project-abc", "ob1-agent-daily", "auth0:<auth0-sub-claim>") |
 | agent_type | string | no | Client type: "claude-code", "ob1", "openclaw", "cursor", "api", "cli", etc. |
 | model | string | no | The LLM model the caller is running (e.g., "claude-sonnet-4-6"). Useful for tracing which model initiated the processing. |
 | collection | string | no | Logical grouping for the documents (e.g., "q4-research", "onboarding-docs", "daily-capture"). Acts as a namespace for search and organization. |
 | initiated_by | string | no | Human or system identity (e.g., "user:denson", "cron:nightly-ingest") |
 
-If not provided, the server infers what it can from the connection context (API key name, MCP client headers) and defaults the rest. The `collection` parameter is particularly important — it's how different agents and workflows keep their documents organized without stepping on each other.
+If not provided, the server derives `agent_id` from `Principal.user_id` (as `auth0:<sub>`) and defaults the rest. The `collection` parameter is particularly important — it's how different agents and workflows keep their documents organized without stepping on each other.
 
 ### Tools
 
@@ -717,7 +717,7 @@ The traditional multi-tenant model uses `tenant_id` to mean "organization." That
 Ariadne Core uses two dimensions for partitioning:
 
 - **`collection`** — a logical namespace for documents. "q4-research", "onboarding-docs", "daily-capture", "project-alpha". Collections are how different workflows and purposes stay organized. An OB1 agent's daily capture goes into one collection. A Claude Code project researching a topic goes into another. Search can span collections or be scoped to one.
-- **`agent_id`** (on `document_interactions`) — the identity of whatever touched the document. A Claude Code session, an OB1 agent, a cron job, an API key. Every agent call creates an interaction row, even if the document was already processed (dedup skip). This is for provenance, not access control — you can always see everything, but you can ask "what did agent X do?"
+- **`agent_id`** (on `document_interactions`) — the identity of whatever touched the document. A Claude Code session, an OB1 agent, or a cron job. Every agent call creates an interaction row, even if the document was already processed (dedup skip). This is for provenance, not access control — you can always see everything, but you can ask "what did agent X do?"
 
 For organizational multi-tenancy (the Fortune 50 case), add `org_id` via row-level security on top of this. The schema is ready for it but doesn't enforce it in Phase 1.
 
@@ -993,10 +993,11 @@ ariadne-core/
 │   │   ├── pipeline.py        # Extract → enrich → chunk → embed → store
 │   │   ├── mcp_server.py      # MCP tool definitions
 │   │   ├── config.py          # Config file + env var loader
+│   │   ├── auth_oauth.py      # OAuth 2.1 Bearer JWT validation (Auth0 JWKS)
 │   │   ├── api/
 │   │   │   ├── app.py         # FastAPI application + MCP auth middleware
 │   │   │   ├── routes.py      # REST endpoints (including /api/upload)
-│   │   │   └── auth.py        # API key store and verification
+│   │   │   └── discovery.py   # /.well-known/ariadne-config endpoint
 │   │   ├── extraction/
 │   │   │   └── markitdown.py  # MarkItDown wrapper
 │   │   ├── enrichment/

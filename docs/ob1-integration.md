@@ -66,7 +66,7 @@ OB1 agents can also use the REST API directly:
 # Ingest a document
 curl -X POST http://localhost:8000/api/documents \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ARIADNE_JWT" \
+  -H "Authorization: Bearer $ARIADNE_ACCESS_TOKEN" \
   -d '{
     "uri": "/path/to/document.pdf",
     "collection": "ob1-daily",
@@ -77,7 +77,7 @@ curl -X POST http://localhost:8000/api/documents \
 # Search for context
 curl -X POST http://localhost:8000/api/search \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ARIADNE_JWT" \
+  -H "Authorization: Bearer $ARIADNE_ACCESS_TOKEN" \
   -d '{
     "query": "quarterly revenue trends",
     "collection": "ob1-daily",

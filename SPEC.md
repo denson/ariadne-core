@@ -152,6 +152,8 @@ Authorization: Bearer <jwt>
 
 On success the server exposes a `Principal{user_id, email}` to route handlers. `user_id` is the Auth0 `sub` claim (stable across refreshes) and is used for `agent_id` provenance attribution. `email` is PII; it is available at the request boundary but never written to stdout/logs.
 
+When the caller does not provide an explicit `agent_id`, the server writes `auth0:<sub>` into `interaction_log.agent_id`. The colon prefix keeps the interaction log grep-parseable across the X-API-Key→OAuth transition (previously `api-key:<name>`). See `src/pipeline/api/routes.py:101-105`.
+
 **Error responses.** Every auth failure returns `{"detail": "<reason>"}` with HTTP 401, using one of these detail strings (stable contract — test suites assert on them):
 
 | Detail string | Status | Meaning |
@@ -397,7 +399,7 @@ Upload a local file to the server. Returns a server-side path for use with `POST
 
 ```bash
 curl -s -X POST "$ARIADNE_URL/api/upload" \
-  -H "Authorization: Bearer $ARIADNE_JWT" \
+  -H "Authorization: Bearer $ARIADNE_ACCESS_TOKEN" \
   -F "file=@path/to/document.pdf"
 ```
 
@@ -830,14 +832,14 @@ pip install git+https://github.com/denson/ariadne-core.git#subdirectory=client
 
 ### Credential resolution
 
-Pass 3 (ticket `ariadne--xft.5`) lands the `ariadne login` CLI + OS-keyring-backed refresh-token cache. Until then, the client accepts a bearer token directly; the resolution order for the server URL and the JWT is:
+Pass 3 (ticket `ariadne--xft.5`) lands the `ariadne login` CLI + OS-keyring-backed refresh-token cache. Until then, the client accepts an access token directly; the resolution order for the server URL and the JWT is:
 
-1. Explicit params: `AriadneClient(url="...", bearer_token="...")`
-2. Environment variables: `ARIADNE_URL`, `ARIADNE_BEARER_TOKEN` (a JWT obtained from Auth0 dashboard → Applications → your app → Test tab)
+1. Explicit params: `AriadneClient(url="...", access_token="...")`
+2. Environment variables: `ARIADNE_URL`, `ARIADNE_ACCESS_TOKEN` (a JWT obtained from Auth0 dashboard → Applications → your app → Test tab)
 3. `.env` file in current directory or parent directories
 4. `.mcp.json` file (legacy — extracts URL from ariadne server config)
 
-Post-xft.5, step 2 becomes "keyring-cached access token refreshed via Auth0 refresh token" — `ARIADNE_BEARER_TOKEN` remains as an escape hatch for headless / CI contexts. The client never prints, logs, or exposes credentials.
+Post-xft.5, step 2 becomes "keyring-cached access token refreshed via Auth0 refresh token" — `ARIADNE_ACCESS_TOKEN` remains as an escape hatch for headless / CI contexts. The client never prints, logs, or exposes credentials.
 
 ### Default caller metadata
 

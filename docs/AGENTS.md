@@ -76,7 +76,7 @@ curl -X POST https://your-deployment/api/documents \
 
 Ariadne Core uses **OAuth 2.1 Bearer JWT** for all protected endpoints. Auth0 is the identity provider; the server validates JWTs against Auth0's JWKS (RS256, `iss`/`aud`/`exp` checked). All endpoints except `/api/health` and `/.well-known/ariadne-config` require an `Authorization: Bearer <jwt>` header.
 
-**Principal contract:** on success, the server derives a `Principal{user_id, email}` from the JWT — `user_id` is the Auth0 `sub` claim and is used as `agent_id` in provenance tracking.
+**Principal contract:** on success, the server derives a `Principal{user_id, email}` from the JWT — `user_id` is the Auth0 `sub` claim and is used as `agent_id` in provenance tracking. When the caller does not provide an explicit `agent_id`, the server writes `auth0:<sub>` into `interaction_log.agent_id`. The colon prefix keeps the interaction log grep-parseable across the X-API-Key→OAuth transition (previously `api-key:<name>`). See `src/pipeline/api/routes.py:101-105`.
 
 **Interim state (Pass 2 landed, Pass 3 pending):** the `ariadne login` CLI that runs the Auth0 PKCE flow automatically is landing in ticket `ariadne--xft.5`. Until then, agents obtain a test JWT from **Auth0 dashboard → Applications → your app → Test tab → copy the access token**, then pass it in the `Authorization: Bearer <jwt>` header. Machine-to-machine agents (OB1, OpenClaw, custom) should use Auth0's client-credentials flow once Pass 3 lands; until then, the test token path is the only option.
 
@@ -86,7 +86,7 @@ Ariadne Core uses **OAuth 2.1 Bearer JWT** for all protected endpoints. Auth0 is
 curl https://<your-deployment>/.well-known/ariadne-config
 ```
 
-Full error-response contract (`detail` strings like `missing_token`, `wrong_audience`, `expired_token`, etc.): see [SPEC.md](../SPEC.md) → "Authentication".
+Full error-response contract (`detail` strings like `missing_token`, `wrong_audience`, `expired_token`, etc.): see [SPEC.md](../SPEC.md#authentication).
 
 ---
 
