@@ -329,11 +329,36 @@ def resolve_host(
 
 
 def _normalize_host(raw: str) -> str:
-    """Strip whitespace and trailing slashes from a host URL."""
+    """Strip whitespace and trailing slashes from a host URL, then validate scheme.
+
+    Security: the host we are about to hit for ``/.well-known/ariadne-config``
+    determines which IdP the PKCE flow redirects to. A poisoned
+    ``ARIADNE_HOST`` / default-host file with ``http://attacker.example``
+    (or ``file://``, ``javascript:``, ``ftp://``, ``data:``, or a bare
+    hostname) would let an attacker-controlled discovery payload pick
+    the ``issuer`` for authorize. PKCE protects the code→token exchange,
+    not the "which IdP do we even go to" step — so this predicate is
+    the chokepoint that enforces the IdP-selection is trustworthy.
+
+    Rule: accept ``https://<any-host>``; allow ``http://`` **only** for
+    loopback (``localhost`` or ``127.0.0.1``), which is where the local
+    dev server runs. Everything else raises :class:`AuthError`.
+    """
     out = raw.strip()
     while out.endswith("/"):
         out = out[:-1]
-    return out
+    parsed = urllib.parse.urlparse(out)
+    scheme = parsed.scheme
+    hostname = parsed.hostname  # lowercased, stripped of port
+    if scheme == "https" and hostname:
+        return out
+    if scheme == "http" and hostname in ("localhost", "127.0.0.1"):
+        return out
+    raise AuthError(
+        f"Host {raw!r} is not a valid Ariadne server URL — "
+        "must be https://... or http://localhost[:port] / "
+        "http://127.0.0.1[:port] for local development."
+    )
 
 
 def write_default_host(host: str, *, config_path: Optional[Path] = None) -> None:

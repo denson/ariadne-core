@@ -589,3 +589,46 @@ class TestDiscoverConfig:
         monkeypatch.setattr(auth, "_http_get_json", fake_get)
         auth.discover_config("https://host.example///")
         assert captured["url"] == "https://host.example/.well-known/ariadne-config"
+
+
+# =============================================================== _normalize_host
+#
+# Security regression tests for CATO-security 2026-04-21T21:14:01Z: the host
+# URL we resolve determines which IdP the PKCE flow hits, so anything other
+# than https:// (or http:// to loopback, for local dev) must be rejected
+# before discover_config is called.
+
+class TestNormalizeHostSchemeEnforcement:
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "http://attacker.example",
+            "http://example.com",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ftp://example.com",
+            "data:text/plain,hi",
+            "example.com",
+            "",
+        ],
+    )
+    def test_rejects_non_https_and_non_loopback_http(self, bad: str) -> None:
+        with pytest.raises(auth.AuthError) as exc:
+            auth._normalize_host(bad)
+        # Message must name the offending input so the operator can see
+        # what value was rejected (the whole point of defence-in-depth
+        # at this layer is a loud, debuggable failure).
+        assert repr(bad) in str(exc.value) or bad in str(exc.value)
+
+    @pytest.mark.parametrize(
+        "good,expected",
+        [
+            ("https://example.com", "https://example.com"),
+            ("https://ariadne.example.com/", "https://ariadne.example.com"),
+            ("http://localhost:8000", "http://localhost:8000"),
+            ("http://127.0.0.1:8000", "http://127.0.0.1:8000"),
+            ("http://localhost", "http://localhost"),
+        ],
+    )
+    def test_accepts_https_and_loopback_http(self, good: str, expected: str) -> None:
+        assert auth._normalize_host(good) == expected
