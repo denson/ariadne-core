@@ -26,6 +26,13 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+from ariadne_core_client import auth as _auth
+from ariadne_core_client.auth import (
+    AuthError,
+    KeyringBackendUnavailable,
+    format_whoami_human,
+    format_whoami_json,
+)
 from ariadne_core_client.client import AriadneClient
 from ariadne_core_client.exceptions import AriadneClientError
 from ariadne_core_client.models import (
@@ -451,6 +458,75 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------- auth subcommands
+
+def _resolve_host_or_fail(flag_value: str | None) -> str:
+    """Wrap auth.resolve_host so CLI callers can surface the message cleanly."""
+    try:
+        return _auth.resolve_host(flag_value)
+    except AuthError as err:
+        print(f"error: {err}", file=sys.stderr)
+        raise SystemExit(1) from err
+
+
+def _build_keyring_store_or_fail():
+    """Instantiate the real KeyringStore; print a platform-aware error on failure."""
+    try:
+        return _auth.KeyringStore()
+    except KeyringBackendUnavailable as err:
+        print(str(err), file=sys.stderr)
+        raise SystemExit(1) from err
+
+
+def _cmd_login(args: argparse.Namespace) -> int:
+    host = _resolve_host_or_fail(args.host)
+    store = _build_keyring_store_or_fail()
+    try:
+        info = _auth.login(host, store=store)
+    except AuthError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    email = info.get("email") or "(unknown email)"
+    print(f"Logged in to {info.get('host', host)} as {email}")
+    return 0
+
+
+def _cmd_logout(args: argparse.Namespace) -> int:
+    host = _resolve_host_or_fail(args.host)
+    store = _build_keyring_store_or_fail()
+    try:
+        _auth.logout(host, store=store)
+    except AuthError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    print(f"Logged out of {host}")
+    return 0
+
+
+def _cmd_whoami(args: argparse.Namespace) -> int:
+    host = _resolve_host_or_fail(args.host)
+    # whoami honors ARIADNE_ACCESS_TOKEN only indirectly (via
+    # get_access_token); the command itself is a pure keyring query,
+    # so we still need the keyring.
+    store = _build_keyring_store_or_fail()
+    try:
+        info = _auth.whoami(host, store=store)
+    except AuthError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    if args.json:
+        sys.stdout.write(format_whoami_json(info) + "\n")
+    else:
+        print(format_whoami_human(info))
+    # If the stored access token is past its expiry, we still succeed
+    # (the user can refresh via the next call to get_access_token) but
+    # signal it in the exit code so scripts can detect stale state.
+    remaining = info.get("expires_in_seconds")
+    if isinstance(remaining, int) and remaining <= 0:
+        return 2
+    return 0
+
+
 # --------------------------------------------------------------------- parser
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -534,6 +610,60 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Overwrite existing .env file.",
     )
     p_setup.set_defaults(func=_cmd_setup)
+
+    # login
+    p_login = sub.add_parser(
+        "login",
+        help="Sign in to an Ariadne server via OAuth 2.1 + PKCE.",
+        description=(
+            "Run the OAuth 2.1 PKCE loopback flow to sign in to an Ariadne "
+            "server. Opens a browser for the Auth0 consent step, captures the "
+            "callback on a local loopback port, exchanges the code for "
+            "access + refresh tokens, and stores them in your OS keyring."
+        ),
+    )
+    p_login.add_argument(
+        "--host",
+        help=(
+            "Ariadne server URL. Defaults to $ARIADNE_HOST, then "
+            "~/.config/ariadne/default. A successful login overwrites "
+            "~/.config/ariadne/default with this host."
+        ),
+    )
+    p_login.set_defaults(func=_cmd_login)
+
+    # logout
+    p_logout = sub.add_parser(
+        "logout",
+        help="Clear all stored credentials for an Ariadne server.",
+        description=(
+            "Remove all refresh/access/expiry entries for the specified host "
+            "from the OS keyring. Idempotent — safe to run when already logged out."
+        ),
+    )
+    p_logout.add_argument(
+        "--host",
+        help="Ariadne server URL. Same precedence as 'login'.",
+    )
+    p_logout.set_defaults(func=_cmd_logout)
+
+    # whoami
+    p_whoami = sub.add_parser(
+        "whoami",
+        help="Show the user and expiry of the currently stored Ariadne token.",
+        description=(
+            "Decode the cached access token and print the user email, "
+            "subject, and expiry. Does NOT contact the server or refresh the "
+            "token — this is a local 'what's in my keyring' query. Exits with "
+            "code 2 if the stored token has already expired."
+        ),
+    )
+    p_whoami.add_argument(
+        "--host",
+        help="Ariadne server URL. Same precedence as 'login'.",
+    )
+    add_json_flag(p_whoami)
+    p_whoami.set_defaults(func=_cmd_whoami)
 
     return parser
 
