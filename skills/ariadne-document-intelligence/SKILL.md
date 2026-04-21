@@ -40,10 +40,17 @@ If it fails with a connection error, tell the user that Ariadne Core needs to be
 deployed and connected. Point them to the installation docs or the
 **ariadne-core-install** skill.
 
-The client resolves the server URL and API key automatically from:
-1. Environment variables: `ARIADNE_URL`, `ARIADNE_API_KEY`
+The client resolves the server URL and JWT automatically from:
+1. Environment variables: `ARIADNE_URL`, `ARIADNE_BEARER_TOKEN` (a JWT)
 2. `.env` file in current directory or parent directories
 3. `.mcp.json` file (legacy support)
+
+Ariadne Core uses Auth0 OAuth 2.1 Bearer JWT as of the `ariadne--xft.2` merge
+(commit `54165c9`). The `ariadne login` CLI that runs the PKCE flow and caches a
+refresh token in the OS keyring is landing in ticket `ariadne--xft.5`. Until
+then, obtain a test JWT from **Auth0 dashboard → Applications → your app → Test
+tab → copy the access token**, then set `ARIADNE_BEARER_TOKEN=<jwt>` in your
+`.env`.
 
 If no credentials are configured yet, the client CLI can create a `.env` from the
 project's `.env.example` template:
@@ -53,9 +60,16 @@ ariadne setup
 ```
 
 This copies `.env.example` to `.env` in the current directory. Edit it to fill in
-your `ARIADNE_URL` and `ARIADNE_API_KEY`. The full `.env.example` also includes
-server-side configuration (embedding provider, vision provider, database) for
-users running their own Ariadne Core deployment.
+your `ARIADNE_URL` and `ARIADNE_BEARER_TOKEN`. The full `.env.example` also
+includes server-side configuration (embedding provider, vision provider, database,
+Auth0 tenant) for users running their own Ariadne Core deployment.
+
+Clients can check which Auth0 tenant a server expects via the unauthenticated
+discovery endpoint:
+
+```bash
+curl https://$ARIADNE_URL/.well-known/ariadne-config
+```
 
 Do not attempt to use the client until you've confirmed the connection works.
 
@@ -186,7 +200,7 @@ client.ingest_bytes(content, filename="report.pdf", source="gdrive:1BxiMVs...")
 - Do not loop over files calling the client manually when the CLI handles batching.
 - Do not pass local file paths to the REST API directly — local paths are meaningless
   to the server. Use `client.ingest_file()` which handles upload automatically.
-- Never display the API key in terminal output, chat, or logs.
+- Never display the JWT (or any auth credential) in terminal output, chat, or logs.
 
 ## When to use Ariadne instead of reading files directly
 
