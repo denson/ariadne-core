@@ -3,6 +3,33 @@
 Wraps the endpoints documented in SPEC.md. Uses stdlib-only transport
 via _http.py. Returns dataclass models from models.py and raises the
 exceptions from exceptions.py.
+
+Authentication (post-xft.5.5)
+-----------------------------
+The client is Bearer-JWT only. Every request carries
+``Authorization: Bearer <jwt>``, where the JWT is minted by
+:func:`ariadne_core_client.auth.get_access_token` from the cached
+refresh token (stored by ``ariadne login``). There is no X-API-Key
+path — the server-side middleware was removed in Pass 2 of
+``ariadne--xft``.
+
+Fail-closed-on-IdP posture
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+If token acquisition fails for any reason (no stored refresh token,
+refresh rejected by Auth0, keyring unreachable, etc.) the client
+raises :class:`AriadneAuthError` **without issuing any HTTP request**.
+There is no unauthenticated fallback, no silent downgrade, and no
+reintroduction of legacy API-key behavior. The ``/api/health``
+endpoint is the sole exception: it is declared unauth on the server
+and the client mirrors that by skipping the Bearer header entirely.
+
+Escape hatch
+~~~~~~~~~~~~
+Setting ``ARIADNE_ACCESS_TOKEN`` in the environment bypasses the
+keyring / refresh path entirely — :func:`auth.get_access_token`
+returns the env value directly. Useful for CI and for recovering
+from a broken keyring without reinstalling. Tokens are still never
+logged or printed.
 """
 
 from __future__ import annotations
@@ -13,9 +40,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from ariadne_core_client import _http
-from ariadne_core_client.credentials import resolve_credentials
-from ariadne_core_client.exceptions import AriadneClientError
+from ariadne_core_client import _http, auth as _auth
+from ariadne_core_client.exceptions import AriadneAuthError, AriadneClientError
 from ariadne_core_client.models import (
     AggregateBucket,
     AggregateResponse,
@@ -34,20 +60,42 @@ DEFAULT_INGEST_TIMEOUT = 600  # seconds — embedding a large doc can take 3-5 m
 
 
 class AriadneClient:
-    """Python client for an Ariadne Core server."""
+    """Python client for an Ariadne Core server.
+
+    Parameters
+    ----------
+    host : str | None, optional
+        Ariadne server URL, e.g. ``"https://ariadne.example.com"``. If
+        ``None`` (the default), :func:`auth.resolve_host` is consulted:
+        ``ARIADNE_HOST`` env var, then the contents of
+        ``~/.config/ariadne/default`` (written by ``ariadne login``).
+        Passing a value explicitly bypasses both.
+    agent_type, initiated_by, model, timeout : see ``SPEC.md``.
+
+    Breaking change (xft.5.5)
+    -------------------------
+    The legacy ``url=`` and ``api_key=`` keyword arguments were
+    removed. The client now speaks OAuth 2.1 Bearer JWT exclusively;
+    use ``ariadne login`` to populate the keyring, then construct as
+    ``AriadneClient()`` or ``AriadneClient(host=...)``.
+    """
 
     def __init__(
         self,
-        url: str | None = None,
-        api_key: str | None = None,
+        host: str | None = None,
+        *,
         agent_type: str | None = None,
         initiated_by: str | None = None,
         model: str | None = None,
         timeout: int = 60,
     ) -> None:
-        resolved_url, resolved_key = resolve_credentials(url=url, api_key=api_key)
-        self.url = resolved_url
-        self.api_key = resolved_key
+        try:
+            self.host = _auth.resolve_host(host)
+        except _auth.AuthError as err:
+            # resolve_host failures are configuration errors (no host set
+            # anywhere). Map to AriadneAuthError so callers get the
+            # single documented exception surface.
+            raise AriadneAuthError(str(err)) from err
         self.agent_type = agent_type
         self.initiated_by = initiated_by
         self.model = model
@@ -55,10 +103,36 @@ class AriadneClient:
 
     # ------------------------------------------------------------------ helpers
 
+    def _bearer_token(self) -> str:
+        """Return a valid JWT for ``Authorization: Bearer``.
+
+        Delegates to :func:`auth.get_access_token`, which honors the
+        ``ARIADNE_ACCESS_TOKEN`` env var first, then cached keyring
+        tokens, then a refresh via the stored refresh_token.
+
+        Fail-closed: any failure (missing refresh, rejected refresh,
+        keyring unreachable) raises :class:`AriadneAuthError`. No
+        network request is made by the caller.
+        """
+        try:
+            return _auth.get_access_token(self.host)
+        except _auth.AuthError as err:
+            raise AriadneAuthError(str(err)) from err
+        except _auth.KeyringBackendUnavailable as err:
+            # The wrapped message already carries platform-aware
+            # recovery guidance; re-raise as our canonical auth error.
+            raise AriadneAuthError(str(err)) from err
+
     def _headers(self, *, authed: bool = True) -> dict[str, str]:
-        if authed and self.api_key:
-            return {"X-API-Key": self.api_key}
-        return {}
+        """Return request headers.
+
+        ``authed=True`` (the default) attaches ``Authorization: Bearer``.
+        ``authed=False`` skips the header entirely — used only for
+        ``/api/health``, which the server leaves unauth'd by design.
+        """
+        if not authed:
+            return {}
+        return {"Authorization": f"Bearer {self._bearer_token()}"}
 
     def _endpoint(self, path: str, **query: Any) -> str:
         params = {k: v for k, v in query.items() if v is not None}
@@ -75,7 +149,7 @@ class AriadneClient:
                 "true" if params["has_source_reference"] else "false"
             )
         qs = urlencode(params) if params else ""
-        base = f"{self.url}{path}"
+        base = f"{self.host}{path}"
         return f"{base}?{qs}" if qs else base
 
     def _caller_metadata(
@@ -210,7 +284,7 @@ class AriadneClient:
         if not isinstance(response, dict) or "path" not in response:
             raise AriadneClientError(
                 "Upload response missing 'path' field",
-                request_info=f"POST {self.url}/api/upload",
+                request_info=f"POST {self.host}/api/upload",
             )
         return response
 
@@ -254,7 +328,7 @@ class AriadneClient:
         if not isinstance(response, dict):
             raise AriadneClientError(
                 "Ingest response was not a JSON object",
-                request_info=f"POST {self.url}/api/documents",
+                request_info=f"POST {self.host}/api/documents",
             )
         return self._parse_document(response)
 
@@ -430,7 +504,7 @@ class AriadneClient:
         if not isinstance(response, dict):
             raise AriadneClientError(
                 "get_document response was not a JSON object",
-                request_info=f"GET {self.url}/api/documents/{document_id}",
+                request_info=f"GET {self.host}/api/documents/{document_id}",
             )
         return self._parse_document(response)
 
@@ -560,7 +634,7 @@ class AriadneClient:
         if not isinstance(response, dict):
             raise AriadneClientError(
                 "aggregate response was not a JSON object",
-                request_info=f"GET {self.url}/api/documents/aggregate",
+                request_info=f"GET {self.host}/api/documents/aggregate",
             )
         return AggregateResponse(
             group_by=response.get("group_by", "") or "",
@@ -596,7 +670,7 @@ class AriadneClient:
         if not isinstance(response, dict):
             raise AriadneClientError(
                 "schema response was not a JSON object",
-                request_info=f"GET {self.url}/api/documents/schema",
+                request_info=f"GET {self.host}/api/documents/schema",
             )
         return QuerySchema(
             list_endpoint=response.get("list_endpoint", "") or "",
