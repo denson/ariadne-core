@@ -632,3 +632,113 @@ class TestNormalizeHostSchemeEnforcement:
     )
     def test_accepts_https_and_loopback_http(self, good: str, expected: str) -> None:
         assert auth._normalize_host(good) == expected
+
+
+# ====================================== whoami against Auth0-shaped access tokens
+#
+# Regression lock against the real Railway deployment behavior observed during
+# the xft.5.1 Layer 5 smoke (2026-04-22). These tests use synthetic JWT-shaped
+# bytes (hand-built with stdlib base64 + json, tampered signature) — no live
+# tokens, no PII, no fixture files on disk.
+
+class TestWhoamiSyntheticJwt:
+    """Synthetic-JWT regression tests for ``decode_jwt_unverified`` + the
+    ``whoami`` display formatter against Auth0-shaped access tokens.
+
+    Contract note — access-token-as-identity source
+    ------------------------------------------------
+    OAuth 2.1 defines access tokens as opaque resource-authorization bearer
+    credentials. They are NOT required to carry identity claims. Auth0's
+    JWT-shaped access tokens happen to carry ``sub``, but ``email`` is NOT
+    a default claim on the access token — it lives on the ``id_token``.
+
+    Variant 2 below mirrors the real Auth0 Railway-deployment behavior
+    observed during the xft.5.1 Layer 5 smoke (2026-04-22), where
+    ``whoami`` correctly fell through to the ``(unknown)`` email display
+    because the tenant's access tokens do not carry ``email``.
+
+    A future maintainer should NOT "fix" the ``(unknown)`` display by
+    naively switching to ``id_token`` at the whoami call-site. That is
+    the xft.5.2 id_token-integration work, which requires storing the
+    id_token in the keyring (new slot) and adjusting the whoami display
+    path to prefer id_token claims for ``email`` / ``sub`` while still
+    validating expiry against the ``access_token`` ISO expiry. Don't
+    cargo-cult a one-line switch.
+    """
+
+    HOST = "https://fixture.example"
+
+    def _seed_store(self, payload: dict) -> auth.InMemoryKeyringStore:
+        store = auth.InMemoryKeyringStore()
+        token = _encode_jwt_payload(payload)
+        store.set(self.HOST, auth.SLOT_ACCESS_TOKEN, token)
+        # Non-expired: seed keyring with a future expiry so whoami's
+        # expires_in_seconds > 0 branch fires (the expiry display comes
+        # from SLOT_ACCESS_EXPIRY, not from the JWT's exp claim).
+        store.set(self.HOST, auth.SLOT_ACCESS_EXPIRY, auth._compute_expiry_iso(3600))
+        return store
+
+    def test_variant1_email_present_happy_path(self) -> None:
+        """Email-present access token: decode surfaces email, whoami
+        formatter renders it (not ``(unknown)``), and non-expired branch
+        fires."""
+        payload = {
+            "sub": "test-user|synthetic-fixture",
+            "email": "fixture@example.com",
+            "aud": "https://test-api.example.com",
+            "iss": "https://test-tenant.auth0.com/",
+            "iat": 1700000000,
+            "exp": 2000000000,  # far-future; we check dict carries it through verbatim
+            "scope": "openid profile email offline_access",
+        }
+        # Decode surfaces sub + email + exp verbatim.
+        claims = auth.decode_jwt_unverified(_encode_jwt_payload(payload))
+        assert claims["sub"] == "test-user|synthetic-fixture"
+        assert claims["email"] == "fixture@example.com"
+        assert claims["exp"] == 2000000000
+
+        # whoami lifts email + sub into the info dict.
+        store = self._seed_store(payload)
+        info = auth.whoami(self.HOST, store=store)
+        assert info["user_email"] == "fixture@example.com"
+        assert info["user_sub"] == "test-user|synthetic-fixture"
+        assert info["expires_in_seconds"] is not None
+        assert info["expires_in_seconds"] > 0  # non-expired branch
+
+        # Human formatter renders the email (not the (unknown) sentinel)
+        # and does NOT tag EXPIRED.
+        rendered = auth.format_whoami_human(info)
+        assert "fixture@example.com" in rendered
+        assert "(unknown)" not in rendered
+        assert "EXPIRED" not in rendered
+
+    def test_variant2_email_absent_graceful_fallback(self) -> None:
+        """Email-absent access token: the shape Auth0 actually emits by
+        default. Decode returns dict without ``email`` key; whoami
+        formatter falls through to ``(unknown)`` without raising; sub is
+        still shown so the user knows which identity they're logged in as."""
+        payload = {
+            "sub": "google-oauth2|000000000000000000001",
+            "aud": "https://test-api.example.com",
+            "iss": "https://test-tenant.auth0.com/",
+            "iat": 1700000000,
+            "exp": 2000000000,
+            "scope": "openid profile offline_access",
+            # NB: no "email" claim — mirrors real Auth0 access-token default
+        }
+        claims = auth.decode_jwt_unverified(_encode_jwt_payload(payload))
+        assert claims["sub"] == "google-oauth2|000000000000000000001"
+        assert "email" not in claims
+
+        store = self._seed_store(payload)
+        info = auth.whoami(self.HOST, store=store)
+        # whoami normalizes missing email to None (per the isinstance-str guard).
+        assert info["user_email"] is None
+        assert info["user_sub"] == "google-oauth2|000000000000000000001"
+
+        # Human formatter falls through to (unknown) for email but still
+        # surfaces the sub so the user can tell which IdP identity this is.
+        rendered = auth.format_whoami_human(info)
+        assert "(unknown)" in rendered
+        assert "google-oauth2|000000000000000000001" in rendered
+        assert "EXPIRED" not in rendered
