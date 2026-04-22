@@ -11,7 +11,9 @@ requires-python = ">=3.10"
 authors = [
     {name = "Denson Smith"},
 ]
-dependencies = []
+dependencies = [
+    "keyring>=25.0.0",
+]
 
 [project.scripts]
 ariadne = "ariadne_core_client.cli:main"
