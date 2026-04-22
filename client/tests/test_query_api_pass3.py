@@ -28,7 +28,7 @@ def test_list_documents_new_filters(captured_http):
         {"documents": [], "total_count": 0, "total_is_exact": True, "limit": 20, "offset": 0}
     )
 
-    c = AriadneClient(url="http://test.invalid", api_key="test-key")
+    c = AriadneClient(host="http://localhost")
     c.list_documents(
         tag="x",
         has_warnings=True,
@@ -62,7 +62,7 @@ def test_list_documents_returns_page(captured_http):
         }
     )
 
-    c = AriadneClient(url="http://test.invalid", api_key="test-key")
+    c = AriadneClient(host="http://localhost")
     page = c.list_documents()
 
     assert isinstance(page, DocumentListPage)
@@ -100,7 +100,7 @@ def test_document_warnings_count_parsed(captured_http):
         }
     )
 
-    c = AriadneClient(url="http://test.invalid", api_key="test-key")
+    c = AriadneClient(host="http://localhost")
     page = c.list_documents()
 
     assert page[0].warnings == ["w1"]
@@ -123,12 +123,12 @@ def test_aggregate_basic(captured_http):
         }
     )
 
-    c = AriadneClient(url="http://test.invalid", api_key="test-key")
+    c = AriadneClient(host="http://localhost")
     resp = c.aggregate("collection", has_warnings=True)
 
     url = captured_http.last_json_call()["url"]
     params = _query_params(url)
-    assert url.startswith("http://test.invalid/api/documents/aggregate")
+    assert url.startswith("http://localhost/api/documents/aggregate")
     assert params["group_by"] == ["collection"]
     assert params["has_warnings"] == ["true"]
 
@@ -173,7 +173,7 @@ def test_schema_basic(captured_http):
         }
     )
 
-    c = AriadneClient(url="http://test.invalid", api_key="test-key")
+    c = AriadneClient(host="http://localhost")
     sch = c.schema()
 
     assert isinstance(sch, QuerySchema)
