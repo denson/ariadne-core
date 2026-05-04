@@ -193,14 +193,19 @@ Unauthenticated. Returns the Auth0 tenant config a client needs to run the login
 
 If any of `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_AUDIENCE` is unset, the endpoint returns `500 {"detail": "auth_misconfigured"}` — the same server-misconfiguration signal as the Bearer path. Because this endpoint is unauthenticated, a deploy that forgot to set the Auth0 env vars is caught by the first client GET rather than the first authenticated request.
 
-**Client-side authentication (Pass 3 — landing in `ariadne--xft.5`):** The client package will resolve credentials in this order:
+**Client-side authentication (Pass 3, landed in `ariadne--xft.5.1` + `xft.5.5` + `xft.5.3`):** The client package resolves credentials in this order:
 
-1. Explicit parameters: `AriadneClient(url="...", access_token="...")`
-2. Access token cached on disk + refresh token in OS keyring (populated by `ariadne login`)
-3. Environment variable: `ARIADNE_URL` for the server URL; `ARIADNE_ACCESS_TOKEN` as an escape hatch for CI where the interactive PKCE flow isn't viable
-4. `.env` file in current directory or parent directories
+1. Explicit `host` parameter: `AriadneClient(host="https://...", agent_type=..., initiated_by=..., model=...)`
+2. `ARIADNE_HOST` environment variable
+3. `~/.config/ariadne/default` (written by `ariadne login`)
 
-Until Pass 3 lands, agents and scripts should set `ARIADNE_URL` in their environment and pass `Authorization: Bearer <jwt>` manually with a test token obtained from Auth0 dashboard → Applications → your app → Test tab → copy the access token. The client never prints, logs, or exposes credentials.
+The Bearer JWT is sourced separately by `auth.get_access_token(host)` with precedence:
+
+1. `ARIADNE_ACCESS_TOKEN` environment variable (escape hatch — bypasses keyring; for CI/automation)
+2. OS-keyring-cached access token (populated by `ariadne login`)
+3. Silent refresh via stored refresh token if the cached access token is expired
+
+The client never reads tokens from a `.env` file. The legacy `ARIADNE_URL` env var is removed; use `ARIADNE_HOST`. The legacy `.mcp.json` server-URL extraction is removed. The client never prints, logs, or exposes credentials.
 
 ## Configuration
 
@@ -398,7 +403,7 @@ Upload a local file to the server. Returns a server-side path for use with `POST
 **Request:** Multipart form data with `file` field.
 
 ```bash
-curl -s -X POST "$ARIADNE_URL/api/upload" \
+curl -s -X POST "$ARIADNE_HOST/api/upload" \
   -H "Authorization: Bearer $ARIADNE_ACCESS_TOKEN" \
   -F "file=@path/to/document.pdf"
 ```
@@ -832,14 +837,21 @@ pip install git+https://github.com/denson/ariadne-core.git#subdirectory=client
 
 ### Credential resolution
 
-Pass 3 (ticket `ariadne--xft.5`) lands the `ariadne login` CLI + OS-keyring-backed refresh-token cache. Until then, the client accepts an access token directly; the resolution order for the server URL and the JWT is:
+Pass 3 (`ariadne--xft.5.1` + `xft.5.5` + `xft.5.3`) landed the `ariadne login` CLI + OS-keyring-backed token cache. The client resolves the server host and the Bearer JWT via two separate precedence chains:
 
-1. Explicit params: `AriadneClient(url="...", access_token="...")`
-2. Environment variables: `ARIADNE_URL`, `ARIADNE_ACCESS_TOKEN` (a JWT obtained from Auth0 dashboard → Applications → your app → Test tab)
-3. `.env` file in current directory or parent directories
-4. `.mcp.json` file (legacy — extracts URL from ariadne server config)
+**Host:**
 
-Post-xft.5, step 2 becomes "keyring-cached access token refreshed via Auth0 refresh token" — `ARIADNE_ACCESS_TOKEN` remains as an escape hatch for headless / CI contexts. The client never prints, logs, or exposes credentials.
+1. Explicit `host` parameter on `AriadneClient(host=..., ...)`
+2. `ARIADNE_HOST` environment variable
+3. `~/.config/ariadne/default` (written by `ariadne login`)
+
+**Bearer JWT:**
+
+1. `ARIADNE_ACCESS_TOKEN` environment variable (CI/automation escape hatch — bypasses keyring)
+2. OS-keyring-cached access token (populated by `ariadne login`)
+3. Silent refresh via stored refresh token
+
+The client never reads tokens from a `.env` file. The legacy `.env` / `.mcp.json` auto-resolution chains are removed. The client never prints, logs, or exposes credentials.
 
 ### Default caller metadata
 
