@@ -4,17 +4,32 @@ Entry point: ``ariadne`` (wired via pyproject.toml [project.scripts]).
 
 Subcommands
 -----------
-- ``ariadne ingest <path-or-url>`` — ingests a URL, a file, or a directory of files.
+- ``ariadne login``                — Start OAuth 2.1 + PKCE flow; cache tokens in OS keyring.
+- ``ariadne whoami``               — Show cached identity (email, sub, expiry).
+- ``ariadne logout``               — Clear cached tokens for one host (or all hosts with ``--all``).
+- ``ariadne ingest <path-or-url>`` — Ingest a URL, a file, or a directory of files.
 - ``ariadne search <query>``       — POST /api/search.
 - ``ariadne list-documents``       — GET /api/documents (metadata only).
 - ``ariadne list-collections``     — GET /api/collections.
 - ``ariadne stats``                — GET /api/stats.
 - ``ariadne health``               — GET /api/health (no auth).
-- ``ariadne setup``                — Create .env from template.
+- ``ariadne setup``                — Create ``.env`` from template (for embedding /
+  vision API keys; optional ``ARIADNE_HOST`` and ``ARIADNE_ACCESS_TOKEN``).
 
 Every subcommand supports ``--json`` for raw machine-readable output.
-Each subcommand instantiates ``AriadneClient()`` with no args, so the usual
-credential-resolution chain (explicit → env → .env → .mcp.json) applies.
+
+Credential resolution
+---------------------
+Each data-plane subcommand calls ``_build_client(args)`` to build an
+``AriadneClient(host=args.host)``. ``--host`` is resolved by
+``auth.resolve_host`` with precedence: ``--host`` flag > ``ARIADNE_HOST``
+env > ``~/.config/ariadne/default`` (written by ``ariadne login``).
+The bearer token is sourced by ``auth.get_access_token`` with precedence:
+``ARIADNE_ACCESS_TOKEN`` env (escape hatch — bypasses keyring) > keyring
+cached access token > silent refresh via stored refresh token. There is
+no ``.env`` / ``.mcp.json`` auto-resolution; ``ariadne setup`` writes a
+template ``.env`` for OTHER (embedding / vision) API keys, but the
+client never reads tokens from a ``.env`` file.
 """
 
 from __future__ import annotations
@@ -243,9 +258,9 @@ def _build_client(args: argparse.Namespace) -> AriadneClient:
     """Instantiate an AriadneClient honoring the subcommand's ``--host`` flag.
 
     Every subcommand in this CLI declares ``--host`` via
-    :func:`_add_host_flag`; ``getattr`` keeps this safe if a future
-    subcommand forgets. An AriadneAuthError here surfaces cleanly via
-    :func:`main`'s top-level exception handler.
+    ``add_host_flag`` (nested in ``_build_parser``); ``getattr`` keeps
+    this safe if a future subcommand forgets. An AriadneAuthError here
+    surfaces cleanly via ``main``'s top-level exception handler.
     """
     return AriadneClient(host=getattr(args, "host", None))
 
