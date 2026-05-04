@@ -9,13 +9,15 @@ Auth: the server uses OAuth 2.1 Bearer JWTs issued by Auth0
 AUTH0_AUDIENCE) that the server advertises via
 ``GET /.well-known/ariadne-config``. It does NOT mint a client JWT.
 
-Until the ``ariadne login`` CLI lands in ticket ``ariadne--xft.5``
-(which will run the PKCE flow and cache a refresh token in the OS
-keyring), end users obtain a test JWT from Auth0 dashboard →
-Applications → your app → Test tab → copy the access token, and
-paste it into ``ARIADNE_ACCESS_TOKEN`` in their .env. The MCP
-headersHelper (``scripts/mcp_auth.py``) reads that token and emits
-``Authorization: Bearer <jwt>`` for Claude Code.
+The ``ariadne login`` CLI (shipped in ``ariadne--xft.5.1``) is the
+intended end-user authentication path: it runs the PKCE flow and caches
+the refresh token in the OS keyring (Windows Credential Manager, macOS
+Keychain, or Linux Secret Service). The MCP headersHelper
+(``scripts/mcp_auth.py``) sources a Bearer JWT from that keyring via
+``auth.get_access_token`` and emits ``Authorization: Bearer <jwt>`` for
+Claude Code. The legacy "paste a token into .env" path is gone; the
+``ARIADNE_ACCESS_TOKEN`` env var remains as a CI/automation escape
+hatch (bypasses keyring) but never goes on disk in a ``.env`` file.
 
 Author: Denson Smith
 
@@ -1911,23 +1913,29 @@ def show_connection_template():
     """Show connection command with placeholder URL (for non-Railway deploys)."""
     step_header(4, "Done")
 
-    print("  After deploying, get a test JWT:")
-    print("    1. Open Auth0 dashboard → Applications → your app → Test tab")
-    print("    2. Copy the access token")
+    print("  Authenticate once via the OAuth 2.1 + PKCE flow (replace YOUR-URL):")
+    print("    ariadne login --host https://YOUR-URL")
+    print("  This opens a browser to Auth0, then caches tokens in the OS")
+    print("  keyring (Windows Credential Manager, macOS Keychain, or")
+    print("  Linux Secret Service).")
     print()
-    print("  Then run this command (replace YOUR-URL and YOUR-JWT):\n")
-    print("  claude mcp add ariadne-core \\")
-    print("    https://YOUR-URL/mcp \\")
-    print("    --transport http --scope user \\")
-    print('    --header "Authorization:Bearer YOUR-JWT"')
+    print("  Then add the Ariadne MCP server to Claude Code by editing")
+    print("  .mcp.json (in the workspace, or globally at ~/.claude.json).")
+    print("  Add an entry like this — `headersHelper` is the dynamic-auth")
+    print("  config key (no `claude mcp add` flag exists for it):\n")
+    print('    "ariadne-core": {')
+    print('      "type": "http",')
+    print('      "url": "https://YOUR-URL/mcp",')
+    print('      "headersHelper": "python ariadne-core/scripts/mcp_auth.py"')
+    print("    }")
     print()
-    print("  Alternative: set ARIADNE_ACCESS_TOKEN=<jwt> in your .env and")
-    print("  point Claude Code at scripts/mcp_auth.py via headersHelper")
-    print("  in .mcp.json — see scripts/mcp_auth.py docstring for the shape.")
+    print("  scripts/mcp_auth.py reads the Bearer JWT from the OS keyring")
+    print("  populated by `ariadne login` and emits the Authorization")
+    print("  header for Claude Code at connection time. See")
+    print("  docs/smoke/xft5c_smoke.md for the full operator walkthrough.")
     print()
-    print("  The `ariadne login` CLI (ticket ariadne--xft.5) will automate")
-    print("  the Auth0 PKCE flow and cache a keyring-backed refresh token.")
-    print("  Until then, the Test-tab token is the interim path.")
+    print("  ARIADNE_ACCESS_TOKEN env var remains as a CI/automation escape")
+    print("  hatch (bypasses keyring); never paste a JWT into .env on disk.")
     print()
     print("  Then restart Claude Code.\n")
 
