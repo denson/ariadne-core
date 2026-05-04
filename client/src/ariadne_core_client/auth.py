@@ -95,6 +95,17 @@ DEFAULT_HOST_CONFIG_PATH = Path.home() / ".config" / "ariadne" / "default"
 #: ``GET /.well-known/ariadne-config`` path (mounted at app root, not under /api).
 DISCOVERY_PATH = "/.well-known/ariadne-config"
 
+#: User-facing AuthError text when an input fails ``_normalize_host``. Shared by
+#: the ``urlparse`` ``ValueError`` wrap, the bracket-consistency guard, and the
+#: scheme/hostname fallthrough so the test matrix's ``pytest.raises(AuthError)``
+#: assertions are uniform regardless of which branch fires (xft.5.4 design §4.6).
+_NORMALIZE_HOST_REJECT_MSG = (
+    "Host {raw!r} is not a valid Ariadne server URL — "
+    "must be https://... or http://localhost[:port] / "
+    "http://127.0.0.1[:port] / http://[::1][:port] for "
+    "local development."
+)
+
 
 # --------------------------------------------------------------------- exceptions
 
@@ -349,24 +360,95 @@ def _normalize_host(raw: str) -> str:
     the chokepoint that enforces the IdP-selection is trustworthy.
 
     Rule: accept ``https://<any-host>``; allow ``http://`` **only** for
-    loopback (``localhost`` or ``127.0.0.1``), which is where the local
-    dev server runs. Everything else raises :class:`AuthError`.
+    loopback (``localhost``, ``127.0.0.1``, or ``[::1]`` per RFC 8252
+    §7.3), which is where the local dev server runs. Everything else
+    raises :class:`AuthError`.
+
+    Order of operations (xft.5.4 design §4.7):
+
+    1. Strip whitespace and trailing slashes from ``raw``.
+    2. ``urlparse`` the result, wrapped in ``try``/``except ValueError`` —
+       any ``ValueError`` from ``urlparse`` (port-cast failure, "Invalid
+       IPv6 URL", any future variants) converts uniformly to ``AuthError``
+       so the predicate's failure mode is uniform regardless of Python
+       patch level.
+    3. CVE-2025-0938 bracket-consistency guard on ``parsed.netloc``: if a
+       ``[`` or ``]`` appears anywhere in the netloc it must appear ONLY
+       in the host portion. Rejects both the prefix/postfix channel
+       (``http://[::1]evil.com``) and the userinfo-with-brackets channel
+       (``http://a]b@[::1]:8000``) where ``urlparse`` accepts but the
+       netloc carries attacker-controlled text that ``urllib.request``
+       will follow.
+    4. Scheme + hostname check; accept or raise.
     """
+    # (1) Strip whitespace and trailing slashes.
     out = raw.strip()
     while out.endswith("/"):
         out = out[:-1]
-    parsed = urllib.parse.urlparse(out)
+
+    # (2) urlparse-with-ValueError-wrap. On Python 3.11.4 (the dev shell)
+    # urlparse raises ValueError for shapes like ``https://a]b@example.com``
+    # ("Invalid IPv6 URL"); future stdlib patches under CPython #105704
+    # (CVE-2025-0938) may add more shapes that raise. Whatever raises, we
+    # convert to AuthError uniformly — the predicate's contract is "if
+    # urlparse cannot parse this, the input is not a valid Ariadne server
+    # URL." ``raise ... from exc`` preserves the cause via ``__cause__``
+    # for debugging without leaking ValueError text into the user-facing
+    # message.
+    try:
+        parsed = urllib.parse.urlparse(out)
+    except ValueError as exc:
+        raise AuthError(_NORMALIZE_HOST_REJECT_MSG.format(raw=raw)) from exc
+
+    # (3) CVE-2025-0938 bracket-consistency guard. urlparse on affected
+    # Python versions accepts malformed netlocs in two channels:
+    #   (a) brackets in non-host position, e.g. ``prefix.[::1]``,
+    #       ``[::1]evil.com``, ``[::1].postfix`` — ``parsed.hostname``
+    #       returns ``'::1'`` but ``parsed.netloc`` carries attacker-
+    #       controlled prefix/postfix.
+    #   (b) brackets in userinfo position, e.g. ``a]b@[::1]:8000``,
+    #       ``]@[::1]:8000``, ``a@b@[::1]:8000`` — ``parsed.hostname``
+    #       returns ``'::1'`` but the polluted userinfo is preserved in
+    #       ``parsed.netloc`` and is what ``urllib.request.Request.host``
+    #       returns when ``urlopen`` connects.
+    # urllib.request honors ``.netloc`` for the actual connect, so trusting
+    # ``.hostname`` alone re-opens the IdP-selection-poisoning hole this
+    # predicate exists (xft.5.1) to close. The guard property: if any
+    # ``[`` or ``]`` character appears in the netloc, the netloc must
+    # START with ``[`` (no userinfo with brackets, period) and ``]`` must
+    # be followed by ``''`` or ``':<digits>'`` only. The ``]:port`` check
+    # is also what catches ``http://[::1]:8000.evil.com`` on 3.11.4 —
+    # urlparse accepts it (only ``.port`` access raises, and we don't
+    # access ``.port``), but the trailing ``.evil.com`` after the ``]:``
+    # fails the digits-only test.
+    netloc = parsed.netloc
+    if "[" in netloc or "]" in netloc:
+        if not netloc.startswith("["):
+            # Either userinfo contains a bracket (round-2 r1 vector) or
+            # the host portion has a bracket in non-leading position
+            # (round-1 prefix/postfix vector). Both reject.
+            raise AuthError(_NORMALIZE_HOST_REJECT_MSG.format(raw=raw))
+        close = netloc.find("]")
+        # Defensive — currently unreachable on all supported Pythons (urlparse
+        # raises "Invalid IPv6 URL" for any netloc containing '[' without a
+        # matching ']' before this guard runs, and the §4.7 wrap converts that
+        # to AuthError above). Kept for fail-closed posture against future
+        # Python variants per design §6 weak-point-5.
+        if close == -1:
+            raise AuthError(_NORMALIZE_HOST_REJECT_MSG.format(raw=raw))
+        after = netloc[close + 1:]
+        # Allowed: empty, or ':' followed only by digits (port).
+        if after and not (after.startswith(":") and after[1:].isdigit()):
+            raise AuthError(_NORMALIZE_HOST_REJECT_MSG.format(raw=raw))
+
+    # (4) Scheme + hostname check.
     scheme = parsed.scheme
-    hostname = parsed.hostname  # lowercased, stripped of port
+    hostname = parsed.hostname  # lowercased, stripped of port and brackets
     if scheme == "https" and hostname:
         return out
-    if scheme == "http" and hostname in ("localhost", "127.0.0.1"):
+    if scheme == "http" and hostname in ("localhost", "127.0.0.1", "::1"):
         return out
-    raise AuthError(
-        f"Host {raw!r} is not a valid Ariadne server URL — "
-        "must be https://... or http://localhost[:port] / "
-        "http://127.0.0.1[:port] for local development."
-    )
+    raise AuthError(_NORMALIZE_HOST_REJECT_MSG.format(raw=raw))
 
 
 def write_default_host(host: str, *, config_path: Optional[Path] = None) -> None:

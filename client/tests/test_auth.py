@@ -610,6 +610,19 @@ class TestNormalizeHostSchemeEnforcement:
             "data:text/plain,hi",
             "example.com",
             "",
+            # xft.5.4: long-form IPv6 loopback rejected per design §4.4
+            # (strict allow-list — symmetry with rejecting alternate IPv4
+            # forms like 127.000.000.001).
+            "http://[0:0:0:0:0:0:0:1]:8000",
+            # xft.5.4: RFC 6874 zone-id form — out of scope per design
+            # §3 row 6 (zone identifiers are not loopback-canonical and
+            # stdlib does not validate them).
+            "http://[::1%25lo0]:8000",
+            # xft.5.4: round-2 r1 consequence — userinfo on a bracketed
+            # IPv6 host now rejects (closes the userinfo-bracket channel
+            # of CVE-2025-0938; legitimate userinfo on the discovery URL
+            # has no functional purpose).
+            "http://user@[::1]:8000",
         ],
     )
     def test_rejects_non_https_and_non_loopback_http(self, bad: str) -> None:
@@ -628,10 +641,81 @@ class TestNormalizeHostSchemeEnforcement:
             ("http://localhost:8000", "http://localhost:8000"),
             ("http://127.0.0.1:8000", "http://127.0.0.1:8000"),
             ("http://localhost", "http://localhost"),
+            # xft.5.4: RFC 8252 §7.3 IPv6 loopback redirect URI form,
+            # accepted alongside 127.0.0.1.
+            ("http://[::1]:8000", "http://[::1]:8000"),
+            ("http://[::1]", "http://[::1]"),
+            # Trailing-slash strip on IPv6 (round-2 r5 completeness).
+            ("http://[::1]:8000/", "http://[::1]:8000"),
+            ("http://[::1]:8000/some/path", "http://[::1]:8000/some/path"),
+            # Case-insensitive scheme parallels existing IPv4 behaviour.
+            ("HTTP://[::1]:8000", "HTTP://[::1]:8000"),
         ],
     )
     def test_accepts_https_and_loopback_http(self, good: str, expected: str) -> None:
         assert auth._normalize_host(good) == expected
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            # --- prefix/postfix channel (round-1 vector) ---
+            "http://prefix.[::1]/",
+            "http://[::1].postfix/",
+            "http://[::1]evil.com",
+            "http://[::1]evil.com:8000",
+            # ``http://[::1]:8000.evil.com`` — on Python 3.11.4 urlparse
+            # ACCEPTs this (only ``.port`` access raises, and the
+            # predicate never accesses ``.port``); the §4.3 after-]:port
+            # digits-only check is what rejects it. On future patched
+            # Python versions urlparse may raise ValueError directly,
+            # in which case the §4.7 wrap converts to AuthError. Either
+            # way, AuthError.
+            "http://[::1]:8000.evil.com",
+            "http://localhost[::1]:8000",
+            # https-branch CVE-shape parallels.
+            "https://[::1]evil.com",
+            "https://prefix.[::1]/",
+            # --- userinfo channel (round-2 r1 additions) ---
+            # ``a]b@[::1]:8000`` etc.: hostname parses to ``'::1'`` but
+            # netloc carries the polluted userinfo. Round-1 ``rsplit``
+            # workaround would have ACCEPTed; round-2 guard requires
+            # netloc to start with ``[`` whenever a bracket appears.
+            "http://a]b@[::1]:8000",
+            "http://]@[::1]:8000",
+            "http://a@b@[::1]:8000",
+            # Bracket-and-at confusion shape.
+            "http://[a@b@[::1]:8000",
+            # https-branch userinfo-with-bracket: on 3.11.4 urlparse
+            # raises "Invalid IPv6 URL" — caught by the §4.7 wrap.
+            "https://a]b@example.com",
+        ],
+    )
+    def test_rejects_cve_2025_0938_bracket_pollution(self, malformed: str) -> None:
+        """CVE-2025-0938 regression lock — urlparse on affected Python
+        versions accepts malformed netlocs in two channels:
+
+        (a) brackets in non-host position — ``prefix.[::1]``,
+            ``[::1]evil.com``, etc. ``parsed.hostname`` returns ``'::1'``
+            while ``parsed.netloc`` carries attacker-controlled
+            prefix/postfix.
+
+        (b) brackets in userinfo position (round-2 finding) —
+            ``a]b@[::1]:8000``, ``]@[::1]:8000``, etc. Same property:
+            ``parsed.hostname`` returns ``'::1'`` while ``parsed.netloc``
+            preserves the polluted userinfo, and
+            ``urllib.request.Request.host`` returns the polluted netloc.
+
+        Both channels re-open the IdP-selection-poisoning hole that
+        ``_normalize_host`` exists (xft.5.1) to close. Some inputs in
+        this matrix raise ``ValueError`` from ``urlparse`` itself (the
+        ``Invalid IPv6 URL`` shape on 3.11.4; possibly more on patched
+        Python versions per CPython #105704); the §4.7 ``ValueError``
+        wrap converts those uniformly to ``AuthError``, so this test
+        asserts ``AuthError`` regardless of which branch (wrap or guard)
+        actually fires.
+        """
+        with pytest.raises(auth.AuthError):
+            auth._normalize_host(malformed)
 
 
 # ====================================== whoami against Auth0-shaped access tokens
