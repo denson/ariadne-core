@@ -1,3 +1,12 @@
+> **DEPRECATED — historical correspondence.** This document describes the
+> ORIGINAL X-API-Key + `.env` headersHelper design from 2026-Q1 (pre-OAuth).
+> The current keyring-backed Bearer JWT contract for `scripts/mcp_auth.py`
+> is documented in `docs/smoke/xft5c_smoke.md` (operator walkthrough) and
+> the `mcp_auth.py` module docstring itself. This file is retained for
+> historical record only — do NOT use it as current operational reference.
+
+---
+
 # Fix: Use headersHelper for MCP auth — agent never sees the API key
 
 ## The problem
