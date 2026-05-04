@@ -381,6 +381,7 @@ def _normalize_host(raw: str) -> str:
        will follow.
     4. Scheme + hostname check; accept or raise.
     """
+    # (1) Strip whitespace and trailing slashes.
     out = raw.strip()
     while out.endswith("/"):
         out = out[:-1]
@@ -428,6 +429,11 @@ def _normalize_host(raw: str) -> str:
             # (round-1 prefix/postfix vector). Both reject.
             raise AuthError(_NORMALIZE_HOST_REJECT_MSG.format(raw=raw))
         close = netloc.find("]")
+        # Defensive — currently unreachable on all supported Pythons (urlparse
+        # raises "Invalid IPv6 URL" for any netloc containing '[' without a
+        # matching ']' before this guard runs, and the §4.7 wrap converts that
+        # to AuthError above). Kept for fail-closed posture against future
+        # Python variants per design §6 weak-point-5.
         if close == -1:
             raise AuthError(_NORMALIZE_HOST_REJECT_MSG.format(raw=raw))
         after = netloc[close + 1:]
