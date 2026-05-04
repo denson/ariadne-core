@@ -57,7 +57,7 @@ All clients connect to the same HTTPS endpoint. The URL depends on where you dep
 
 All endpoints except `/api/health` and `/.well-known/ariadne-config` require authentication via an `Authorization: Bearer <jwt>` header. JWTs are issued by Auth0 — see the `Authentication` section below for the full contract.
 
-**LLM agents (Claude Code, Cursor, etc.):** Install the client package and use the Python API. The client obtains and refreshes access tokens via the PKCE flow (CLI command `ariadne login`, landing in `ariadne--xft.5`) and reads server URL from environment variables or `.env` file.
+**LLM agents (Claude Code, Cursor, etc.):** Install the client package and use the Python API. The client obtains and refreshes access tokens via the PKCE flow (run `ariadne login` once to populate the OS keyring) and resolves the server host from `--host` / `ARIADNE_HOST` env / `~/.config/ariadne/default` (in that precedence; written by `ariadne login`). **The client never reads tokens or host URLs from a `.env` file.**
 
 ```bash
 pip install ariadne-core-client
@@ -189,7 +189,7 @@ Unauthenticated. Returns the Auth0 tenant config a client needs to run the login
 }
 ```
 
-`offline_access` is what makes Auth0 issue a refresh token alongside the access token — the `ariadne login` CLI (landing in `ariadne--xft.5`) caches the refresh token in the OS keyring and exchanges it for fresh access tokens without user interaction.
+`offline_access` is what makes Auth0 issue a refresh token alongside the access token — the `ariadne login` CLI caches the refresh token in the OS keyring and exchanges it for fresh access tokens without user interaction.
 
 If any of `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_AUDIENCE` is unset, the endpoint returns `500 {"detail": "auth_misconfigured"}` — the same server-misconfiguration signal as the Bearer path. Because this endpoint is unauthenticated, a deploy that forgot to set the Auth0 env vars is caught by the first client GET rather than the first authenticated request.
 
