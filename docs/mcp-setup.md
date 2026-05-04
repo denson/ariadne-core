@@ -164,8 +164,8 @@ These are the server-side env vars your Ariadne Core deployment reads (not the c
 
 The server returns a specific `detail` string in the JSON body — that tells you exactly which part of the auth chain failed:
 
-- `missing_token` — no `Authorization` header; add `Authorization: Bearer <jwt>`
-- `wrong_scheme` — header present but not `Bearer` (e.g. old `X-API-Key` config); switch to `Authorization: Bearer <jwt>`
+- `missing_token` — no `Authorization` header, an empty header, or a header whose value is the bare `Bearer` keyword with no token after it; add `Authorization: Bearer <jwt>` with the actual JWT
+- `wrong_scheme` — header present with a non-Bearer scheme (e.g. old `X-API-Key` config or a `Basic` auth attempt); switch to `Authorization: Bearer <jwt>`
 - `malformed_token` — JWT is not structurally valid (not three base64 parts)
 - `invalid_signature` — signature doesn't verify against the JWKS; token likely signed by a different Auth0 tenant
 - `wrong_audience` — JWT `aud` doesn't match the server's `AUTH0_AUDIENCE`

@@ -202,8 +202,8 @@ Your data is preserved in Postgres. Migrations run automatically on startup.
 - Check Railway logs for errors
 
 **401 errors** — see the `detail` string in the response body for the specific reason:
-- `missing_token` — no `Authorization` header; add `Authorization: Bearer <jwt>`
-- `wrong_scheme` — header present but not `Bearer` (e.g. an old `X-API-Key` config); switch to `Authorization: Bearer <jwt>`
+- `missing_token` — no `Authorization` header, an empty header, or a header whose value is the bare `Bearer` keyword with no token after it; add `Authorization: Bearer <jwt>` with the actual JWT
+- `wrong_scheme` — header present with a non-Bearer scheme (e.g. an old `X-API-Key` config or a `Basic` auth attempt); switch to `Authorization: Bearer <jwt>`
 - `wrong_audience` / `wrong_issuer` — the JWT was minted against a different Auth0 tenant/API than the server expects. Run `curl https://your-url/.well-known/ariadne-config` and compare the `audience` / `issuer` with the `aud` / `iss` claims on your JWT (decode at https://jwt.io)
 - `expired_token` — access tokens are short-lived; grab a fresh one from Auth0 dashboard → Test tab
 - `invalid_signature` — token signed by a different Auth0 tenant; re-issue from the correct tenant
