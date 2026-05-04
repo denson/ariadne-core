@@ -22,21 +22,39 @@ pip install ariadne-core-client
 
 Requires Python 3.10+.
 
-## Credentials
+## Authentication
 
-`AriadneClient()` resolves `url` and `api_key` in this order and stops at the first hit:
+The client speaks **OAuth 2.1 Bearer JWT** only. The legacy `X-API-Key` path was removed in Pass 2 of the `ariadne--xft` epic; the matching client-side constructor args (`url=`, `api_key=`) were removed in Pass 3 (xft.5.5).
 
-1. Explicit `AriadneClient(url=..., api_key=...)` arguments
-2. `ARIADNE_URL` / `ARIADNE_API_KEY` environment variables
-3. A `.env` file, walking up from the current directory
-4. A `.mcp.json` file, walking up from the current directory (for an `ariadne` MCP server entry)
+**First-time setup** — sign in to your Ariadne server with PKCE via the CLI:
+
+```bash
+ariadne login --host https://your-deployment.example
+```
+
+This opens a browser to Auth0, captures the callback on a local loopback port, and stores the refresh + access + id tokens in your OS keyring (macOS Keychain / Windows Credential Manager / Linux Secret Service). The host you logged into is also persisted to `~/.config/ariadne/default`, so subsequent calls can omit `--host`.
+
+**`AriadneClient()` resolves the server host in this order:**
+
+1. Explicit `AriadneClient(host="https://...")` argument
+2. `ARIADNE_HOST` environment variable
+3. `~/.config/ariadne/default` (written by `ariadne login`)
+
+**`AriadneClient()` resolves the access token in this order (per call):**
+
+1. `ARIADNE_ACCESS_TOKEN` env var — always wins, bypasses the keyring entirely (useful for CI and for recovering from a broken keyring)
+2. The cached access token from the keyring, if it still has > 60 s remaining
+3. A fresh access token minted from the cached refresh token via Auth0's `/oauth/token`
+
+If none of these succeed, the client raises `AriadneAuthError` **without issuing any HTTP request**. There is no unauthenticated fallback, no silent downgrade.
 
 ## Quick start
 
 ```python
 from ariadne_core_client import AriadneClient
 
-client = AriadneClient()  # picks up credentials from env / .env / .mcp.json
+# After `ariadne login --host https://your-deployment.example`:
+client = AriadneClient()
 
 print(client.health())
 
@@ -45,7 +63,7 @@ print(doc.document_id, doc.chunks_count)
 
 results = client.search("quarterly revenue", collection="research", top_k=5)
 for hit in results.results:
-    print(f"{hit.relevance_score:.3f}  {hit.chunk_text[:120]}")
+    print(f"{hit.relevance_score:.3f}  {hit.text[:120]}")
 ```
 
 ## Python API
@@ -73,6 +91,18 @@ Errors raise `AriadneClientError` (or its subclasses `AriadneAuthError`, `Ariadn
 ## CLI
 
 ```bash
+# One-time per host: sign in and store tokens in the OS keyring.
+ariadne login --host https://your-deployment.example
+
+# Inspect the currently stored token.
+ariadne whoami
+ariadne whoami --json
+
+# Forget the currently stored tokens (refresh + access + expiry + id_token).
+ariadne logout
+
+# Data-plane subcommands (inherit the host from ~/.config/ariadne/default
+# written by `ariadne login`; override per-call with --host).
 ariadne health
 ariadne stats
 ariadne list-collections
@@ -83,9 +113,9 @@ ariadne ingest ./report.pdf --collection research
 ariadne ingest ./docs --recursive --collection research
 ```
 
-Every subcommand accepts `--json` to emit raw JSON on stdout (useful for piping to `jq`). Batch directory ingests print per-file progress to stderr so stdout stays parseable.
+Every non-auth subcommand accepts `--host <url>` to override the stored default, and `--json` to emit raw JSON on stdout (useful for piping to `jq`). Batch directory ingests print per-file progress to stderr so stdout stays parseable.
 
-Exit codes: `0` on success, `1` on client/transport errors, `2` on usage errors, `130` on Ctrl-C.
+Exit codes: `0` on success, `1` on client/transport errors, `2` on `whoami` when the stored token is already expired (scripting signal, not an error), `130` on Ctrl-C.
 
 ## License
 

@@ -657,13 +657,17 @@ class TestWhoamiSyntheticJwt:
     ``whoami`` correctly fell through to the ``(unknown)`` email display
     because the tenant's access tokens do not carry ``email``.
 
+    Variants 3-5 (added in xft.5.5) lock in the id_token-preferred
+    display path: when an id_token is present in the keyring, whoami
+    uses IT for email/sub while still reading expiry from the
+    access_token's ISO timestamp.
+
     A future maintainer should NOT "fix" the ``(unknown)`` display by
-    naively switching to ``id_token`` at the whoami call-site. That is
-    the xft.5.2 id_token-integration work, which requires storing the
-    id_token in the keyring (new slot) and adjusting the whoami display
-    path to prefer id_token claims for ``email`` / ``sub`` while still
-    validating expiry against the ``access_token`` ISO expiry. Don't
-    cargo-cult a one-line switch.
+    naively switching every ``decode_jwt_unverified(access_token)``
+    call-site to ``id_token`` — only the whoami display formatter
+    prefers id_token, because access_token remains the authority for
+    (a) the Bearer header value, (b) expiry checks, and (c) identity
+    at call-sites where id_token is absent.
     """
 
     HOST = "https://fixture.example"
@@ -742,3 +746,307 @@ class TestWhoamiSyntheticJwt:
         assert "(unknown)" in rendered
         assert "google-oauth2|000000000000000000001" in rendered
         assert "EXPIRED" not in rendered
+
+    # ------------------------------------------------------------------ id_token
+    # xft.5.5: login now stores the id_token alongside the
+    # access/refresh/expiry slots. whoami prefers the id_token for
+    # email/sub display, while expiry continues to come from the
+    # access_token's ISO expiry stamp.
+
+    def _seed_store_with_id_token(
+        self,
+        access_payload: dict,
+        id_payload: dict,
+        *,
+        expires_in: int = 3600,
+    ) -> auth.InMemoryKeyringStore:
+        store = auth.InMemoryKeyringStore()
+        store.set(
+            self.HOST,
+            auth.SLOT_ACCESS_TOKEN,
+            _encode_jwt_payload(access_payload),
+        )
+        store.set(
+            self.HOST,
+            auth.SLOT_ID_TOKEN,
+            _encode_jwt_payload(id_payload),
+        )
+        store.set(
+            self.HOST,
+            auth.SLOT_ACCESS_EXPIRY,
+            auth._compute_expiry_iso(expires_in),
+        )
+        return store
+
+    def test_variant3_id_token_preferred_when_access_token_lacks_email(
+        self,
+    ) -> None:
+        """The motivating case: Auth0 access tokens omit ``email`` by
+        default, but the id_token carries it. whoami must surface the
+        id_token's email rather than falling to ``(unknown)``."""
+        access_payload = {
+            "sub": "google-oauth2|1234567890",
+            "aud": "https://test-api.example.com",
+            "iss": "https://test-tenant.auth0.com/",
+            "iat": 1700000000,
+            "exp": 2000000000,
+            "scope": "openid profile email offline_access",
+            # NB: no "email" claim on the access token.
+        }
+        id_payload = {
+            "sub": "google-oauth2|1234567890",
+            "email": "d@example.com",
+            "email_verified": True,
+            "iss": "https://test-tenant.auth0.com/",
+            "aud": "auth0-client-id",  # id_tokens use client_id as aud
+            "iat": 1700000000,
+            "exp": 2000000000,
+        }
+        store = self._seed_store_with_id_token(access_payload, id_payload)
+        info = auth.whoami(self.HOST, store=store)
+        assert info["user_email"] == "d@example.com"
+        assert info["user_sub"] == "google-oauth2|1234567890"
+
+        rendered = auth.format_whoami_human(info)
+        assert "d@example.com" in rendered
+        # The (unknown) sentinel must NOT be in the rendered email —
+        # the whole point of variant 3 is that we fix the xft.5.1 gap.
+        assert "User:    (unknown)" not in rendered
+        assert "EXPIRED" not in rendered
+
+    def test_variant4_id_token_email_preferred_over_access_token_email(
+        self,
+    ) -> None:
+        """If both tokens carry email (e.g. a tenant configured to add
+        email to access tokens), the id_token still wins — mirrors the
+        OIDC contract that identity claims are id_token's job.
+
+        If an operator finds this surprising, note: on a correctly
+        configured tenant the two emails agree. On a misconfigured
+        tenant, the id_token is the canonical identity source."""
+        access_payload = {
+            "sub": "auth0|abc",
+            "email": "stale-access@example.com",
+            "aud": "https://api.example.com",
+            "iss": "https://t.auth0.com/",
+            "iat": 1700000000,
+            "exp": 2000000000,
+        }
+        id_payload = {
+            "sub": "auth0|abc",
+            "email": "fresh-id@example.com",
+            "iss": "https://t.auth0.com/",
+            "aud": "auth0-client-id",
+            "iat": 1700000000,
+            "exp": 2000000000,
+        }
+        store = self._seed_store_with_id_token(access_payload, id_payload)
+        info = auth.whoami(self.HOST, store=store)
+        assert info["user_email"] == "fresh-id@example.com"
+
+    def test_variant5_expiry_comes_from_access_token_not_id_token(
+        self,
+    ) -> None:
+        """Non-swap rule: expiry is ALWAYS read from SLOT_ACCESS_EXPIRY,
+        never from ``id_token.exp``. We encode a far-future exp on the
+        id_token and a near-past exp on the access-token ISO slot;
+        whoami must report expired.
+
+        Without this test, a well-meaning maintainer could "optimize"
+        whoami to read ``exp`` from the decoded id_token claims (which
+        would silently bypass the refresh-threshold logic that relies
+        on SLOT_ACCESS_EXPIRY) and the regression wouldn't surface in
+        variant 3/4."""
+        # Access token with email absent (triggers id_token preference).
+        access_payload = {
+            "sub": "auth0|abc",
+            "aud": "https://api.example.com",
+            "iss": "https://t.auth0.com/",
+            "iat": 1700000000,
+            "exp": 1800000000,
+        }
+        # id_token claims a far-future exp — if a future maintainer
+        # "fixes" whoami to read this, the test catches it.
+        id_payload = {
+            "sub": "auth0|abc",
+            "email": "d@example.com",
+            "iss": "https://t.auth0.com/",
+            "aud": "auth0-client-id",
+            "iat": 1700000000,
+            "exp": 9999999999,  # year ~2286; implausibly far future
+        }
+        # Seed with a NEGATIVE remaining lifetime: expiry 2h in the past.
+        store = self._seed_store_with_id_token(
+            access_payload, id_payload, expires_in=-7200
+        )
+        info = auth.whoami(self.HOST, store=store)
+        assert info["user_email"] == "d@example.com"
+        # Expiry comes from SLOT_ACCESS_EXPIRY, which we seeded as
+        # -2h ago. If whoami started reading id_token.exp we'd get a
+        # positive, far-future remaining lifetime instead.
+        assert info["expires_in_seconds"] is not None
+        assert info["expires_in_seconds"] < 0
+        rendered = auth.format_whoami_human(info)
+        assert "EXPIRED" in rendered
+        assert "ago" in rendered
+
+    def test_variant6_malformed_id_token_falls_back_to_access_token(
+        self,
+    ) -> None:
+        """If the stored id_token is corrupt (3 segments but bad JSON),
+        whoami should not raise — it falls back to the access_token
+        claims and reports what it can."""
+        access_payload = {
+            "sub": "auth0|fallback",
+            "email": "fallback@example.com",
+            "aud": "https://api.example.com",
+            "iss": "https://t.auth0.com/",
+            "iat": 1700000000,
+            "exp": 2000000000,
+        }
+        store = auth.InMemoryKeyringStore()
+        store.set(
+            self.HOST,
+            auth.SLOT_ACCESS_TOKEN,
+            _encode_jwt_payload(access_payload),
+        )
+        # Malformed id_token — 3 segments but middle segment is
+        # non-JSON bytes. decode_jwt_unverified raises AuthError; whoami
+        # must swallow it and use access-token claims.
+        import base64
+
+        header = base64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode()
+        bad_payload = base64.urlsafe_b64encode(b"\xff\xfe\xff").rstrip(b"=").decode()
+        sig = base64.urlsafe_b64encode(b"sig").rstrip(b"=").decode()
+        store.set(self.HOST, auth.SLOT_ID_TOKEN, f"{header}.{bad_payload}.{sig}")
+        store.set(
+            self.HOST,
+            auth.SLOT_ACCESS_EXPIRY,
+            auth._compute_expiry_iso(3600),
+        )
+        info = auth.whoami(self.HOST, store=store)
+        assert info["user_email"] == "fallback@example.com"
+        assert info["user_sub"] == "auth0|fallback"
+
+
+# =================================================== id_token storage: login+logout
+#
+# Ensure login persists the id_token on success and logout removes it.
+
+def _make_fake_token_response(
+    *,
+    access_token: str = "access-tk",
+    refresh_token: str = "refresh-tk",
+    id_token: str | None = "id-tk",
+    expires_in: int = 3600,
+) -> dict:
+    out: dict = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": expires_in,
+    }
+    if id_token is not None:
+        out["id_token"] = id_token
+    return out
+
+
+class TestIdTokenPersistence:
+    HOST = "https://fixture.example"
+
+    def _patch_flow(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        token_response: dict,
+    ) -> None:
+        """Stub the three network / browser steps of ``login`` so we can
+        drive it hermetically."""
+        monkeypatch.setattr(
+            auth,
+            "discover_config",
+            lambda host, **_: {
+                "issuer": "https://t.auth0.com/",
+                "client_id": "cid-123",
+                "audience": "https://api.example.com",
+                "scope": "openid profile email offline_access",
+            },
+        )
+
+        def fake_find_port(_candidates=None):
+            return 65432
+
+        monkeypatch.setattr(auth, "_find_free_loopback_port", fake_find_port)
+
+        def fake_callback(port: int, expected_state: str, **_):
+            return "auth-code-xyz", expected_state
+
+        monkeypatch.setattr(auth, "_run_loopback_callback", fake_callback)
+        monkeypatch.setattr(
+            auth,
+            "_exchange_authorization_code",
+            lambda *a, **kw: token_response,
+        )
+
+    def test_login_stores_id_token_slot(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Build an id_token that actually decodes so the email pulled
+        # into the return dict is observable.
+        id_token_str = _encode_jwt_payload(
+            {"sub": "auth0|abc", "email": "d@example.com"}
+        )
+        self._patch_flow(
+            monkeypatch,
+            _make_fake_token_response(id_token=id_token_str),
+        )
+        store = auth.InMemoryKeyringStore()
+        result = auth.login(
+            self.HOST,
+            store=store,
+            open_browser=False,
+            write_default=False,
+        )
+        # All four slots populated.
+        assert store.get(self.HOST, auth.SLOT_ACCESS_TOKEN) == "access-tk"
+        assert store.get(self.HOST, auth.SLOT_REFRESH_TOKEN) == "refresh-tk"
+        assert store.get(self.HOST, auth.SLOT_ID_TOKEN) == id_token_str
+        assert store.get(self.HOST, auth.SLOT_ACCESS_EXPIRY) is not None
+        assert result["email"] == "d@example.com"
+
+    def test_login_skips_id_token_when_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A token response without id_token (misconfigured tenant) must
+        not crash login — id_token slot simply stays empty."""
+        self._patch_flow(
+            monkeypatch,
+            _make_fake_token_response(id_token=None),
+        )
+        store = auth.InMemoryKeyringStore()
+        auth.login(
+            self.HOST,
+            store=store,
+            open_browser=False,
+            write_default=False,
+        )
+        assert store.get(self.HOST, auth.SLOT_ACCESS_TOKEN) == "access-tk"
+        assert store.get(self.HOST, auth.SLOT_ID_TOKEN) is None
+
+    def test_logout_clears_id_token_slot(self) -> None:
+        store = auth.InMemoryKeyringStore()
+        for slot in (
+            auth.SLOT_ACCESS_TOKEN,
+            auth.SLOT_REFRESH_TOKEN,
+            auth.SLOT_ACCESS_EXPIRY,
+            auth.SLOT_ID_TOKEN,
+        ):
+            store.set(self.HOST, slot, "seeded")
+        auth.logout(self.HOST, store=store)
+        for slot in (
+            auth.SLOT_ACCESS_TOKEN,
+            auth.SLOT_REFRESH_TOKEN,
+            auth.SLOT_ACCESS_EXPIRY,
+            auth.SLOT_ID_TOKEN,
+        ):
+            assert store.get(self.HOST, slot) is None

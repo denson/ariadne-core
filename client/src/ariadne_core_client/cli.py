@@ -4,17 +4,32 @@ Entry point: ``ariadne`` (wired via pyproject.toml [project.scripts]).
 
 Subcommands
 -----------
-- ``ariadne ingest <path-or-url>`` — ingests a URL, a file, or a directory of files.
+- ``ariadne login``                — Start OAuth 2.1 + PKCE flow; cache tokens in OS keyring.
+- ``ariadne whoami``               — Show cached identity (email, sub, expiry).
+- ``ariadne logout``               — Clear cached tokens for one host (or all hosts with ``--all``).
+- ``ariadne ingest <path-or-url>`` — Ingest a URL, a file, or a directory of files.
 - ``ariadne search <query>``       — POST /api/search.
 - ``ariadne list-documents``       — GET /api/documents (metadata only).
 - ``ariadne list-collections``     — GET /api/collections.
 - ``ariadne stats``                — GET /api/stats.
 - ``ariadne health``               — GET /api/health (no auth).
-- ``ariadne setup``                — Create .env from template.
+- ``ariadne setup``                — Create ``.env`` from template (for embedding /
+  vision API keys; optional ``ARIADNE_HOST`` and ``ARIADNE_ACCESS_TOKEN``).
 
 Every subcommand supports ``--json`` for raw machine-readable output.
-Each subcommand instantiates ``AriadneClient()`` with no args, so the usual
-credential-resolution chain (explicit → env → .env → .mcp.json) applies.
+
+Credential resolution
+---------------------
+Each data-plane subcommand calls ``_build_client(args)`` to build an
+``AriadneClient(host=args.host)``. ``--host`` is resolved by
+``auth.resolve_host`` with precedence: ``--host`` flag > ``ARIADNE_HOST``
+env > ``~/.config/ariadne/default`` (written by ``ariadne login``).
+The bearer token is sourced by ``auth.get_access_token`` with precedence:
+``ARIADNE_ACCESS_TOKEN`` env (escape hatch — bypasses keyring) > keyring
+cached access token > silent refresh via stored refresh token. There is
+no ``.env`` / ``.mcp.json`` auto-resolution; ``ariadne setup`` writes a
+template ``.env`` for OTHER (embedding / vision) API keys, but the
+client never reads tokens from a ``.env`` file.
 """
 
 from __future__ import annotations
@@ -60,13 +75,14 @@ ARIADNE_IMAGE_ENRICHMENT_API_KEY=<your api key here>
 ARIADNE_IMAGE_ENRICHMENT_MODEL=gemini-2.0-flash
 ARIADNE_IMAGE_ENRICHMENT_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 
-# --- Client Authentication ---
-# Auto-generated. Clients connect with this key via X-API-Key header.
-ARIADNE_API_KEY=<your api key here>
-
-
-# --- Railway Deployment ---
-ARIADNE_URL=https://your-deployment.up.railway.app
+# --- Client Authentication (OAuth 2.1 + PKCE) ---
+# Clients authenticate via the ``ariadne login`` command; tokens are
+# stored in the OS keyring. No API key needed. Optionally set
+# ARIADNE_HOST to avoid re-typing --host every time, and/or set
+# ARIADNE_ACCESS_TOKEN as an escape hatch that bypasses the keyring
+# entirely (useful for CI / automated scripts).
+# ARIADNE_HOST=https://your-deployment.up.railway.app
+# ARIADNE_ACCESS_TOKEN=<paste a short-lived JWT here for CI only>
 """
 
 
@@ -238,8 +254,19 @@ def _format_document(d: Document) -> str:
 
 # ---------------------------------------------------------------- subcommands
 
+def _build_client(args: argparse.Namespace) -> AriadneClient:
+    """Instantiate an AriadneClient honoring the subcommand's ``--host`` flag.
+
+    Every subcommand in this CLI declares ``--host`` via
+    ``add_host_flag`` (nested in ``_build_parser``); ``getattr`` keeps
+    this safe if a future subcommand forgets. An AriadneAuthError here
+    surfaces cleanly via ``main``'s top-level exception handler.
+    """
+    return AriadneClient(host=getattr(args, "host", None))
+
+
 def _cmd_health(args: argparse.Namespace) -> int:
-    client = AriadneClient()
+    client = _build_client(args)
     result = client.health()
     if args.json:
         _print_json(result)
@@ -249,7 +276,7 @@ def _cmd_health(args: argparse.Namespace) -> int:
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:
-    client = AriadneClient()
+    client = _build_client(args)
     result = client.stats()
     if args.json:
         _print_json(result)
@@ -259,7 +286,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_list_collections(args: argparse.Namespace) -> int:
-    client = AriadneClient()
+    client = _build_client(args)
     items = client.list_collections()
     if args.json:
         _print_json(items)
@@ -269,7 +296,7 @@ def _cmd_list_collections(args: argparse.Namespace) -> int:
 
 
 def _cmd_list_documents(args: argparse.Namespace) -> int:
-    client = AriadneClient()
+    client = _build_client(args)
     items = client.list_documents(
         collection=args.collection,
         file_type=args.file_type,
@@ -283,7 +310,7 @@ def _cmd_list_documents(args: argparse.Namespace) -> int:
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
-    client = AriadneClient()
+    client = _build_client(args)
     resp = client.search(
         args.query,
         collection=args.collection,
@@ -323,7 +350,7 @@ def _ingest_one_file(
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
-    client = AriadneClient()
+    client = _build_client(args)
     tags = _parse_tags(args.tags)
 
     target = args.target
@@ -540,6 +567,15 @@ def _build_parser() -> argparse.ArgumentParser:
     def add_json_flag(p: argparse.ArgumentParser) -> None:
         p.add_argument("--json", action="store_true", help="Emit raw JSON instead of a human-readable summary.")
 
+    def add_host_flag(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--host",
+            help=(
+                "Ariadne server URL. Defaults to $ARIADNE_HOST, then "
+                "~/.config/ariadne/default (written by 'ariadne login')."
+            ),
+        )
+
     # ingest
     p_ingest = sub.add_parser(
         "ingest",
@@ -562,6 +598,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="When TARGET is a directory, walk it recursively.",
     )
     add_json_flag(p_ingest)
+    add_host_flag(p_ingest)
     p_ingest.set_defaults(func=_cmd_ingest)
 
     # search
@@ -570,6 +607,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--collection", help="Restrict search to a collection.")
     p_search.add_argument("--top-k", type=int, default=5, help="Max results (default: %(default)s).")
     add_json_flag(p_search)
+    add_host_flag(p_search)
     p_search.set_defaults(func=_cmd_search)
 
     # list-documents
@@ -578,21 +616,25 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ld.add_argument("--file-type", help="Filter by file type (pdf, docx, ...).")
     p_ld.add_argument("--limit", type=int, default=20, help="Max documents (default: %(default)s).")
     add_json_flag(p_ld)
+    add_host_flag(p_ld)
     p_ld.set_defaults(func=_cmd_list_documents)
 
     # list-collections
     p_lc = sub.add_parser("list-collections", help="List all collections.")
     add_json_flag(p_lc)
+    add_host_flag(p_lc)
     p_lc.set_defaults(func=_cmd_list_collections)
 
     # stats
     p_stats = sub.add_parser("stats", help="Show system statistics.")
     add_json_flag(p_stats)
+    add_host_flag(p_stats)
     p_stats.set_defaults(func=_cmd_stats)
 
     # health
     p_health = sub.add_parser("health", help="Check server health.")
     add_json_flag(p_health)
+    add_host_flag(p_health)
     p_health.set_defaults(func=_cmd_health)
 
     # setup

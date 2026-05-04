@@ -91,6 +91,20 @@ def captured_http(monkeypatch: pytest.MonkeyPatch) -> HttpCapture:
 
 @pytest.fixture(autouse=True)
 def _client_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure the client picks up a dummy URL/key without reading user env."""
-    monkeypatch.setenv("ARIADNE_URL", "http://test.invalid")
-    monkeypatch.setenv("ARIADNE_API_KEY", "test-key")
+    """Ensure the client picks up a deterministic host + escape-hatch token.
+
+    Sets:
+    - ``ARIADNE_HOST`` so ``auth.resolve_host`` produces a stable value
+      without reading the developer's ``~/.config/ariadne/default``.
+    - ``ARIADNE_ACCESS_TOKEN`` so ``auth.get_access_token`` skips the
+      keyring entirely (tests don't touch the OS keychain). Individual
+      tests that need to exercise the fail-closed path use
+      ``monkeypatch.delenv("ARIADNE_ACCESS_TOKEN", raising=False)``
+      plus a mocked ``auth.get_access_token``.
+    """
+    monkeypatch.setenv("ARIADNE_HOST", "http://localhost")
+    monkeypatch.setenv("ARIADNE_ACCESS_TOKEN", "test-bearer-token")
+    # Unset the legacy vars so we fail loudly if any stale test path
+    # still depends on them.
+    monkeypatch.delenv("ARIADNE_URL", raising=False)
+    monkeypatch.delenv("ARIADNE_API_KEY", raising=False)

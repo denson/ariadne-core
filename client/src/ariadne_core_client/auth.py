@@ -30,7 +30,10 @@ Design decisions (Denson-approved 2026-04-21, see ticket ariadne--xft.5.1):
 - **PKCE:** loopback redirect per RFC 8252; multi-port allow-list
   8765-8769 tried in order; first bindable port wins.
 - **Storage:** ``service="ariadne-core"``, ``username="{host}:{slot}"``
-  where slot ∈ ``{refresh_token, access_token, access_expiry}``.
+  where slot ∈ ``{refresh_token, access_token, access_expiry, id_token}``.
+  The ``id_token`` slot (added in xft.5.5) is display-only and feeds
+  :func:`whoami` — access_token remains authoritative for the Bearer
+  header and for expiry checks.
 - **Refresh:** proactive — if ``access_expiry - now() <= 60s``, refresh
   before returning. No reactive 401-retry in this ticket.
 - **ARIADNE_ACCESS_TOKEN env var:** always honored first in
@@ -80,6 +83,11 @@ REFRESH_THRESHOLD_SECONDS: int = 60
 SLOT_REFRESH_TOKEN = "refresh_token"
 SLOT_ACCESS_TOKEN = "access_token"
 SLOT_ACCESS_EXPIRY = "access_expiry"
+#: The OIDC id_token. Display-only — carries ``email`` / ``sub`` / ``name``
+#: claims for rendering ``whoami``. The access_token remains authoritative
+#: for the ``Authorization: Bearer`` header and for expiry checks; see the
+#: non-swap notice in :func:`whoami`.
+SLOT_ID_TOKEN = "id_token"
 
 #: Default location for the resolved host fallback.
 DEFAULT_HOST_CONFIG_PATH = Path.home() / ".config" / "ariadne" / "default"
@@ -868,6 +876,15 @@ def login(
     store.set(host, SLOT_REFRESH_TOKEN, refresh_token)
     store.set(host, SLOT_ACCESS_TOKEN, access_token)
     store.set(host, SLOT_ACCESS_EXPIRY, expiry_iso)
+    # Store the id_token for display-only use (whoami email rendering).
+    # Access_token remains authoritative for the Bearer header + expiry
+    # check; id_token is DISPLAY ONLY. See the non-swap notice in
+    # :func:`whoami`. If the server-side OIDC scopes didn't include
+    # ``openid`` (unlikely, since the server adds it to discovery) the
+    # token response carries no id_token — we just skip the slot rather
+    # than failing the login, since display-only data is optional.
+    if isinstance(id_token, str) and id_token:
+        store.set(host, SLOT_ID_TOKEN, id_token)
 
     # Pull email + sub from the id_token if present — it's optional
     # on the Auth0 side but we ask for ``openid profile email`` so it
@@ -896,10 +913,21 @@ def logout(
     *,
     store: Optional[KeyringStoreProtocol] = None,
 ) -> None:
-    """Remove all keyring entries for ``host``. Idempotent."""
+    """Remove all keyring entries for ``host``. Idempotent.
+
+    Clears refresh + access + expiry + id_token slots. The id_token slot
+    is display-only (``email`` / ``sub`` for whoami) but we still want it
+    gone on logout so a subsequent whoami / login-as-different-user
+    doesn't display stale identity.
+    """
     store = store if store is not None else KeyringStore()
     host = _normalize_host(host)
-    for slot in (SLOT_REFRESH_TOKEN, SLOT_ACCESS_TOKEN, SLOT_ACCESS_EXPIRY):
+    for slot in (
+        SLOT_REFRESH_TOKEN,
+        SLOT_ACCESS_TOKEN,
+        SLOT_ACCESS_EXPIRY,
+        SLOT_ID_TOKEN,
+    ):
         store.delete(host, slot)
 
 
@@ -996,29 +1024,84 @@ def whoami(
     perform a token refresh — ``whoami`` is a pure "what's in my
     keyring" query. If the token is expired the caller (CLI) renders
     that explicitly.
+
+    Non-swap notice (DO NOT NAIVELY SWAP — xft.5.5 contract)
+    --------------------------------------------------------
+    This formatter reads ``email`` from the **id_token** when present,
+    falling back to the access_token only when the id_token is missing
+    or unreadable. A future maintainer should NOT generalize this to
+    "always decode id_token" at other call-sites. Per OAuth 2.1,
+    access tokens are opaque resource-authorization bearer credentials:
+    they are the authority for ``Authorization: Bearer ...`` and for
+    expiry checks. The id_token is an OIDC identity claim bundle — it
+    is intentionally display-only here. Specifically:
+
+    - ``Authorization: Bearer`` value → ``SLOT_ACCESS_TOKEN``, never
+      ``SLOT_ID_TOKEN``.
+    - Expiry / freshness → ``SLOT_ACCESS_EXPIRY`` (ISO timestamp
+      persisted from the token-endpoint ``expires_in``), never the
+      id_token's ``exp`` claim.
+    - Identity display (``email``, ``sub``) → prefer ``SLOT_ID_TOKEN``
+      when present; fall through to access_token only because Auth0
+      tenants may omit ``email`` from access tokens by design.
+
+    See the ``TestWhoamiSyntheticJwt`` regression suite for the
+    variants that lock this behavior in.
     """
     store = store if store is not None else KeyringStore()
     host = _normalize_host(host)
 
     access_token = store.get(host, SLOT_ACCESS_TOKEN)
     expiry_iso = store.get(host, SLOT_ACCESS_EXPIRY)
+    id_token = store.get(host, SLOT_ID_TOKEN)
     if not access_token:
         raise AuthError(
             f"Not logged in to {host}. Run:\n"
             f"    ariadne login --host {host}"
         )
 
-    claims: dict[str, Any] = {}
+    # Decode the access_token for its ``sub`` claim (id_token is still
+    # the preferred source for email; but sub is present on Auth0
+    # access tokens and serves as a last-resort identity source when
+    # id_token is absent).
+    access_claims: dict[str, Any] = {}
     try:
-        claims = decode_jwt_unverified(access_token)
+        access_claims = decode_jwt_unverified(access_token)
     except AuthError:
-        # Access token isn't decodable for some reason; whoami still
-        # reports host + expiry if those are available.
-        claims = {}
+        access_claims = {}
 
-    email = claims.get("email") if isinstance(claims.get("email"), str) else None
-    sub = claims.get("sub") if isinstance(claims.get("sub"), str) else None
+    # Decode the id_token for display claims (email / sub / name). If
+    # it's absent or malformed we fall through — whoami is best-effort.
+    id_claims: dict[str, Any] = {}
+    if id_token:
+        try:
+            id_claims = decode_jwt_unverified(id_token)
+        except AuthError:
+            id_claims = {}
 
+    # Prefer id_token email; fall back to access_token email; finally
+    # fall through to None (CLI renders as ``(unknown)``).
+    email: Optional[str] = None
+    id_email = id_claims.get("email")
+    if isinstance(id_email, str) and id_email:
+        email = id_email
+    else:
+        access_email = access_claims.get("email")
+        if isinstance(access_email, str) and access_email:
+            email = access_email
+
+    # Same precedence for sub — id_token first, access_token fallback.
+    sub: Optional[str] = None
+    id_sub = id_claims.get("sub")
+    if isinstance(id_sub, str) and id_sub:
+        sub = id_sub
+    else:
+        access_sub = access_claims.get("sub")
+        if isinstance(access_sub, str) and access_sub:
+            sub = access_sub
+
+    # Expiry is ALWAYS computed from SLOT_ACCESS_EXPIRY — never from
+    # id_token.exp. See the non-swap notice in the docstring.
     expires_in_seconds: Optional[int] = None
     if expiry_iso:
         try:
@@ -1166,5 +1249,6 @@ __all__ = [
     "SLOT_REFRESH_TOKEN",
     "SLOT_ACCESS_TOKEN",
     "SLOT_ACCESS_EXPIRY",
+    "SLOT_ID_TOKEN",
     "DEFAULT_HOST_CONFIG_PATH",
 ]

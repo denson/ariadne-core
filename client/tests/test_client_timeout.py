@@ -44,8 +44,7 @@ def test_create_document_floors_timeout_at_default(captured_http, tmp_path: Path
     fp.write_text("hello world")
 
     c = AriadneClient(
-        url="http://test.invalid",
-        api_key="test-key",
+        host="http://localhost",
         timeout=30,  # intentionally low — should be floored up to 600
     )
     c.ingest_file(str(fp), collection="t")
@@ -67,8 +66,7 @@ def test_create_document_keeps_timeout_above_floor(captured_http, tmp_path: Path
     fp.write_text("hello world")
 
     c = AriadneClient(
-        url="http://test.invalid",
-        api_key="test-key",
+        host="http://localhost",
         timeout=900,  # higher than the 600 floor — should win
     )
     c.ingest_file(str(fp), collection="t")
@@ -85,8 +83,7 @@ def test_ingest_file_respects_per_call_timeout_override(captured_http, tmp_path:
     fp.write_text("tiny")
 
     c = AriadneClient(
-        url="http://test.invalid",
-        api_key="test-key",
+        host="http://localhost",
         timeout=60,
     )
     # Agent knows this file is small — dropping the timeout well below the floor.
@@ -100,8 +97,7 @@ def test_ingest_url_respects_per_call_timeout_override(captured_http):
     captured_http.set_json_response(_canned_document_response())
 
     c = AriadneClient(
-        url="http://test.invalid",
-        api_key="test-key",
+        host="http://localhost",
         timeout=60,
     )
     c.ingest_url("https://example.com/doc.pdf", collection="t", timeout=1800)
@@ -117,8 +113,7 @@ def test_ingest_bytes_respects_per_call_timeout_override(captured_http):
     captured_http.set_json_response(_canned_document_response())
 
     c = AriadneClient(
-        url="http://test.invalid",
-        api_key="test-key",
+        host="http://localhost",
         timeout=60,
     )
     c.ingest_bytes(b"hello", "hello.txt", collection="t", timeout=45)
@@ -135,8 +130,7 @@ def test_upload_timeout_floor_unchanged(captured_http, tmp_path: Path):
     fp.write_text("hello world")
 
     c = AriadneClient(
-        url="http://test.invalid",
-        api_key="test-key",
+        host="http://localhost",
         timeout=30,
     )
     c.ingest_file(str(fp), collection="t")
