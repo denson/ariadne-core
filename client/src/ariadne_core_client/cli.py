@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import io
 import json
 import sys
 from pathlib import Path
@@ -107,6 +108,30 @@ def _to_jsonable(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return [_to_jsonable(item) for item in obj]
     return obj
+
+
+def _ensure_utf8_stdio() -> None:
+    """Reconfigure stdout/stderr to UTF-8 if they aren't already.
+
+    On Windows, Python's default stdout encoding is the legacy
+    locale-dependent cp1252, which cannot represent code points above
+    U+00FF (e.g. Greek θ in math notation). ``_print_json`` uses
+    ``ensure_ascii=False`` intentionally for human-readable output, so
+    the fix is at the stream layer, not the JSON encoder.
+
+    Equivalent effect to setting ``PYTHONUTF8=1`` in the environment,
+    but scoped to the CLI process — operators don't need to know the
+    trick. Idempotent and safe on POSIX (already UTF-8). Defensive
+    against AttributeError (non-text streams in tests) and
+    io.UnsupportedOperation (non-reconfigurable wrappers).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", None) or "").lower()
+        if enc not in ("utf-8", "utf8"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except (AttributeError, io.UnsupportedOperation):
+                pass
 
 
 def _print_json(obj: Any) -> None:
@@ -401,6 +426,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
         results: list[dict[str, Any]] = []
         successes = 0
+        skipped = 0
         failures = 0
 
         for idx, file_path in enumerate(files, 1):
@@ -415,8 +441,13 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 label=label,
             )
             if ok:
-                successes += 1
                 assert doc is not None
+                if doc.was_dedup_skip:
+                    skipped += 1
+                    verb = "skip"
+                else:
+                    successes += 1
+                    verb = "ok"
                 results.append(
                     {
                         "path": str(file_path),
@@ -426,7 +457,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 )
                 if not args.json:
                     print(
-                        f"{label} ok  {doc.document_id}  chunks={doc.chunks_count}"
+                        f"{label} {verb}  {doc.document_id}  chunks={doc.chunks_count}"
                         f"  dedup={doc.was_dedup_skip}",
                         file=sys.stderr,
                         flush=True,
@@ -441,16 +472,24 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 {
                     "files_found": len(files),
                     "files_processed": successes,
+                    "files_skipped": skipped,
                     "files_errored": failures,
                     "results": results,
                 }
             )
         else:
-            print(
-                f"\ningested {successes}/{len(files)} "
-                f"({failures} errored)",
-                file=sys.stderr,
-            )
+            if skipped:
+                print(
+                    f"\ningested {successes}/{len(files)} "
+                    f"({skipped} skipped via dedup, {failures} errored)",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"\ningested {successes}/{len(files)} "
+                    f"({failures} errored)",
+                    file=sys.stderr,
+                )
         return 0 if failures == 0 else 1
 
     raise AriadneClientError(f"Unsupported target: {path}")
@@ -713,6 +752,7 @@ def _build_parser() -> argparse.ArgumentParser:
 # ----------------------------------------------------------------------- main
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_utf8_stdio()
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
