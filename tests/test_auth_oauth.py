@@ -24,7 +24,6 @@ so stale state from a prior test doesn't leak across.
 
 from __future__ import annotations
 
-import base64
 import time
 import uuid
 from typing import Any
@@ -55,30 +54,6 @@ def _generate_rsa_keypair() -> tuple[Any, str]:
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode("utf-8")
     return private_key, public_pem
-
-
-def _b64url_uint(n: int) -> str:
-    """Encode an integer as unsigned-big-endian base64url (no padding).
-
-    This is the JWK encoding for `n` (modulus) and `e` (exponent) on an
-    RSA public key — see RFC 7518 §6.3.1.
-    """
-    length = (n.bit_length() + 7) // 8
-    raw = n.to_bytes(length, "big")
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-
-def _build_jwk(private_key: Any, kid: str) -> dict:
-    """Build a JWKS entry (as a dict) for `private_key`'s public half."""
-    public_numbers = private_key.public_key().public_numbers()
-    return {
-        "kty": "RSA",
-        "use": "sig",
-        "alg": "RS256",
-        "kid": kid,
-        "n": _b64url_uint(public_numbers.n),
-        "e": _b64url_uint(public_numbers.e),
-    }
 
 
 def _sign_jwt(
@@ -406,6 +381,44 @@ def test_missing_sub_claim(auth_env, fake_jwks, keypair):
     assert resp.json()["detail"] == "missing_sub_claim"
 
 
+def test_nbf_in_future_routes_to_invalid_token_catchall(auth_env, fake_jwks, keypair):
+    """A token with nbf in the future raises ImmatureSignatureError, which
+    is not caught by any specific handler in _decode_token and falls through
+    to the InvalidTokenError catch-all → 401 invalid_token.
+
+    This test pins the catch-all branch (auth_oauth.py:227). It is the only
+    test that exercises that line; all other 401 paths route through more
+    specific exception handlers above it. If a future refactor adds an
+    explicit `except jwt.ImmatureSignatureError:` handler with a different
+    detail string, this test must be updated to use a different
+    InvalidTokenError subclass (e.g. InvalidAlgorithmError or
+    MissingRequiredClaimError) to keep coverage of the catch-all alive.
+    """
+    private_key, public_pem = keypair
+    kid = "nbf-kid"
+    fake_jwks.keys_by_kid[kid] = public_pem
+
+    # nbf = 1 hour in the future. iat / exp framed around now so neither
+    # of them trips a more specific handler.
+    now = int(time.time())
+    claims = {
+        "sub": "auth0|future-user",
+        "iss": "https://test-tenant.auth0.com/",
+        "aud": "https://ariadne-core",
+        "iat": now,
+        "nbf": now + 3600,
+        "exp": now + 7200,
+    }
+    token = jwt.encode(
+        claims, private_key, algorithm="RS256", headers={"kid": kid}
+    )
+
+    client = TestClient(_protected_app())
+    resp = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["detail"] == "invalid_token"
+
+
 def test_bearer_prefix_but_empty_token(auth_env, fake_jwks):
     """`Authorization: Bearer ` with nothing after is treated as missing.
 
@@ -415,10 +428,7 @@ def test_bearer_prefix_but_empty_token(auth_env, fake_jwks):
     client = TestClient(_protected_app())
     resp = client.get("/whoami", headers={"Authorization": "Bearer "})
     assert resp.status_code == 401, resp.text
-    # Either missing_token (HTTPBearer returned None) or wrong_scheme —
-    # in practice starlette's HTTPBearer returns None for "Bearer " with
-    # trailing whitespace, hitting the missing_token branch.
-    assert resp.json()["detail"] in ("missing_token", "wrong_scheme")
+    assert resp.json()["detail"] == "missing_token"
 
 
 # ── 3. JWKS cache + refresh ────────────────────────────────────────────────

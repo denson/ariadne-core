@@ -241,8 +241,13 @@ async def require_user(
     Auth0 error payload leaks through.
 
     Cases:
-    - `missing_token` — no Authorization header.
-    - `wrong_scheme` — Authorization header present but not `Bearer`.
+    - `missing_token` — no Authorization header, an empty Authorization
+      header, or a header whose stripped value is the bare `Bearer`
+      keyword (any case, credential portion empty — client intended
+      Bearer auth but forgot or dropped the token).
+    - `wrong_scheme` — Authorization header present, non-empty after
+      strip, and not the bare `Bearer` keyword — i.e. a non-Bearer
+      scheme (`Basic`, `Digest`).
     - `malformed_token` — JWT structurally invalid (not three base64
       parts, bad header, bad kid claim type).
     - `invalid_signature` — signature doesn't verify against the JWKS.
@@ -254,18 +259,24 @@ async def require_user(
     - `missing_sub_claim` — token is valid but has no `sub`, which
       shouldn't happen for Auth0 tokens but is defensive.
     """
-    # credentials is None when the Authorization header is absent or
-    # uses a non-Bearer scheme (HTTPBearer(auto_error=False) returns
-    # None in both cases). Distinguish them by re-reading the raw
-    # header so we can return `missing_token` vs `wrong_scheme`
-    # specifically.
+    # credentials is None when the Authorization header is absent,
+    # empty, the bare `Bearer` keyword with empty creds (any case),
+    # or a non-Bearer scheme. HTTPBearer(auto_error=False) returns
+    # None in all of these. Distinguish them by re-reading the raw
+    # header so we can return `missing_token` (no header / empty /
+    # bare Bearer keyword) vs `wrong_scheme` (non-Bearer scheme).
     if credentials is None:
         # Distinguish missing header from wrong scheme. If the client
         # sent an Authorization header with a non-Bearer scheme
         # (e.g. `Basic`, `Digest`), HTTPBearer returns None too — so
-        # we read the raw header to tell the two cases apart.
+        # we read the raw header to tell the two cases apart. A header
+        # whose stripped value is the bare `Bearer` keyword (any case,
+        # no credential portion) is treated as `missing_token` — the
+        # client intended Bearer auth but forgot or dropped the token.
         raw = request.headers.get("Authorization")
         if raw is None or raw.strip() == "":
+            raise HTTPException(status_code=401, detail="missing_token")
+        if raw.strip().lower() == "bearer":
             raise HTTPException(status_code=401, detail="missing_token")
         raise HTTPException(status_code=401, detail="wrong_scheme")
 

@@ -317,8 +317,8 @@ curl -s -o /dev/null -w "HTTP %{http_code}" -H "Authorization: Bearer <jwt>" htt
 | Health returns nothing | Deployment not running | Check Railway dashboard, run `railway logs` |
 | Health returns 502 | Database connection error | Make sure Postgres is attached (`railway add --database postgres`) and check `railway logs` |
 | `/.well-known/ariadne-config` returns 500 `auth_misconfigured` | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_AUDIENCE` unset on the server | Set all three in Railway variables and redeploy |
-| 401 `missing_token` | No `Authorization` header on the request | Add `Authorization: Bearer <jwt>` |
-| 401 `wrong_scheme` | Header present but not `Bearer` (e.g. old `X-API-Key` config) | Use `Authorization: Bearer <jwt>` — X-API-Key was removed in Pass 2 |
+| 401 `missing_token` | No `Authorization` header, an empty header, or `Authorization: Bearer ` with no token | Add `Authorization: Bearer <jwt>` with the actual JWT |
+| 401 `wrong_scheme` | Header present with a non-Bearer scheme (e.g. old `X-API-Key` config, `Basic` auth) | Use `Authorization: Bearer <jwt>` — X-API-Key was removed in Pass 2 |
 | 401 `wrong_audience` or `wrong_issuer` | JWT was minted against a different Auth0 tenant/API | Re-issue the test token from the correct Auth0 app; check `/.well-known/ariadne-config` for the expected values |
 | 401 `expired_token` | JWT has expired | Issue a fresh test token (Auth0 access tokens default to 24h) |
 | 401 `invalid_signature` | Token signed by a different key (wrong tenant) | Check `iss`, re-issue from the right tenant |

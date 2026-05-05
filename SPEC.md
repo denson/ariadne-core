@@ -158,8 +158,8 @@ When the caller does not provide an explicit `agent_id`, the server writes `auth
 
 | Detail string | Status | Meaning |
 |---|---|---|
-| `missing_token` | 401 | No `Authorization` header at all. |
-| `wrong_scheme` | 401 | `Authorization` header present but scheme is not `Bearer`. |
+| `missing_token` | 401 | No `Authorization` header, an empty `Authorization` header, or a header whose stripped value is the bare `Bearer` keyword (any case — `Bearer`, `bearer`, `BEARER`, etc. — with the credential portion empty; the client intended Bearer auth but the token is missing). |
+| `wrong_scheme` | 401 | `Authorization` header present, non-empty after strip, and not the bare `Bearer` keyword (any case) — i.e. a non-Bearer scheme such as `Basic` or `Digest`. |
 | `malformed_token` | 401 | JWT not parseable as three base64 parts / header missing `kid`. |
 | `invalid_signature` | 401 | Signature does not verify against the JWKS key. |
 | `wrong_audience` | 401 | `aud` claim does not match `AUTH0_AUDIENCE`. |
