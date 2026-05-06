@@ -49,7 +49,7 @@ def _make_doc(
         document_id=str(uuid.uuid4()),
         collection_id=collection,
         source_file=source_file,
-        content_fingerprint=compute_fingerprint(content),
+        content_fingerprint=compute_fingerprint(content.encode("utf-8")),
         file_type="txt",
         engine="markitdown",
         markdown=content,

@@ -33,7 +33,7 @@ def _build_app() -> FastAPI:
 
 
 def _seed_doc(store: InMemoryDedupStore, collection: str, content: bytes) -> str:
-    fp = compute_fingerprint(content.decode("utf-8", errors="replace"))
+    fp = compute_fingerprint(content)
     doc_id = str(uuid.uuid4())
     doc = StoredDocument(
         document_id=doc_id,
@@ -77,7 +77,7 @@ class TestDeleteCollection:
         # The rows still exist in the store — they're just soft-deleted,
         # which is what keeps restore possible within 48h.
         assert self.dedup.find_by_fingerprint(
-            coll, compute_fingerprint("hello"), include_deleted=True
+            coll, compute_fingerprint(b"hello"), include_deleted=True
         ) is not None
 
     def test_purge_true_hard_deletes(self):
@@ -95,7 +95,7 @@ class TestDeleteCollection:
 
         # Row is gone even from include_deleted queries.
         assert self.dedup.find_by_fingerprint(
-            coll, compute_fingerprint("hello"), include_deleted=True
+            coll, compute_fingerprint(b"hello"), include_deleted=True
         ) is None
 
     def test_reingest_after_purge_is_a_fresh_row_not_a_resurrection(self):
@@ -109,7 +109,7 @@ class TestDeleteCollection:
         assert resp.status_code == 200
 
         # Re-ingest same content
-        fp = compute_fingerprint("reset me")
+        fp = compute_fingerprint(b"reset me")
         new_doc = StoredDocument(
             document_id=str(uuid.uuid4()),
             collection_id=coll,
@@ -143,7 +143,7 @@ class TestDeleteCollection:
         assert resp.status_code == 200
 
         # Re-ingest identical content
-        fp = compute_fingerprint("ghost content")
+        fp = compute_fingerprint(b"ghost content")
         new_doc = StoredDocument(
             document_id=str(uuid.uuid4()),  # new UUID on the caller side
             collection_id=coll,

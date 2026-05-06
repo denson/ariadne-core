@@ -24,25 +24,54 @@ class TestNormalization:
 
 
 class TestFingerprint:
-    def test_deterministic(self):
-        fp1 = compute_fingerprint("Hello World")
-        fp2 = compute_fingerprint("Hello World")
-        assert fp1 == fp2
+    """Raw-bytes fingerprint contract (ariadne--k7n).
 
-    def test_normalization_applied(self):
-        fp1 = compute_fingerprint("Hello World")
-        fp2 = compute_fingerprint("  hello   world  \n")
+    test_normalization_applied was deliberately removed: under the
+    bytes-only API, two byte sequences that differ in whitespace or case
+    are NOT byte-equal and (correctly) produce different fingerprints.
+    The replacement is test_byte_stability below.
+    """
+
+    def test_deterministic(self):
+        fp1 = compute_fingerprint(b"Hello World")
+        fp2 = compute_fingerprint(b"Hello World")
         assert fp1 == fp2
 
     def test_different_content_different_fingerprint(self):
-        fp1 = compute_fingerprint("Hello World")
-        fp2 = compute_fingerprint("Goodbye World")
+        fp1 = compute_fingerprint(b"Hello World")
+        fp2 = compute_fingerprint(b"Goodbye World")
         assert fp1 != fp2
 
     def test_returns_hex_sha256(self):
-        fp = compute_fingerprint("test")
+        fp = compute_fingerprint(b"test")
         assert len(fp) == 64  # SHA-256 hex digest
         assert all(c in "0123456789abcdef" for c in fp)
+
+    def test_byte_stability(self):
+        """Identical bytes produce identical fingerprints across calls.
+        Replacement for the removed test_normalization_applied — the new
+        contract guarantees byte-stability, not whitespace/case
+        equivalence."""
+        payload = b"\x00\x01\x02 some bytes \xff\xfe"
+        fp1 = compute_fingerprint(payload)
+        fp2 = compute_fingerprint(bytes(payload))  # fresh bytes object
+        fp3 = compute_fingerprint(bytearray(payload))  # bytearray accepted
+        fp4 = compute_fingerprint(memoryview(payload))  # memoryview accepted
+        assert fp1 == fp2 == fp3 == fp4
+
+        # Whitespace/case-different inputs are NOT byte-equal under the
+        # new contract — semantic that test_normalization_applied
+        # asserted is intentionally gone.
+        fp_canonical = compute_fingerprint(b"Hello World")
+        fp_padded = compute_fingerprint(b"  hello   world  \n")
+        assert fp_canonical != fp_padded
+
+    def test_rejects_str_input(self):
+        """Fail-fast guard against silent string-coercion regressions."""
+        import pytest as _pytest
+        with _pytest.raises(TypeError) as exc:
+            compute_fingerprint("Hello World")  # type: ignore[arg-type]
+        assert "raw bytes" in str(exc.value)
 
 
 class TestInMemoryDedupStore:

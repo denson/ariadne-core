@@ -1,9 +1,10 @@
 """Dedup gate — SHA-256 fingerprinting and collision detection.
 
-Normalizes extracted text (lowercase, trimmed, collapsed whitespace),
-computes SHA-256, and checks against a store. In Phase 1 this uses an
-in-memory store; Phase 5 will swap in Postgres (documents table with
-unique index on collection_id + content_fingerprint).
+Fingerprints raw source bytes (file bytes for local sources, the HTTP
+response body for URL sources). The hash is taken BEFORE extraction so
+dedup is independent of markitdown / vision-API non-determinism. In
+Phase 1 this uses an in-memory store; Phase 5 will swap in Postgres
+(documents table with unique index on collection_id + content_fingerprint).
 """
 
 from __future__ import annotations
@@ -17,16 +18,26 @@ from typing import Any, Protocol
 
 
 def normalize_text(text: str) -> str:
-    """Normalize text for fingerprinting: lowercase, trim, collapse whitespace."""
+    """Normalize text for fingerprinting: lowercase, trim, collapse whitespace.
+
+    Retained for backward compatibility; no longer invoked by
+    compute_fingerprint after the raw-bytes refactor (ariadne--k7n).
+    """
     text = text.lower().strip()
     text = re.sub(r"\s+", " ", text)
     return text
 
 
-def compute_fingerprint(text: str) -> str:
-    """Compute SHA-256 fingerprint of normalized text."""
-    normalized = normalize_text(text)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+def compute_fingerprint(content: bytes) -> str:
+    """SHA-256 of raw source bytes. Caller passes file bytes for local
+    sources, the HTTP response body bytes for URL sources. No normalization
+    is applied: byte-stable inputs are the design intent."""
+    if not isinstance(content, (bytes, bytearray, memoryview)):
+        raise TypeError(
+            f"compute_fingerprint expects raw bytes; got {type(content).__name__}. "
+            "Hash source bytes (file or HTTP body), not extracted text."
+        )
+    return hashlib.sha256(bytes(content)).hexdigest()
 
 
 def _extract_source_reference(agent_metadata: dict[str, Any] | None) -> str | None:
