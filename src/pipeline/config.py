@@ -80,6 +80,12 @@ class ChunkingConfig:
     new_after_n_chars: int = 1000
     overlap: int = 200
     combine_under_n_chars: int = 200
+    # Floor below which chunks are coalesced into a neighbor (by_title only).
+    # Mirror of chunker.py::ChunkingConfig.min_chunk_tokens. NOTE: the YAML
+    # chunking section is currently dead config — services.py does not pass
+    # this dataclass into chunk_document; chunk config flows via per-request
+    # body. Tracked separately as ariadne--g47.
+    min_chunk_tokens: int = 50
 
 
 @dataclass

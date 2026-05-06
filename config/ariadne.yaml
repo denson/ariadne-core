@@ -37,6 +37,8 @@ chunking:
   new_after_n_chars: 1000
   overlap: 200
   combine_under_n_chars: 200
+  # Floor below which chunks are coalesced into a neighbor (by_title strategy).
+  min_chunk_tokens: 50
 
 # --- API Server ---
 api:
