@@ -7,6 +7,7 @@ import from here.
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -14,6 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 from pipeline.chunking.chunker import Chunk, ChunkingConfig, chunk_document
 from pipeline.dedup import (
@@ -30,6 +33,8 @@ from pipeline.enrichment.vision import VisionConfig
 from pipeline.extraction.markitdown import MarkItDownExtractor
 from pipeline.storage.base import InMemoryVectorStore
 from pipeline.storage.pgvector import PgVectorStore
+
+logger = logging.getLogger(__name__)
 
 # Shared services
 _extractor = MarkItDownExtractor(enable_plugins=True)
@@ -84,6 +89,32 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
+def _read_source_bytes(uri: str) -> bytes:
+    """Return raw bytes for a uri (file://, http(s)://, or local path).
+
+    URL path: deliberately uses the same default urllib semantics as the
+    extractor's ``_download_to_temp`` (stdlib ``urlretrieve`` at
+    ``extraction/markitdown.py:267``). No ``Accept-Encoding`` header is
+    sent; no decompression is performed. If a server unilaterally returns
+    ``Content-Encoding: gzip`` (rare but legal), BOTH the fingerprint path
+    and the extraction path receive identical compressed bytes — so
+    fingerprint-vs-extraction can never diverge on the same fetch.
+    """
+    if uri.startswith("file://"):
+        path = urlparse(uri).path
+        return Path(path).read_bytes()
+    if uri.startswith(("http://", "https://")):
+        # Match urlretrieve default: no extra headers, follow redirects.
+        with urlopen(uri) as resp:
+            return resp.read()
+    return Path(uri).read_bytes()
+
+
+def _source_file_from_uri(uri: str) -> str:
+    """Derive a display-name source_file from a URI without touching disk."""
+    return Path(urlparse(uri).path).name if "://" in uri else Path(uri).name
+
+
 def _process_single_document(
     uri: str,
     store: bool,
@@ -103,64 +134,35 @@ def _process_single_document(
 
     Returns a response dict (not JSON string).
     """
-    result = _extractor.extract(uri)
-
-    if result.errors:
+    # Read source bytes for fingerprinting BEFORE extraction. URL sources are
+    # fetched here using the same urlretrieve-equivalent semantics the
+    # extractor uses on cache miss; this guarantees fingerprint-bytes ==
+    # extraction-bytes within a single ingest. See dedup.py and
+    # _read_source_bytes for the byte-stream invariant rationale.
+    try:
+        raw_bytes = _read_source_bytes(uri)
+    except Exception as e:
         return {
             "error": True,
-            "message": f"Extraction failed: {'; '.join(result.errors)}",
-            "document_id": result.document_id,
-            "source_file": result.source_file,
+            "message": f"Source read failed: {e}",
+            "document_id": None,
+            "source_file": _source_file_from_uri(uri),
         }
 
-    if not result.markdown or not result.markdown.strip():
-        ext = (result.file_type or "").lower().lstrip(".")
-        is_image = ext in _STANDALONE_IMAGE_EXTENSIONS
-
-        if is_image and _image_enricher.enabled:
-            # Standalone image: MarkItDown produced no text, so call the
-            # vision model directly on the image file. The resulting
-            # description becomes the document's markdown content.
-            local_path = uri
-            if uri.startswith("file://"):
-                local_path = uri[len("file://"):]
-            vision_start = time.perf_counter()
-            try:
-                description = _image_enricher.describe_image(local_path)
-            except Exception as e:
-                return {
-                    "error": True,
-                    "message": (
-                        f"Vision extraction failed for {result.source_file}: {e}"
-                    ),
-                    "document_id": result.document_id,
-                    "source_file": result.source_file,
-                }
-            vision_ms = int((time.perf_counter() - vision_start) * 1000)
-            result.markdown = f"# Image: {result.source_file}\n\n{description}"
-            result.file_type = ext
-            result.output_tokens_estimate = max(1, len(result.markdown) // 4)
-            result.processing_chain.append({
-                "step": "vision_extraction",
-                "tool": "image_enricher",
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "ms": vision_ms,
-            })
-        else:
-            return {
-                "error": True,
-                "message": f"Extraction produced empty output for {result.source_file}. "
-                           "Image files require vision API configuration. "
-                           "Check ARIADNE_IMAGE_ENRICHMENT_API_KEY.",
-                "document_id": result.document_id,
-                "source_file": result.source_file,
-            }
-
-    fingerprint = compute_fingerprint(result.markdown)
+    fingerprint = compute_fingerprint(raw_bytes)
 
     if not force:
         existing = _dedup_store.find_by_fingerprint(collection, fingerprint)
         if existing is not None:
+            logger.info(
+                "dedup-skip",
+                extra={
+                    "collection": collection,
+                    "fingerprint_prefix": fingerprint[:8],
+                    "source_file": _source_file_from_uri(uri),
+                    "algorithm": "raw-bytes",
+                },
+            )
             _dedup_store.record_interaction(
                 DocumentInteraction(
                     document_id=existing.document_id,
@@ -221,6 +223,62 @@ def _process_single_document(
                 "markdown": existing.markdown,
             }
 
+    # Cache miss (or force=True): now do the expensive extraction.
+    result = _extractor.extract(uri)
+
+    if result.errors:
+        return {
+            "error": True,
+            "message": f"Extraction failed: {'; '.join(result.errors)}",
+            "document_id": result.document_id,
+            "source_file": result.source_file,
+        }
+
+    if not result.markdown or not result.markdown.strip():
+        ext = (result.file_type or "").lower().lstrip(".")
+        is_image = ext in _STANDALONE_IMAGE_EXTENSIONS
+
+        if is_image and _image_enricher.enabled:
+            # Standalone image: MarkItDown produced no text, so call the
+            # vision model directly on the image file. The resulting
+            # description becomes the document's markdown content.
+            local_path = uri
+            if uri.startswith("file://"):
+                local_path = uri[len("file://"):]
+            vision_start = time.perf_counter()
+            try:
+                description = _image_enricher.describe_image(local_path)
+            except Exception as e:
+                return {
+                    "error": True,
+                    "message": (
+                        f"Vision extraction failed for {result.source_file}: {e}"
+                    ),
+                    "document_id": result.document_id,
+                    "source_file": result.source_file,
+                }
+            vision_ms = int((time.perf_counter() - vision_start) * 1000)
+            result.markdown = f"# Image: {result.source_file}\n\n{description}"
+            result.file_type = ext
+            result.output_tokens_estimate = max(1, len(result.markdown) // 4)
+            result.processing_chain.append({
+                "step": "vision_extraction",
+                "tool": "image_enricher",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "ms": vision_ms,
+            })
+        else:
+            return {
+                "error": True,
+                "message": f"Extraction produced empty output for {result.source_file}. "
+                           "Image files require vision API configuration. "
+                           "Check ARIADNE_IMAGE_ENRICHMENT_API_KEY.",
+                "document_id": result.document_id,
+                "source_file": result.source_file,
+            }
+
+    # Fingerprint already computed before extraction — do NOT recompute from
+    # result.markdown.
     processing_chain = list(result.processing_chain)
     markdown = result.markdown
     warnings = list(result.warnings)
@@ -358,6 +416,15 @@ def _process_single_document(
         # ignored here; would_resurrect above drove the user-facing warning
         # using probe-time state.
         _dedup_store.store_document(stored_doc)
+        logger.info(
+            "dedup-miss-store",
+            extra={
+                "collection": collection,
+                "fingerprint_prefix": fingerprint[:8],
+                "source_file": _source_file_from_uri(uri),
+                "algorithm": "raw-bytes",
+            },
+        )
     doc_id = stored_doc.document_id
 
     response: dict[str, Any] = {

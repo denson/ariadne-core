@@ -378,7 +378,7 @@ Common HTTP status codes:
 - `404` — Document or collection not found
 - `410` — Soft-delete window expired (restore too late)
 - `413` — File too large
-- `422` — Extraction failed (encoding error, unsupported format, corrupt file), OR embedding failed (transient provider error). Ingest is transactional: on a 422 no document row is written.
+- `422` — Extraction failed (encoding error, unsupported format, corrupt file), source read failed (file not found, URL fetch error), OR embedding failed (transient provider error). Ingest is transactional: on a 422 no document row is written.
 - `503` — Embedding not configured (search endpoint only)
 
 ---
@@ -1360,7 +1360,9 @@ This is the payoff of metadata conventions: Agent C didn't need to know about Ag
 
 ## Dedup
 
-Every document is fingerprinted (SHA-256 on normalized text) before any expensive processing. If the fingerprint already exists in the target collection:
+Every document is fingerprinted (SHA-256 on the raw source bytes — file bytes for local sources, the HTTP response body after redirect resolution for URL sources, with no Content-Encoding decompression so fingerprint and extraction read byte-identical content) before any expensive processing. Dedup is therefore independent of extraction non-determinism (markitdown version, vision-API caption variance). As of `ariadne--k7n` (2026-05-06): pre-fix entries retain their original markdown-derived fingerprints; re-ingesting one of those source files produces a NEW entry under the new algorithm. No automatic migration; track via `ariadne--<future-migration-ticket>` if duplicate-pollution becomes load-bearing at scale.
+
+If the fingerprint already exists in the target collection:
 
 1. Extraction, chunking, and embedding are skipped
 2. A `document_interactions` row is still created (recording who asked, when, and why)
@@ -1425,7 +1427,7 @@ Processing sequence for each document. The order matters.
 
 Extraction may add suggested tags to the document (e.g., `encoding:windows-1252`, `language:french`, `content:binary-data`). These are informational — they help agents and users filter or review documents but do not affect processing.
 
-5. **Content fingerprint** — SHA-256 on normalized text. If the fingerprint already exists in the target collection, skip to step 10 (unless `force` flag is set)
+5. **Content fingerprint** — SHA-256 over raw source bytes (computed BEFORE extraction). If the fingerprint already exists in the target collection, skip to step 10 (unless `force` flag is set).
 6. **Image enrichment** *(optional)* — vision API describes images found in the extracted Markdown, replacing `![image](...)` placeholders with semantic descriptions
 7. **Chunk** — split Markdown into chunks. Strategy is auto-selected by file type (configurable)
 8. **Embed** — compute vector embeddings for each chunk. Model tracked per chunk so mixed-model corpora are handled correctly

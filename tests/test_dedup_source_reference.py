@@ -24,7 +24,7 @@ def _make_doc(collection: str, source_file: str, content: str) -> StoredDocument
         document_id=str(uuid.uuid4()),
         collection_id=collection,
         source_file=source_file,
-        content_fingerprint=compute_fingerprint(content + source_file),
+        content_fingerprint=compute_fingerprint((content + source_file).encode("utf-8")),
         file_type="txt",
         engine="markitdown",
         markdown=content,

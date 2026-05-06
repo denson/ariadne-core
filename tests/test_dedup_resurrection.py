@@ -33,7 +33,7 @@ def _make_stored_doc(
     document_id: str | None = None,
 ) -> StoredDocument:
     import uuid
-    fp = compute_fingerprint(content.decode("utf-8", errors="replace"))
+    fp = compute_fingerprint(content)
     return StoredDocument(
         document_id=document_id or str(uuid.uuid4()),
         collection_id=collection,

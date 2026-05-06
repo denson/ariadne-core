@@ -79,7 +79,31 @@ def benchmark_document(
     except OSError:
         file_size = 0
 
-    # Step 1: Extract
+    # Step 1: Fingerprint (raw bytes, BEFORE extraction — ariadne--k7n)
+    t1 = time.perf_counter()
+    try:
+        compute_fingerprint(path.read_bytes())
+        fingerprint_ms = (time.perf_counter() - t1) * 1000
+    except OSError as e:
+        # Mirror the prior contract: nonexistent / unreadable path
+        # surfaces as result.errors, not an exception out of the helper.
+        fingerprint_ms = (time.perf_counter() - t1) * 1000
+        return BenchmarkResult(
+            file_name=path.name,
+            file_type=file_type,
+            file_size_bytes=file_size,
+            extraction_ms=0.0,
+            markdown_len=0,
+            token_estimate=0,
+            token_savings_ratio=0.0,
+            fingerprint_ms=fingerprint_ms,
+            chunk_count=0,
+            chunking_ms=0.0,
+            total_ms=fingerprint_ms,
+            errors=[f"Source read failed: {e}"],
+        )
+
+    # Step 2: Extract
     t0 = time.perf_counter()
     result = extractor.extract(str(path))
     extraction_ms = (time.perf_counter() - t0) * 1000
@@ -93,17 +117,12 @@ def benchmark_document(
             markdown_len=0,
             token_estimate=0,
             token_savings_ratio=0.0,
-            fingerprint_ms=0.0,
+            fingerprint_ms=fingerprint_ms,
             chunk_count=0,
             chunking_ms=0.0,
-            total_ms=extraction_ms,
+            total_ms=extraction_ms + fingerprint_ms,
             errors=result.errors,
         )
-
-    # Step 2: Fingerprint
-    t1 = time.perf_counter()
-    compute_fingerprint(result.markdown)
-    fingerprint_ms = (time.perf_counter() - t1) * 1000
 
     # Step 3: Chunk
     t2 = time.perf_counter()
