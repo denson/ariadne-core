@@ -35,6 +35,10 @@ class ChunkingConfig:
     new_after_n_chars: int = 1000
     overlap: int = 200
     combine_under_n_chars: int = 200
+    # Floor below which chunks are coalesced into a neighbor (by_title only).
+    # 50 tokens × _CHARS_PER_TOKEN=4 ≈ 200 chars, deliberately aligned with
+    # combine_under_n_chars but acting at a different stage (post-construction).
+    min_chunk_tokens: int = 50
 
 
 @dataclass
@@ -143,6 +147,14 @@ def chunk_document(
             )
         )
 
+    # ariadne--mr6 (design §3): post-pass min-token coalesce, by_title only.
+    # fixed_size has overlap=200 by default, so concatenating two consecutive
+    # fixed_size chunks would double-count the overlap region. by_page is
+    # untouched per the brief's scope. The coalesce runs on already-built
+    # Chunk objects so it can be unit-tested directly.
+    if config.strategy == "by_title":
+        chunks = _coalesce_undersized(chunks, config.min_chunk_tokens)
+
     return chunks
 
 
@@ -173,13 +185,20 @@ def _chunk_by_title(
     sections.append((current_heading, remaining))
 
     # Combine tiny sections
+    #
+    # NOTE (ariadne--mr6, design §2): the original guard required BOTH the
+    # previous accumulator AND the current section to be tiny. That lets a
+    # bare-heading section (text effectively empty) survive whenever its
+    # predecessor was large — the empirical "## Step 2" survives because
+    # "## Step 1" already grew past combine_under_n_chars. We loosen the
+    # condition: if the *current* section is tiny and there is anything to
+    # merge into, merge. This catches sandwiched bare headings at section-
+    # grouping time. Cases this still misses (first-section, final-section,
+    # post-paragraph-split) are picked up by the post-pass min-token floor
+    # in chunk_document via _coalesce_undersized.
     combined: list[tuple[str | None, str]] = []
     for heading, text in sections:
-        if (
-            combined
-            and len(combined[-1][1]) < config.combine_under_n_chars
-            and len(text) < config.combine_under_n_chars
-        ):
+        if combined and len(text.strip()) < config.combine_under_n_chars:
             prev_heading, prev_text = combined[-1]
             # Re-add the heading as text when merging
             if heading:
@@ -313,3 +332,79 @@ def _split_at_paragraphs(
         result.append(current)
 
     return result
+
+
+def _coalesce_undersized(chunks: list[Chunk], min_tokens: int) -> list[Chunk]:
+    """Merge any chunk under min_tokens into a neighbor (FOLLOWING preferred).
+
+    Walks the chunk list once with re-test: if chunks[i].token_count < min_tokens,
+    merge it INTO chunks[i+1] (text prepended, target survives) and re-test the
+    merged target on the next iteration without advancing i. If chunks[i] is the
+    final chunk and below the floor, merge it INTO chunks[i-1] (text appended)
+    instead. If chunks[i] is the only chunk in the document and below the floor,
+    keep it as-is (deleting content is worse than retaining a small chunk).
+
+    After all merges: chunk_index is renumbered sequentially, chunk_id is
+    regenerated to match (matching the f"{document_id}-chunk-{i:04d}" pattern
+    used in chunk_document), and token_count is recomputed on every surviving
+    chunk via estimate_tokens.
+
+    Section-field drift contract (per design §6 weak point 3, option (b)):
+    when chunks[i] (sub-floor) merges into chunks[i+1], the surviving chunk
+    keeps chunks[i+1].section. Its text now begins with chunks[i]'s heading
+    prose (e.g., "## Step 2\\n\\n" then Step 3's body). This is intentional —
+    the alternative (stripping the leading heading) would silently delete
+    content for the sake of label consistency, and no current SQL/Python code
+    in the codebase filters or groups by chunk.section. The contract: after
+    coalesce, chunk.section names the section the chunk was anchored to at
+    construction, not necessarily every heading appearing in chunk.text.
+
+    Whitespace hygiene: each merge applies rstrip()/lstrip() at the boundary
+    and a final strip() to the merged text. This matters because a freshly-
+    merged chunk may itself merge again on the next iteration; without the
+    boundary strip, repeated merges would accumulate "\\n\\n" separators.
+
+    Idempotence (sort of): the function strictly decreases len(chunks) on every
+    merge, so it always terminates. Calling _coalesce_undersized again on its
+    own output is a no-op when min_tokens is unchanged: each remaining chunk
+    is either at/above the floor, or is the only chunk in the document.
+    """
+    if not chunks:
+        return chunks
+
+    i = 0
+    while i < len(chunks):
+        c = chunks[i]
+        if c.token_count >= min_tokens:
+            i += 1
+            continue
+        if i + 1 < len(chunks):
+            # Merge INTO the FOLLOWING chunk: text prepended, target survives.
+            target = chunks[i + 1]
+            merged_text = (c.text.rstrip() + "\n\n" + target.text.lstrip()).strip()
+            target.text = merged_text
+            target.token_count = estimate_tokens(merged_text)
+            del chunks[i]
+            # Do not advance i; re-test the merged target on the next loop pass.
+        elif i > 0:
+            # Final chunk, no follower: merge INTO the PREVIOUS chunk.
+            prev = chunks[i - 1]
+            merged_text = (prev.text.rstrip() + "\n\n" + c.text.lstrip()).strip()
+            prev.text = merged_text
+            prev.token_count = estimate_tokens(merged_text)
+            del chunks[i]
+            break  # nothing left to walk
+        else:
+            # Single sub-floor chunk; keep it. Better to retain content than
+            # delete the entire document's text for the sake of a floor.
+            break
+
+    # Re-index chunk_index and regenerate chunk_id sequentially.
+    # The chunk_id pattern matches chunk_document's f"{document_id}-chunk-{i:04d}"
+    # so post-pass output is indistinguishable from a chunker that emitted these
+    # boundaries in the first place.
+    for idx, ch in enumerate(chunks):
+        ch.chunk_index = idx
+        ch.chunk_id = f"{ch.document_id}-chunk-{idx:04d}"
+
+    return chunks
