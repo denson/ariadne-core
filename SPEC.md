@@ -438,7 +438,7 @@ Convert a document to clean Markdown. By default, also chunks, embeds, and store
 | `agent_notes` | string | `null` | Why this action is being taken |
 | `agent_metadata` | dict | `null` | Structured metadata (source_url, intent, findings, etc.) |
 
-**Response:** JSON with `document_id`, `source_file`, `title`, `markdown`, `file_type`, `engine`, `content_fingerprint`, `collection`, `chunks_count`, `was_dedup_skip`, `provenance`, `warnings`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio`, `embedding_model`, `store_status` (`"stored"` / `"not_stored"` / `"skipped"` / `"error"`), `interactions`.
+**Response:** JSON with `document_id`, `source_file`, `title`, `markdown`, `file_type`, `engine`, `content_fingerprint`, `collection`, `chunks_count`, `was_dedup_skip`, `provenance`, `warnings`, `warnings_count`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio`, `embedding_model`, `store_status` (`"stored"` / `"not_stored"` / `"skipped"` / `"error"`), `interactions`. `warnings_count` equals `len(warnings)` and is included on every response path that emits `warnings` (success, dedup-skip, embedding-failure).
 
 **Dedup behavior:** If a document with the same content fingerprint already exists in the target collection, extraction/chunking/embedding are skipped. The existing document is returned, and a new `document_interactions` row is recorded. Use `force: true` to re-process.
 

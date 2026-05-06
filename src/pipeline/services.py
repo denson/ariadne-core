@@ -217,6 +217,7 @@ def _process_single_document(
                     for i in interactions
                 ],
                 "warnings": existing.warnings,
+                "warnings_count": len(existing.warnings or []),
                 "markdown": existing.markdown,
             }
 
@@ -291,6 +292,7 @@ def _process_single_document(
                     chunk.embedding_model = _embedding_client.model
                 processing_chain.append(embed_result.processing_chain_entry)
             except RuntimeError as e:
+                failure_warnings = warnings + [f"Embedding failed: {e}"]
                 return {
                     "error": True,
                     "message": f"Embedding failed: {e}",
@@ -299,18 +301,34 @@ def _process_single_document(
                     "collection": collection,
                     "store_status": "error",
                     "chunks_count": 0,
-                    "warnings": warnings + [f"Embedding failed: {e}"],
+                    "warnings": failure_warnings,
+                    "warnings_count": len(failure_warnings),
                 }
 
     if store:
-        was_resurrected = _dedup_store.store_document(stored_doc)
-        if was_resurrected:
+        # Probe-then-store: detect would-be resurrection BEFORE storing so the
+        # resurrection warning can be appended to `warnings` alongside the
+        # metadata-hygiene warnings below — all of which must land in the list
+        # BEFORE store_document is called. PgDedupStore.store_document
+        # snapshots `doc.warnings or []` into the SQL parameter dict and
+        # commits before returning (dedup.py:294-300), so any append after
+        # the call never reaches Postgres. The two probe calls answer the
+        # probe-time question; the function's own internal SELECT-in-
+        # transaction remains the race-correct signal for its bool return,
+        # which we don't second-guess from here.
+        existing_visible = _dedup_store.find_by_fingerprint(
+            collection, fingerprint, include_deleted=False
+        )
+        existing_any = _dedup_store.find_by_fingerprint(
+            collection, fingerprint, include_deleted=True
+        )
+        would_resurrect = (existing_visible is None) and (existing_any is not None)
+        if would_resurrect:
             warnings.append(
                 "This document was previously soft-deleted and has been "
                 "resurrected by re-ingest. Its deletion_scheduled_at has "
                 "been cleared."
             )
-    doc_id = stored_doc.document_id
 
     # Warn when key metadata conventions aren't followed
     if collection == "default":
@@ -333,6 +351,15 @@ def _process_single_document(
             "See SPEC.md Metadata Conventions for provenance guidelines."
         )
 
+    if store:
+        # All warnings must be appended BEFORE store_document — PgDedupStore
+        # snapshots warnings into the SQL params at call time and commits
+        # before returning (dedup.py:294-300). Return value (was_resurrected)
+        # ignored here; would_resurrect above drove the user-facing warning
+        # using probe-time state.
+        _dedup_store.store_document(stored_doc)
+    doc_id = stored_doc.document_id
+
     response: dict[str, Any] = {
         "document_id": doc_id,
         "source_file": result.source_file,
@@ -353,6 +380,7 @@ def _process_single_document(
             "processing_chain": processing_chain,
         },
         "warnings": warnings,
+        "warnings_count": len(warnings),
     }
 
     # When the document is being stored, the full markdown is already
