@@ -202,7 +202,7 @@ def _format_documents(items: list[Document]) -> str:
         return "(no documents)"
     rows = [("DOCUMENT_ID", "FILE_TYPE", "COLLECTION", "CHUNKS", "SOURCE_FILE")]
     for d in items:
-        chunks = d.chunk_count if d.chunk_count is not None else d.chunks_count
+        chunks = d.chunk_count
         rows.append(
             (
                 d.document_id,
@@ -258,7 +258,7 @@ def _format_document(d: Document) -> str:
         lines.append(f"file_type:    {d.file_type}")
     if d.collection:
         lines.append(f"collection:   {d.collection}")
-    lines.append(f"chunks:       {d.chunks_count}")
+    lines.append(f"chunks:       {d.chunk_count}")
     lines.append(f"dedup_skip:   {d.was_dedup_skip}")
     if d.tags:
         lines.append(f"tags:         {', '.join(d.tags)}")
@@ -457,7 +457,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 )
                 if not args.json:
                     print(
-                        f"{label} {verb}  {doc.document_id}  chunks={doc.chunks_count}"
+                        f"{label} {verb}  {doc.document_id}  chunks={doc.chunk_count}"
                         f"  dedup={doc.was_dedup_skip}",
                         file=sys.stderr,
                         flush=True,

@@ -255,7 +255,7 @@ def run(args: argparse.Namespace) -> int:
                 logger.error_record(str(rel), msg)
                 continue
 
-            chunks = result.get("chunks_count", result.get("chunks", 0))
+            chunks = result.get("chunk_count", result.get("chunks", 0))
             dedup = bool(result.get("was_dedup_skip"))
 
             if dedup and args.skip_existing:

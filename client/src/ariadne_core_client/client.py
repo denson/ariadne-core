@@ -225,7 +225,7 @@ class AriadneClient:
             content_fingerprint=data.get("content_fingerprint"),
             collection=data.get("collection"),
             markdown=markdown,
-            chunks_count=int(data.get("chunks_count") or 0),
+            chunk_count=int(data.get("chunk_count") or 0),
             was_dedup_skip=bool(data.get("was_dedup_skip", False)),
             warnings=list(data.get("warnings") or []),
             warnings_count=data.get("warnings_count"),
@@ -238,7 +238,6 @@ class AriadneClient:
             interactions=interactions,
             provenance=data.get("provenance"),
             tags=list(data.get("tags") or []),
-            chunk_count=data.get("chunk_count"),
             interaction_count=data.get("interaction_count"),
             created_at=data.get("created_at"),
         )
