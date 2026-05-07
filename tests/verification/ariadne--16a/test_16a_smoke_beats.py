@@ -34,10 +34,13 @@ Beat 6 (pipeline regression: dedup hit + warnings_count + Batch F YAML
 chunking config still active), and a forward-pin on the cap-misconfig
 guard (configure_ingest rejects max_source_bytes <= 0).
 
-Plus the Batch F ``chunking_config`` validation residual ADA flagged as
-out-of-scope: probe encoded as ``test_residual_chunking_config_422_gap_is_real``
-so a future fix that closes the gap surfaces immediately as a now-passing
-xfail.
+Plus a regression gate for the Batch F ``chunking_config`` 422 contract
+fixed in ariadne--ucw — encoded as
+``TestChunkingConfig422Contract::test_bogus_chunking_config_key_returns_422``
+in this file, and re-asserted at the route layer by
+``tests/verification/ariadne--ucw/test_ucw_chunking_422.py``. Keeping the
+gate here ensures any future regression of the chunking_config 422
+contract trips both the 16a integration suite and the ucw probe.
 
 Run with ``PYTHONPATH=src python -m pytest tests/verification/ariadne--16a/``.
 """
@@ -425,49 +428,39 @@ class TestConfigureIngestGuard:
             services.configure_ingest(IngestConfig(max_source_bytes=-100))
 
 
-# ── Residual: Batch F chunking_config 422 gap (out-of-scope flag) ───────────
+# ── Regression gate: chunking_config 422 contract (parallel of F2) ─────────
 
 
-class TestChunkingConfigResidual:
-    """ADA's commit message flagged the pre-existing Batch F chunking_config
-    validation gap as out-of-scope for Batch G (services.py:529-536 raises
-    ValueError WITHOUT a local try/except, so an unknown chunking_config
-    key escapes to FastAPI's global handler → HTTP 500 instead of 422).
+class TestChunkingConfig422Contract:
+    """Regression gate for the 422 contract on chunking_config — fix landed
+    in ariadne--ucw. Parallel to the ingest_config 422 contract Batch G F2
+    established (services.py:268-291); the chunking_config block at
+    services.py:529 now has the same local try/except → error-dict shape,
+    so an unknown chunking_config key surfaces as HTTP 422 (not 500)."""
 
-    This probe pins the gap as a known-bad expected-fail. When the gap is
-    closed in a follow-up batch, this xfail will start passing — pytest
-    will surface it as XPASS and the maintainer will know to delete the
-    xfail marker. That's the in-tree breadcrumb for the residual.
-
-    DO NOT delete this probe when the residual is fixed. Convert it to a
-    plain assertion that confirms the 422 contract holds for chunking_config
-    too. The probe IS the regression gate going forward."""
-
-    @pytest.mark.xfail(
-        reason=(
-            "Pre-existing Batch F defect (services.py:529-536) — bare "
-            "ValueError for unknown chunking_config keys escapes to "
-            "FastAPI global handler → HTTP 500. Out-of-scope for "
-            "Batch G; tracked for separate post-merge fix."
-        ),
-        strict=True,
-    )
-    def test_bogus_chunking_config_key_should_return_422(self, monkeypatch):
+    def test_bogus_chunking_config_key_returns_422(self, monkeypatch):
+        """Asserts POST /api/documents with bogus chunking_config key
+        returns HTTP 422 with ``Invalid chunking config: Unknown chunking
+        config keys`` message — the same 422 contract Batch G F2
+        established for ingest_config."""
         _install_clean_state(monkeypatch)
-        client = TestClient(
-            _build_app_with_real_router(),
-            raise_server_exceptions=False,
-        )
+        client = TestClient(_build_app_with_real_router())
         resp = client.post(
             "/api/documents",
             json={
                 "uri": str(_FIXTURE_TXT),
-                "collection": "vera_16a_chunk_residual",
+                "collection": "vera_16a_chunk_422_contract",
                 "chunking_config": {"bogus_chunk_key": 1},
             },
         )
-        # Once the residual is fixed, assert 422 here. Pre-fix this is 500.
         assert resp.status_code == 422, (
             f"chunking_config bogus key should surface as 422; got "
             f"{resp.status_code}. Body: {resp.text}"
         )
+        body = resp.json()
+        # routes.py wraps the message under detail (mirror F2 access pattern)
+        detail = body.get("detail", body)
+        message = detail.get("message", "")
+        assert "Invalid chunking config" in message, body
+        assert "Unknown chunking config keys" in message, body
+        assert "bogus_chunk_key" in message, body
