@@ -32,7 +32,11 @@ markitdown:
 
 # --- Chunking ---
 chunking:
-  default_strategy: by_title
+  # "auto" triggers per-file-type strategy selection (.pptx → by_page,
+  # .csv/.xlsx → fixed_size, headingless .txt/.log → fixed_size with
+  # overlap=400). Explicit values (by_title, by_page, fixed_size) force
+  # the strategy regardless of file type.
+  strategy: auto
   max_characters: 1500
   new_after_n_chars: 1000
   overlap: 200

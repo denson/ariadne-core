@@ -152,7 +152,7 @@ How extracted documents are split into chunks for embedding and search.
 
 ```yaml
 chunking:
-  default_strategy: by_title
+  strategy: auto
   max_characters: 1500
   new_after_n_chars: 1000
   overlap: 200
@@ -161,7 +161,7 @@ chunking:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `default_strategy` | string | `by_title` | Default chunking strategy. Auto-selected by file type when not specified per document. Options: `by_title`, `by_page`, `fixed_size`. |
+| `strategy` | string | `auto` | Chunking strategy. Default `auto` triggers per-file-type selection (see auto-select table below). Explicit values (`by_title`, `by_page`, `fixed_size`) override the heuristic. |
 | `max_characters` | int | `1500` | Hard maximum characters per chunk (~375 tokens). |
 | `new_after_n_chars` | int | `1000` | Soft limit: prefer to start a new chunk after this many characters, if a section break is available. |
 | `overlap` | int | `200` | Characters of overlap between consecutive chunks. Preserves context across chunk boundaries. |

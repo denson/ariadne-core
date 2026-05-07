@@ -103,7 +103,7 @@ class TestLoadConfigDefaults:
         assert isinstance(config, AriadneConfig)
         assert config.embedding.model == "gemini-embedding-001"
         assert config.embedding.dimensions == 1536
-        assert config.chunking.default_strategy == "by_title"
+        assert config.chunking.strategy == "auto"
         assert config.chunking.max_characters == 1500
         assert config.api.port == 8000
         assert config.image_enrichment.model == "gemini-2.0-flash"
@@ -134,7 +134,7 @@ class TestLoadConfigFromFile:
         assert config.chunking.max_characters == 2000
         # Unset fields keep defaults
         assert config.embedding.base_url == "https://generativelanguage.googleapis.com/v1beta"
-        assert config.chunking.default_strategy == "by_title"
+        assert config.chunking.strategy == "auto"
 
     def test_var_interpolation_in_file(self, tmp_path):
         config_file = tmp_path / "ariadne.yaml"
@@ -298,6 +298,37 @@ class TestLoadRealConfig:
         }
         config = load_config(path=str(path), env=env)
         assert config.embedding.model == "gemini-embedding-001"
-        assert config.chunking.default_strategy == "by_title"
+        assert config.chunking.strategy == "auto"
         assert config.image_enrichment.model == "gemini-2.0-flash"
         assert config.vector_store.backend == "pgvector"
+
+
+def test_chunking_config_field_drift_protection():
+    """Catch a future PR that adds a knob to pipeline.config.ChunkingConfig
+    without adding the matching field to pipeline.chunking.chunker.ChunkingConfig.
+
+    The two dataclasses are translated field-by-field in
+    services.configure_chunking (ariadne--lpf design §2). If the config
+    side adds a knob the chunker side doesn't have, the translation
+    raises TypeError at startup; this assertion catches the drift at
+    unit-test time instead. See agents/design/ariadne--lpf §9 weak
+    point #1 for the full rationale.
+
+    The inverse direction (chunker has fields config doesn't) is OK —
+    the chunker may legitimately have runtime-only knobs not exposed
+    via YAML.
+    """
+    import dataclasses
+
+    from pipeline import config as cfg_mod
+    from pipeline.chunking import chunker as ck_mod
+
+    config_fields = {f.name for f in dataclasses.fields(cfg_mod.ChunkingConfig)}
+    chunker_fields = {f.name for f in dataclasses.fields(ck_mod.ChunkingConfig)}
+    missing = config_fields - chunker_fields
+    assert not missing, (
+        f"pipeline.config.ChunkingConfig has fields not present in "
+        f"pipeline.chunking.chunker.ChunkingConfig: {sorted(missing)}. "
+        f"Add them to the chunker dataclass and to "
+        f"services.configure_chunking's translation block."
+    )
