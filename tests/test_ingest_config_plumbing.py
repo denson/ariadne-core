@@ -80,7 +80,7 @@ def _install_clean_state(monkeypatch) -> MagicMock:
     monkeypatch.setattr(services, "_dedup_store", InMemoryDedupStore())
     monkeypatch.setattr(services, "_vector_store", InMemoryVectorStore())
     monkeypatch.setattr(services, "_embedding_client", _DisabledEmbeddingClient())
-    monkeypatch.setattr(services, "_ingest_config", IngestConfig())  # 100 MB default
+    monkeypatch.setattr(services, "_ingest_config", IngestConfig())  # 200 MB default
     extractor = _make_extractor_mock()
     monkeypatch.setattr(services, "_extractor", extractor)
     return extractor
@@ -354,7 +354,7 @@ def test_beat_4_local_file_read_exactly_once_per_ingest(monkeypatch):
 def test_beat_7_per_request_cap_override_rejects_oversize(monkeypatch):
     """Per-request ingest_config={"max_source_bytes": 1024} must trigger
     the source-too-large error path against a 2 KB local file, even
-    though the YAML default (100 MB) would otherwise allow it."""
+    though the YAML default (200 MB) would otherwise allow it."""
     _install_clean_state(monkeypatch)
 
     # 2 KB local file
@@ -400,7 +400,7 @@ def test_beat_7_per_request_unknown_key_returns_invalid_dict(monkeypatch):
 def test_beat_7_no_override_uses_yaml_default(monkeypatch):
     """ingest_config=None must fall back to the module default
     (configure_ingest-installed value, here the dataclass default of
-    100 MB), not silently zero-cap."""
+    200 MB), not silently zero-cap."""
     extractor = _install_clean_state(monkeypatch)
     result = services._process_single_document(
         **_kwargs(

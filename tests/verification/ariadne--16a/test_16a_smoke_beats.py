@@ -205,7 +205,7 @@ class TestF2_422_HTTPContract:
 
     def test_no_override_succeeds_with_yaml_default(self, monkeypatch):
         """ingest_config absent (=> None) must use the YAML/dataclass
-        default (100 MB) and the small fixture must succeed."""
+        default (200 MB) and the small fixture must succeed."""
         _install_clean_state(monkeypatch)
 
         client = TestClient(_build_app_with_real_router())

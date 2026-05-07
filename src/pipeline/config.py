@@ -79,10 +79,10 @@ class IngestConfig:
 
     `max_source_bytes` is enforced by services._read_source_bytes BEFORE
     the bytes reach extraction, so a runaway URL or oversized file is
-    rejected loudly without OOM-ing the worker. Default 100 MB.
+    rejected loudly without OOM-ing the worker. Default 200 MB.
     """
 
-    max_source_bytes: int = 104857600  # 100 MB; enforced before/during fetch
+    max_source_bytes: int = 209715200  # 200 MB; enforced before/during fetch
 
 
 @dataclass

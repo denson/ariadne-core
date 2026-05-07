@@ -64,7 +64,7 @@ _chunker_defaults_baseline: _ChunkerConfig = _ChunkerConfig()
 # Ingest defaults loaded from YAML via configure_ingest() at startup.
 # Per-request `ingest_config` dicts win at call time (see
 # _process_single_document). Until configure_ingest() runs, the dataclass
-# default (100 MB) applies — important for direct callers that bypass the
+# default (200 MB) applies — important for direct callers that bypass the
 # FastAPI lifespan (tests, scripts).
 _ingest_config: IngestConfig = IngestConfig()
 
@@ -187,7 +187,7 @@ def _read_source_bytes(uri: str, *, cap: int | None = None) -> bytes:
         check before ``read_bytes``; raises SourceTooLargeError on
         oversize.
       - ``cap=None`` falls back to the module default loaded by
-        configure_ingest (or the dataclass default, 100 MB, before
+        configure_ingest (or the dataclass default, 200 MB, before
         lifespan).
     """
     if cap is None:
