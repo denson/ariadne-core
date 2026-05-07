@@ -14,6 +14,16 @@ import sys
 def main() -> None:
     command = sys.argv[1] if len(sys.argv) > 1 else "serve"
 
+    if command in ("--version", "-V"):
+        # ariadne--4d1: read distribution version from package metadata
+        # (pyproject.toml's [project] version is the source of truth).
+        # PackageNotFoundError here would mean the install is broken
+        # (e.g. an editable install where metadata never landed); let it
+        # propagate so the user sees a real signal instead of a sentinel.
+        from importlib.metadata import version as _pkg_version
+        print(f"ariadne-core {_pkg_version('ariadne-core')}")
+        sys.exit(0)
+
     if command in ("serve", "api"):
         _run_serve()
     else:
