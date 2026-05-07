@@ -55,9 +55,17 @@ class _DisabledEmbeddingClient:
 
 
 def _make_extractor_mock(*, source_file: str = "sample.txt") -> MagicMock:
+    """Stub services._extractor.
+
+    Post-Batch-G the canonical seam called by _process_single_document is
+    ``extract_from_bytes(content, source_file=...)``. The legacy
+    ``extract(uri)`` method still exists on the real extractor but is
+    no longer invoked from the canonical flow; these mocks follow the
+    new seam.
+    """
     mock = MagicMock()
 
-    def _fake_extract(uri):
+    def _fake_extract_from_bytes(content, source_file=source_file):
         return ExtractionResult(
             document_id="00000000-0000-0000-0000-000000000000",
             source_file=source_file,
@@ -74,7 +82,7 @@ def _make_extractor_mock(*, source_file: str = "sample.txt") -> MagicMock:
             errors=[],
         )
 
-    mock.extract.side_effect = _fake_extract
+    mock.extract_from_bytes.side_effect = _fake_extract_from_bytes
     return mock
 
 
@@ -127,7 +135,7 @@ def test_residual_3_nonexistent_file_error_shape(monkeypatch):
     assert response["source_file"] == "k7n_probe_phantom_file.txt", response
     # Extractor must NOT have been called on this path — the source read
     # fails before extraction is reached.
-    assert extractor.extract.call_count == 0
+    assert extractor.extract_from_bytes.call_count == 0
 
 
 def test_residual_3_nonexistent_file_url_error_shape(monkeypatch):
@@ -143,7 +151,7 @@ def test_residual_3_nonexistent_file_url_error_shape(monkeypatch):
     assert response["message"].startswith("Source read failed:"), response["message"]
     assert response["document_id"] is None
     assert response["source_file"] == "file.txt"
-    assert extractor.extract.call_count == 0
+    assert extractor.extract_from_bytes.call_count == 0
 
 
 # ── Residual 5: soft-delete-resurrection under cutover ──────────────────────

@@ -8,14 +8,19 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import urlretrieve
 
-from markitdown import MarkItDown
+from markitdown import MarkItDown, StreamInfo
 
-from pipeline.extraction.text_encoding import detect_and_decode, validate_language
+from pipeline.extraction.text_encoding import (
+    detect_and_decode,
+    detect_and_decode_bytes,
+    validate_language,
+)
 from pipeline.config import load_config
 
 
@@ -125,6 +130,119 @@ class MarkItDownExtractor:
                     except OSError:
                         pass
 
+        return self._finalize(
+            markdown=markdown,
+            title=title,
+            warnings=warnings,
+            errors=errors,
+            file_type=file_type,
+            source_file=source_file,
+            document_id=document_id,
+            start=start,
+            encoding_info=encoding_info,
+        )
+
+    def extract_from_bytes(
+        self, content: bytes, source_file: str
+    ) -> ExtractionResult:
+        """Convert pre-fetched bytes to Markdown without re-fetching.
+
+        Mirrors ``extract(uri)`` but consumes the bytes already in RAM
+        (Batch G / ariadne--16a §4). The canonical ingest flow at
+        services._process_single_document fetches once for fingerprinting
+        and passes the same buffer here, so the URL or local file is
+        touched exactly once per ingest.
+
+        Parity-by-construction with ``extract`` is enforced by the shared
+        ``_finalize`` helper: NUL stripping, image warnings, the
+        processing_chain entry, .txt encoding/language detection, and
+        the final ExtractionResult assembly are identical. The only
+        seam-specific difference is the conversion call itself —
+        ``self._md.convert_stream(BytesIO(content), StreamInfo(...))``
+        instead of ``self._md.convert(local_path)``. ZIP-based formats
+        (.pptx/.xlsx/.docx/.epub/.zip) work cleanly via
+        ``zipfile.ZipFile(BytesIO)``; exiftool reads via stdin pipe.
+        StreamInfo carries the extension + filename so display labels
+        inside zip-archive markdown headings stay correct.
+
+        No tempfile is involved — the BytesIO wrapper is GC'd with the
+        call frame, so there is no try/finally cleanup block (the
+        ``extract`` path's os.unlink is correctly absent here).
+        """
+        document_id = str(uuid.uuid4())
+        file_type = _guess_file_type(source_file)
+
+        start = time.perf_counter()
+        warnings: list[str] = []
+        errors: list[str] = []
+
+        # .txt files: prefer charset-normalizer over MarkItDown's content
+        # sniffer, same rationale as the extract() path. Use the bytes
+        # version (no disk re-read).
+        encoding_info: dict[str, Any] | None = None
+        txt_decoded: str | None = None
+        if file_type == "txt":
+            try:
+                decoded_text, detected_encoding, enc_confidence = (
+                    detect_and_decode_bytes(content, source_file)
+                )
+                encoding_info = {
+                    "detected_encoding": detected_encoding,
+                    "encoding_confidence": enc_confidence,
+                }
+                txt_decoded = decoded_text
+            except Exception as e:
+                errors.append(f"Encoding detection failed: {e}")
+                encoding_info = None
+
+        if txt_decoded is not None:
+            markdown = txt_decoded
+            title = None
+        else:
+            try:
+                stream = BytesIO(content)
+                ext = "." + file_type if file_type != "unknown" else None
+                info = StreamInfo(extension=ext, filename=source_file)
+                result = self._md.convert_stream(stream, stream_info=info)
+                markdown = result.markdown or ""
+                title = result.title
+            except Exception as e:
+                errors.append(str(e))
+                markdown = ""
+                title = None
+
+        return self._finalize(
+            markdown=markdown,
+            title=title,
+            warnings=warnings,
+            errors=errors,
+            file_type=file_type,
+            source_file=source_file,
+            document_id=document_id,
+            start=start,
+            encoding_info=encoding_info,
+        )
+
+    def _finalize(
+        self,
+        markdown: str,
+        title: str | None,
+        warnings: list[str],
+        errors: list[str],
+        file_type: str,
+        source_file: str,
+        document_id: str,
+        start: float,
+        encoding_info: dict[str, Any] | None,
+    ) -> ExtractionResult:
+        """Shared post-extraction body for extract() and extract_from_bytes().
+
+        Locks parity-by-construction between the two seams: NUL
+        stripping, image-warn for empty image output, processing_chain
+        assembly, .txt encoding+language detection, and the final
+        ExtractionResult. Only the seam-specific conversion call differs
+        between the two callers; everything else flows through here.
+        """
         # Strip NUL (0x00) bytes. Postgres TEXT columns reject NUL; nothing
         # downstream benefits from a literal 0x00 in the content, so delete
         # them outright (lossy but semantically a no-op for text corpora).

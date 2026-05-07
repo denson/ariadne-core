@@ -74,6 +74,18 @@ class MarkitdownConfig:
 
 
 @dataclass
+class IngestConfig:
+    """Source-acquisition knobs (cap, future: parallelism / retry / allowlist).
+
+    `max_source_bytes` is enforced by services._read_source_bytes BEFORE
+    the bytes reach extraction, so a runaway URL or oversized file is
+    rejected loudly without OOM-ing the worker. Default 100 MB.
+    """
+
+    max_source_bytes: int = 104857600  # 100 MB; enforced before/during fetch
+
+
+@dataclass
 class ChunkingConfig:
     # "auto" sentinel triggers per-file-type strategy selection
     # (pipeline.chunking.chunker.auto_select_strategy). Explicit values
@@ -119,6 +131,7 @@ class AriadneConfig:
         default_factory=ImageEnrichmentConfig
     )
     markitdown: MarkitdownConfig = field(default_factory=MarkitdownConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     api: APIConfig = field(default_factory=APIConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
@@ -133,6 +146,7 @@ _SECTION_MAP: dict[str, type] = {
     "embedding": EmbeddingConfig,
     "image_enrichment": ImageEnrichmentConfig,
     "markitdown": MarkitdownConfig,
+    "ingest": IngestConfig,
     "chunking": ChunkingConfig,
     "api": APIConfig,
     "paths": PathsConfig,

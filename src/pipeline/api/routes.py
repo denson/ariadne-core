@@ -47,6 +47,11 @@ class DocumentRequest(CallerMetadata):
     tags: list[str] = Field(default_factory=list)
     force: bool = False
     chunking_config: Optional[dict] = None
+    # Per-request ingest knobs (Batch G / ariadne--16a §F2). Currently
+    # accepts ``{"max_source_bytes": <int>}``; unknown keys raise 422 to
+    # surface operator typos. None falls back to YAML defaults from
+    # configure_ingest().
+    ingest_config: Optional[dict] = None
 
 
 class SearchRequest(CallerMetadata):
@@ -276,6 +281,7 @@ async def submit_document(
         agent_notes=req.agent_notes,
         agent_metadata=req.agent_metadata,
         chunking_config=req.chunking_config,
+        ingest_config=req.ingest_config,
     )
 
     if result.get("error"):
