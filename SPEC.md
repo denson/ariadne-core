@@ -809,8 +809,10 @@ System statistics.
 
 **Response:**
 ```json
-{"total_documents": 502, "total_chunks": 124000, "total_collections": 3, "embedding_enabled": true, "collections": {"world-bank-ree": 502, "default": 0}}
+{"total_documents": 502, "total_chunks": 124000, "total_collections": 3, "embedding_enabled": true, "collections": {"world-bank-ree": 502, "default": 0, "test-empty": 0}}
 ```
+
+`total_collections` always equals the size of the `collections` map. The map is the union of doc-bearing collections (any `collection_id` with at least one stored document) and registered-but-empty collections (created via `POST /api/collections` with no documents yet); registered-but-empty collections appear with `0` doc count. This invariant matches `GET /api/collections`, which returns the same union.
 
 **Client method:** `client.stats()`
 

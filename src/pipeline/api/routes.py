@@ -1201,15 +1201,27 @@ async def get_stats(
         ]
         total_docs = len(all_docs)
 
-    # Per-collection counts
+    # Per-collection counts (doc-bearing only)
     collection_stats: dict[str, int] = {}
     for d in all_docs:
         collection_stats[d.collection_id] = collection_stats.get(d.collection_id, 0) + 1
 
+    # ariadne--qe6: pad collection_stats with registered-but-empty collections.
+    #
+    # Pre-fix, ``total_collections`` was ``len(_collections)`` (registered
+    # only) while ``collections`` was the doc-bearing map — the two sets
+    # diverged in either direction, so ``total_collections`` did not match
+    # ``len(stats.collections)`` and disagreed with ``GET /api/collections``
+    # (which already takes the union at routes.py:1087). Padding with
+    # ``setdefault(name, 0)`` here makes the response a true union and
+    # establishes the invariant ``total_collections == len(collections)``.
+    for name in _collections:
+        collection_stats.setdefault(name, 0)
+
     return {
         "total_documents": total_docs,
         "total_chunks": _svc._vector_store.count(),
-        "total_collections": len(_collections),
+        "total_collections": len(collection_stats),
         "embedding_enabled": _svc._embedding_client.enabled,
         "collections": collection_stats,
     }
