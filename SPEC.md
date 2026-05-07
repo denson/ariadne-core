@@ -378,7 +378,7 @@ Common HTTP status codes:
 - `404` — Document or collection not found
 - `410` — Soft-delete window expired (restore too late)
 - `413` — File too large
-- `422` — Extraction failed (encoding error, unsupported format, corrupt file), source read failed (file not found, URL fetch error), OR embedding failed (transient provider error). Ingest is transactional: on a 422 no document row is written.
+- `422` — Extraction failed (encoding error, unsupported format, corrupt file), source read failed (file not found, URL fetch error), embedding failed (transient provider error), OR per-request `chunking_config` validation failed (unknown keys — see "Per-request chunking config" under `POST /api/documents`). Ingest is transactional: on a 422 no document row is written.
 - `503` — Embedding not configured (search endpoint only)
 
 ---
@@ -451,7 +451,9 @@ entry with the provider error. Callers should treat this as a retryable
 failure: fix the underlying provider issue, then re-ingest with
 `force: true`.
 
-**Chunking auto-selection:** If no `chunking_config` is provided, the strategy is chosen by file type: `.pptx` -> `by_page`, `.csv`/`.xlsx` -> `fixed_size`, `.txt` with no headings -> `fixed_size` with high overlap, everything else -> `by_title`.
+**Chunking auto-selection:** If no `chunking_config` is provided, the strategy is chosen by file type: `.pptx` -> `by_page`, `.csv`/`.xlsx` -> `fixed_size`, `.txt` with no headings -> `fixed_size` with high overlap (`overlap=400`), everything else -> `by_title`.
+
+**Per-request chunking config — layering and validation:** A per-request `chunking_config` payload layers onto the auto-selected baseline: omitted knobs inherit from `auto_select_strategy()` output, not from the chunker dataclass defaults. Worked example: a per-request payload `{"strategy": "by_title"}` on a headingless `.txt` resolves to `ChunkingConfig(strategy="by_title", overlap=400, ...)` — auto-select's `overlap=400` boost survives the underlying `dataclasses.replace` because the per-request payload did not override `overlap`. Unknown keys in `chunking_config` raise `ValueError` naming both the offending key(s) and the valid keys; the route layer captures this and surfaces it as **HTTP 422** with `message: "Invalid chunking config: Unknown chunking config keys: [...]. Valid keys: [...]."`.
 
 **Image handling:** If the file is an image format and no vision API key is configured, a warning is returned explaining that a vision API key is needed for image content extraction.
 
