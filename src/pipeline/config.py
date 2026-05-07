@@ -75,16 +75,17 @@ class MarkitdownConfig:
 
 @dataclass
 class ChunkingConfig:
-    default_strategy: str = "by_title"
+    # "auto" sentinel triggers per-file-type strategy selection
+    # (pipeline.chunking.chunker.auto_select_strategy). Explicit values
+    # ("by_title", "by_page", "fixed_size") force the strategy regardless
+    # of file type. Field name aligned with chunker.py's ChunkingConfig.
+    strategy: str = "auto"
     max_characters: int = 1500
     new_after_n_chars: int = 1000
     overlap: int = 200
     combine_under_n_chars: int = 200
     # Floor below which chunks are coalesced into a neighbor (by_title only).
-    # Mirror of chunker.py::ChunkingConfig.min_chunk_tokens. NOTE: the YAML
-    # chunking section is currently dead config — services.py does not pass
-    # this dataclass into chunk_document; chunk config flows via per-request
-    # body. Tracked separately as ariadne--g47.
+    # Mirror of chunker.py::ChunkingConfig.min_chunk_tokens.
     min_chunk_tokens: int = 50
 
 

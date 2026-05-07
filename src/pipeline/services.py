@@ -6,6 +6,7 @@ import from here.
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -18,7 +19,13 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
-from pipeline.chunking.chunker import Chunk, ChunkingConfig, chunk_document
+from pipeline.chunking.chunker import (
+    Chunk,
+    ChunkingConfig as _ChunkerConfig,
+    auto_select_strategy,
+    chunk_document,
+)
+from pipeline.config import ChunkingConfig as _ConfigChunking
 from pipeline.dedup import (
     DocumentInteraction,
     InMemoryDedupStore,
@@ -45,6 +52,15 @@ _embedding_client = EmbeddingClient()  # Disabled by default (no API key)
 # Image enrichment — disabled by default, configured at startup via configure_image_enrichment()
 _image_enricher = ImageEnricher(None)
 
+# Chunking defaults loaded from YAML via configure_chunking() at startup.
+# Until configured, falls back to chunker built-in defaults. Per-request
+# `chunking_config` dicts always win at call-time (see _process_single_document).
+# `_chunker_defaults_baseline` is the comparison anchor used to detect which
+# YAML knobs the operator actually changed (operator-set knobs override
+# auto-select heuristic knobs; chunker-default-equal knobs do not).
+_chunking_defaults: _ChunkerConfig = _ChunkerConfig()
+_chunker_defaults_baseline: _ChunkerConfig = _ChunkerConfig()
+
 
 def configure_embedding(config: EmbeddingConfig) -> None:
     """Configure the embedding client. Call before using store/search."""
@@ -70,6 +86,30 @@ def configure_stores(dedup_store, vector_store) -> None:
     global _dedup_store, _vector_store
     _dedup_store = dedup_store
     _vector_store = vector_store
+
+
+def configure_chunking(config: _ConfigChunking) -> None:
+    """Install YAML-loaded chunking defaults. Per-request overrides win at call time.
+
+    Translates the config-loader ChunkingConfig (pipeline.config) into the
+    chunker runtime ChunkingConfig (pipeline.chunking.chunker). Both
+    dataclasses must keep the named knobs in sync; tests/test_config.py
+    asserts ``set(config-fields) ⊆ set(chunker-fields)`` to catch drift
+    (test_chunking_config_field_drift_protection).
+
+    The "auto" sentinel value for ``strategy`` is preserved here verbatim;
+    auto-resolution happens per-request in ``_process_single_document`` so
+    the file_type and content of each document drive the strategy choice.
+    """
+    global _chunking_defaults
+    _chunking_defaults = _ChunkerConfig(
+        strategy=config.strategy,
+        max_characters=config.max_characters,
+        new_after_n_chars=config.new_after_n_chars,
+        overlap=config.overlap,
+        combine_under_n_chars=config.combine_under_n_chars,
+        min_chunk_tokens=config.min_chunk_tokens,
+    )
 
 
 # File extensions that should be treated as standalone images when
@@ -329,9 +369,54 @@ def _process_single_document(
     # vectors, no interaction are written.
     chunks: list[Chunk] = []
     if store:
-        chunk_cfg = None
+        # Build the per-request chunker config by layering three sources
+        # in precedence order: per-request > YAML defaults > auto-select
+        # heuristic. See agents/design/ariadne--lpf §4 for the worked
+        # examples; the load-bearing property is that auto-select returns
+        # a FULL ChunkingConfig (e.g., headingless .txt → overlap=400),
+        # NOT just a strategy name. Without the full-config receive shape,
+        # Batch C's per-file-type behavior would silently regress.
+        #
+        # 1. Identify operator-set YAML knobs by diffing against chunker
+        #    defaults. An operator who explicitly types the chunker default
+        #    into YAML is indistinguishable from one who left it blank;
+        #    that's acceptable per the design's §4 PLINY-confirmed caveat.
+        yaml_explicit = {
+            f.name: getattr(_chunking_defaults, f.name)
+            for f in dataclasses.fields(_ChunkerConfig)
+            if (
+                getattr(_chunking_defaults, f.name)
+                != getattr(_chunker_defaults_baseline, f.name)
+                and f.name != "strategy"  # strategy handled by sentinel below
+            )
+        }
+
+        # 2. Resolve strategy. "auto" sentinel asks the chunker for a
+        #    full ChunkingConfig per file type; an explicit YAML strategy
+        #    starts from the YAML defaults directly.
+        if _chunking_defaults.strategy == "auto":
+            base = auto_select_strategy(result.file_type, markdown)
+            if yaml_explicit:
+                # YAML-set knobs win over auto-select heuristic knobs.
+                base = dataclasses.replace(base, **yaml_explicit)
+        else:
+            base = _chunking_defaults  # explicit strategy; YAML knobs already in place
+
+        # 3. Per-request overrides win over both. Preserve the pre-fix
+        #    raise-on-unknown-key behavior so operator typos surface as
+        #    a clear ValueError instead of silently no-op'ing (per the
+        #    R4 ARGUS revision).
         if chunking_config:
-            chunk_cfg = ChunkingConfig(**chunking_config)
+            valid_keys = {f.name for f in dataclasses.fields(_ChunkerConfig)}
+            unknown = set(chunking_config) - valid_keys
+            if unknown:
+                raise ValueError(
+                    f"Unknown chunking config keys: {sorted(unknown)}. "
+                    f"Valid keys: {sorted(valid_keys)}."
+                )
+            chunk_cfg = dataclasses.replace(base, **chunking_config)
+        else:
+            chunk_cfg = base
 
         chunks = chunk_document(
             markdown=markdown,

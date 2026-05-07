@@ -173,10 +173,18 @@ def _chunk_by_title(
     current_heading = None
 
     for match in _HEADING_PATTERN.finditer(markdown):
-        # Content before this heading belongs to the previous section
+        # Content before this heading belongs to the previous section.
+        # ariadne--ruk: append unconditionally. Pre-fix the guard was
+        # `if content.strip() or sections:`, which silently dropped the
+        # FIRST heading whenever a doc started with two consecutive
+        # headings (no prose between). The resulting `(None, "")` and
+        # `("Heading", "\n\n")` shapes are absorbed by the `combined`
+        # loop below (which merges sub-`combine_under_n_chars` sections
+        # into the prior accumulator) and the post-pass min-token floor
+        # in `_coalesce_undersized` (Batch C / ariadne--mr6). Trace and
+        # degenerate-input analysis: agents/design/ariadne--lpf §6-7, §9.
         content = markdown[last_end : match.start()]
-        if content.strip() or sections:
-            sections.append((current_heading, content))
+        sections.append((current_heading, content))
         current_heading = match.group(2).strip()
         last_end = match.end()
 

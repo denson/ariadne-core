@@ -15,7 +15,12 @@ from pipeline.api.discovery import router as discovery_router
 from pipeline.api.routes import router
 from pipeline.config import load_config
 from pipeline.embedding.embedder import EmbeddingConfig
-from pipeline.services import configure_embedding, configure_image_enrichment, configure_stores
+from pipeline.services import (
+    configure_chunking,
+    configure_embedding,
+    configure_image_enrichment,
+    configure_stores,
+)
 from pipeline.stores import create_stores, close_pool
 
 logger = logging.getLogger("ariadne.app")
@@ -51,6 +56,18 @@ async def lifespan(app: FastAPI):
     dedup_store, vector_store = create_stores(config)
     configure_stores(dedup_store, vector_store)
     logger.info("Stores initialized (backend=%s)", config.vector_store.backend)
+
+    # Install YAML-loaded chunking defaults (ariadne--lpf / Batch F).
+    # Per-request overrides still win at call time. Position: after
+    # configure_stores (chunking has no dependency on embedding/vision)
+    # so operator-visible startup errors fail loud here, before any
+    # network-touching configure_* runs.
+    configure_chunking(config.chunking)
+    logger.info(
+        "Chunking defaults loaded (strategy=%s, min_tokens=%d)",
+        config.chunking.strategy,
+        config.chunking.min_chunk_tokens,
+    )
 
     # Configure the shared embedding client from ariadne.yaml
     if config.embedding.api_key:

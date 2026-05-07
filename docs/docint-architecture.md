@@ -591,7 +591,7 @@ markitdown:
 
 # --- Chunking ---
 chunking:
-  default_strategy: by_title
+  strategy: auto
   max_characters: 1500
   new_after_n_chars: 1000
   overlap: 200
