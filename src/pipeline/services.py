@@ -400,14 +400,18 @@ def _process_single_document(
 
         if is_image and _image_enricher.enabled:
             # Standalone image: MarkItDown produced no text, so call the
-            # vision model directly on the image file. The resulting
-            # description becomes the document's markdown content.
-            local_path = uri
-            if uri.startswith("file://"):
-                local_path = uri[len("file://"):]
+            # vision model directly on the bytes already fetched by
+            # _read_source_bytes (Batch G one-fetch invariant). For a
+            # URL source the previous shape passed the URL string into
+            # describe_image, which then resolved it as a local path and
+            # raised FileNotFoundError (ariadne--tol). file://-stripping
+            # is no longer needed here — _read_source_bytes already
+            # normalized file://, http(s)://, and bare paths to bytes.
             vision_start = time.perf_counter()
             try:
-                description = _image_enricher.describe_image(local_path)
+                description = _image_enricher.describe_image_from_bytes(
+                    raw_bytes, source_file=result.source_file
+                )
             except Exception as e:
                 return {
                     "error": True,
