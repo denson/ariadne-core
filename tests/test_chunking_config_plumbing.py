@@ -9,8 +9,10 @@ saw zero behavioral effect. These tests close on the new contract:
   3. The "auto" strategy sentinel returns a FULL ChunkingConfig from
      ``auto_select_strategy`` (NOT just a strategy name) — Batch C's
      headingless-.txt overlap=400 boost survives the plumbing.
-  4. Unknown per-request keys raise ValueError instead of silently
-     no-op'ing (preserves pre-fix typo detection).
+  4. Unknown per-request keys produce the standard
+     ``{"error": True, "message": "Invalid chunking config: ..."}`` dict
+     (which routes.py turns into HTTP 422), preserving pre-fix typo
+     detection — operator typos surface loudly, not as a silent no-op.
 
 Test discipline note: each test rebinds module-level configure_* state in
 its own body via either explicit configure_* calls or monkeypatch.setattr.
@@ -400,21 +402,28 @@ def test_beat_8_headingless_txt_preserves_overlap_400(monkeypatch, tmp_path):
 # ── Operator typo detection (per ARGUS R4) ───────────────────────────────────
 
 
-def test_unknown_per_request_key_raises_value_error(monkeypatch, tmp_path):
+def test_unknown_per_request_key_returns_invalid_dict(monkeypatch, tmp_path):
     """Per-request typo (e.g., max_chars instead of max_characters) must
-    raise ValueError, not silently no-op. Preserves pre-fix
-    ChunkingConfig(**chunking_config) raise-on-unknown behavior.
+    surface as the standard ``{"error": True, "message": "Invalid chunking
+    config: ..."}`` dict (which routes.py:287 turns into HTTP 422), NOT
+    escape as a raw ValueError to FastAPI's global handler (which would
+    yield 500). Parallel to the ingest_config equivalent at
+    test_ingest_config_plumbing.py::test_beat_7_per_request_unknown_key_returns_invalid_dict.
     """
     _fresh_stores(monkeypatch)
 
     txt_path = tmp_path / "typo_input.txt"
     txt_path.write_text("Plain content.\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Unknown chunking config keys"):
-        services._process_single_document(
-            **_common_kwargs(
-                str(txt_path),
-                "test_typo",
-                chunking_config={"max_chars": 2000},  # typo of max_characters
-            )
+    result = services._process_single_document(
+        **_common_kwargs(
+            str(txt_path),
+            "test_typo",
+            chunking_config={"max_chars": 2000},  # typo of max_characters
         )
+    )
+    assert result.get("error") is True, result
+    assert result["message"].startswith("Invalid chunking config:"), result
+    assert "max_chars" in result["message"], result
+    assert result["document_id"] is None
+    assert result["source_file"] == "typo_input.txt"

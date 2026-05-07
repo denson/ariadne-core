@@ -525,16 +525,31 @@ def _process_single_document(
         # 3. Per-request overrides win over both. Preserve the pre-fix
         #    raise-on-unknown-key behavior so operator typos surface as
         #    a clear ValueError instead of silently no-op'ing (per the
-        #    R4 ARGUS revision).
+        #    R4 ARGUS revision). The validation is wrapped in its OWN
+        #    try/except (mirroring the ingest_config equivalent at
+        #    services.py:268-291) so the raised ValueError converts to
+        #    the standard ``{"error": True, ...}`` dict that
+        #    routes.py:287 turns into HTTP 422. WITHOUT this local catch
+        #    the ValueError would propagate to FastAPI's global handler
+        #    at app.py:125-137 and surface as HTTP 500 — the 422 contract
+        #    requires the local catch (parallel to Batch G F2).
         if chunking_config:
-            valid_keys = {f.name for f in dataclasses.fields(_ChunkerConfig)}
-            unknown = set(chunking_config) - valid_keys
-            if unknown:
-                raise ValueError(
-                    f"Unknown chunking config keys: {sorted(unknown)}. "
-                    f"Valid keys: {sorted(valid_keys)}."
-                )
-            chunk_cfg = dataclasses.replace(base, **chunking_config)
+            try:
+                valid_keys = {f.name for f in dataclasses.fields(_ChunkerConfig)}
+                unknown = set(chunking_config) - valid_keys
+                if unknown:
+                    raise ValueError(
+                        f"Unknown chunking config keys: {sorted(unknown)}. "
+                        f"Valid keys: {sorted(valid_keys)}."
+                    )
+                chunk_cfg = dataclasses.replace(base, **chunking_config)
+            except ValueError as e:
+                return {
+                    "error": True,
+                    "message": f"Invalid chunking config: {e}",
+                    "document_id": None,
+                    "source_file": result.source_file,
+                }
         else:
             chunk_cfg = base
 
