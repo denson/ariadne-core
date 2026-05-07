@@ -43,7 +43,7 @@ def _canned_document_response(document_id: str = "doc-1") -> dict:
     return {
         "document_id": document_id,
         "source_file": "t.txt",
-        "chunks_count": 1,
+        "chunk_count": 1,
         "store_status": "stored",
         "warnings": [],
     }

@@ -334,7 +334,7 @@ def _process_single_document(
                 )
             )
             interactions = _dedup_store.get_interactions(existing.document_id)
-            chunks_count = _count_chunks_for_document(existing.document_id)
+            chunk_count = _count_chunks_for_document(existing.document_id)
             # Get embedding_model from the first chunk, if any
             doc_chunks = _get_chunks_for_document(existing.document_id)
             embedding_model = doc_chunks[0].embedding_model if doc_chunks else None
@@ -350,7 +350,7 @@ def _process_single_document(
                 "content_fingerprint": existing.content_fingerprint,
                 "collection": collection,
                 "was_dedup_skip": True,
-                "chunks_count": chunks_count,
+                "chunk_count": chunk_count,
                 "store_status": "skipped",
                 "embedding_model": embedding_model,
                 "provenance": {
@@ -582,7 +582,7 @@ def _process_single_document(
                     "source_file": result.source_file,
                     "collection": collection,
                     "store_status": "error",
-                    "chunks_count": 0,
+                    "chunk_count": 0,
                     "warnings": failure_warnings,
                     "warnings_count": len(failure_warnings),
                 }
@@ -696,7 +696,7 @@ def _process_single_document(
         if force:
             _vector_store.delete_by_document(doc_id)
         _vector_store.insert(chunks)
-        response["chunks_count"] = len(chunks)
+        response["chunk_count"] = len(chunks)
         response["embedding_model"] = (
             _embedding_client.model if _embedding_client.enabled else None
         )
@@ -721,7 +721,7 @@ def _process_single_document(
         )
     else:
         response["store_status"] = "not_stored"
-        response["chunks_count"] = 0
+        response["chunk_count"] = 0
 
     return response
 

@@ -98,7 +98,7 @@ def test_embedding_failure_returns_error_and_writes_no_documents_row(monkeypatch
     assert "Embedding failed" in response["message"], response
     assert response["document_id"] is None, response
     assert response["store_status"] == "error", response
-    assert response["chunks_count"] == 0, response
+    assert response["chunk_count"] == 0, response
     assert stub_vector._chunks == {}, (
         f"Vector store got {len(stub_vector._chunks)} chunks on a failed-"
         f"embedding path — no chunks should be inserted."
@@ -130,7 +130,7 @@ def test_embedding_success_writes_documents_row_and_chunks_and_interaction(
     assert not response.get("error"), response
     assert response["document_id"], response
     assert response["store_status"] == "stored", response
-    assert response["chunks_count"] > 0, response
+    assert response["chunk_count"] > 0, response
     assert len(stub_vector._chunks) > 0
     assert len(stub_dedup._documents) == 1
     doc_id = response["document_id"]
@@ -152,7 +152,7 @@ def test_store_false_writes_no_documents_row(monkeypatch):
 
     assert "error" not in response, response
     assert response["store_status"] == "not_stored", response
-    assert response["chunks_count"] == 0, response
+    assert response["chunk_count"] == 0, response
     assert "Ariadne Core Test Document" in response["markdown"], response
     assert stub_dedup._documents == {}, (
         f"store=False wrote {len(stub_dedup._documents)} documents row(s) — "
@@ -176,7 +176,7 @@ def test_embedding_disabled_writes_documents_row_and_chunks_without_vectors(
 
     assert "error" not in response, response
     assert response["store_status"] == "stored", response
-    assert response["chunks_count"] > 0, response
+    assert response["chunk_count"] > 0, response
     assert len(stub_dedup._documents) == 1
     assert len(stub_vector._chunks) > 0
     for chunk in stub_vector._chunks.values():

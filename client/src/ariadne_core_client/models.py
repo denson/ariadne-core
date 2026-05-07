@@ -51,7 +51,7 @@ class Document:
     content_fingerprint: str | None = None
     collection: str | None = None
     markdown: str | None = None
-    chunks_count: int = 0
+    chunk_count: int = 0
     was_dedup_skip: bool = False
     warnings: list[str] = field(default_factory=list)
     warnings_count: int | None = None
@@ -64,8 +64,8 @@ class Document:
     interactions: list[Interaction] = field(default_factory=list)
     provenance: dict[str, Any] | None = None
     tags: list[str] = field(default_factory=list)
-    # For list_documents responses (metadata only)
-    chunk_count: int | None = None
+    # Set on both POST /api/documents (ingest) and GET /api/documents (list)
+    # responses; the server uses the same `chunk_count` key for both.
     interaction_count: int | None = None
     created_at: str | None = None
 
@@ -75,7 +75,7 @@ class Document:
             md_preview = self.markdown[:80] + "..." if len(self.markdown) > 80 else self.markdown
         return (
             f"Document(id={self.document_id!r}, file={self.source_file!r}, "
-            f"collection={self.collection!r}, chunks={self.chunks_count}, "
+            f"collection={self.collection!r}, chunks={self.chunk_count}, "
             f"dedup={self.was_dedup_skip}, preview={md_preview!r})"
         )
 
