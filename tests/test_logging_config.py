@@ -382,3 +382,65 @@ def test_uvicorn_access_filter_chain_still_mountable(capsys):
         "drop-everything filter on uvicorn.access should suppress on stderr; "
         f"err={captured.err!r}"
     )
+
+
+def test_run_serve_source_pins_log_config_none_via_ast():
+    """Probe 7 -- symmetric AST guard for ``log_config=None`` in
+    ``_run_serve``'s ``uvicorn.Config(...)`` call. Same shape as Probe 4's
+    ``force=True`` guard -- patterns the same lesson onto the companion
+    load-bearing knob.
+
+    The substring shape would be decorative: ``__main__.py`` mentions
+    ``log_config=None`` in docstrings + comment blocks ~10 times, so a
+    substring check survives silent removal of the actual kwarg from the
+    call site. AST-walk pins the kwarg in the actual ``Call`` node, not
+    in prose.
+
+    If a future change silently removes ``log_config=None`` from the
+    ``uvicorn.Config(...)`` call, this probe fails -- preventing the
+    uvicorn-internal-INFO-on-stderr regression from re-emerging
+    unnoticed.
+    """
+    from pipeline import __main__ as main_module
+
+    source = inspect.getsource(main_module._run_serve)
+    tree = ast.parse(source)
+
+    # Walk for Call nodes whose func resolves to uvicorn.Config (Attribute
+    # chain: Attribute(value=Name(id='uvicorn'), attr='Config')).
+    config_calls = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "Config"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "uvicorn"
+        ):
+            config_calls.append(node)
+
+    assert len(config_calls) >= 1, (
+        f"_run_serve must contain at least one uvicorn.Config(...) call; "
+        f"AST walk found {len(config_calls)}."
+    )
+
+    # At least one of those calls must carry log_config=None as a kwarg
+    # (literal Constant(None), not Name('None') or any other shape).
+    for call in config_calls:
+        for kw in call.keywords:
+            if (
+                kw.arg == "log_config"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is None
+            ):
+                return  # Pinned.
+
+    raise AssertionError(
+        "uvicorn.Config(...) in _run_serve must carry log_config=None as a "
+        "kwarg (literal None). AST walk found uvicorn.Config call(s) but no "
+        "log_config=None kwarg. This pins the load-bearing knob that "
+        "delegates uvicorn-internal loggers to root inheritance -- without "
+        "it, uvicorn.Config.__init__ re-applies LOGGING_CONFIG and undoes "
+        "the stream split. See the comment block above the uvicorn.Config "
+        "call in __main__.py for the full explanation."
+    )
