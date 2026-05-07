@@ -25,7 +25,7 @@ from pipeline.chunking.chunker import (
     auto_select_strategy,
     chunk_document,
 )
-from pipeline.config import ChunkingConfig as _ConfigChunking
+from pipeline.config import ChunkingConfig as _ConfigChunking, IngestConfig
 from pipeline.dedup import (
     DocumentInteraction,
     InMemoryDedupStore,
@@ -61,6 +61,13 @@ _image_enricher = ImageEnricher(None)
 _chunking_defaults: _ChunkerConfig = _ChunkerConfig()
 _chunker_defaults_baseline: _ChunkerConfig = _ChunkerConfig()
 
+# Ingest defaults loaded from YAML via configure_ingest() at startup.
+# Per-request `ingest_config` dicts win at call time (see
+# _process_single_document). Until configure_ingest() runs, the dataclass
+# default (100 MB) applies — important for direct callers that bypass the
+# FastAPI lifespan (tests, scripts).
+_ingest_config: IngestConfig = IngestConfig()
+
 
 def configure_embedding(config: EmbeddingConfig) -> None:
     """Configure the embedding client. Call before using store/search."""
@@ -86,6 +93,22 @@ def configure_stores(dedup_store, vector_store) -> None:
     global _dedup_store, _vector_store
     _dedup_store = dedup_store
     _vector_store = vector_store
+
+
+def configure_ingest(config: IngestConfig) -> None:
+    """Install YAML-loaded ingest defaults. Per-request overrides win at call time.
+
+    Validates ``max_source_bytes > 0`` so a misconfigured deployment fails
+    loud at lifespan-load time instead of silently rejecting every fetch
+    on the first byte.
+    """
+    if config.max_source_bytes <= 0:
+        raise ValueError(
+            f"IngestConfig.max_source_bytes must be > 0, got "
+            f"{config.max_source_bytes}"
+        )
+    global _ingest_config
+    _ingest_config = config
 
 
 def configure_chunking(config: _ConfigChunking) -> None:
@@ -129,25 +152,88 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
-def _read_source_bytes(uri: str) -> bytes:
-    """Return raw bytes for a uri (file://, http(s)://, or local path).
+class SourceTooLargeError(ValueError):
+    """Raised when a source URI's bytes exceed IngestConfig.max_source_bytes.
+
+    Subclasses ValueError so any future caller that adds an explicit
+    ``except ValueError`` clause picks this up with the right semantic.
+    In the current flow the error is caught generically by the
+    ``except Exception`` at the call site below and surfaced as HTTP 422
+    via routes.py:282 with the descriptive message.
+    """
+
+
+_READ_CHUNK = 1024 * 1024  # 1 MB; size of each urlopen.read() iteration
+
+
+def _read_source_bytes(uri: str, *, cap: int | None = None) -> bytes:
+    """Return raw bytes for a uri (file://, http(s)://, or local path), cap-enforced.
 
     URL path: deliberately uses the same default urllib semantics as the
     extractor's ``_download_to_temp`` (stdlib ``urlretrieve`` at
-    ``extraction/markitdown.py:267``). No ``Accept-Encoding`` header is
+    ``extraction/markitdown.py``). No ``Accept-Encoding`` header is
     sent; no decompression is performed. If a server unilaterally returns
-    ``Content-Encoding: gzip`` (rare but legal), BOTH the fingerprint path
-    and the extraction path receive identical compressed bytes — so
-    fingerprint-vs-extraction can never diverge on the same fetch.
+    ``Content-Encoding: gzip`` (rare but legal), the fetched compressed
+    bytes are what gets fingerprinted AND extracted (Batch G holds the
+    same buffer through both calls, so divergence is structurally
+    impossible — see agents/design/ariadne--16a §6).
+
+    Cap enforcement (Batch G / ariadne--16a §3):
+      - URL: fast-fail on Content-Length when present and honest;
+        otherwise accumulator-fallback during chunked read raises
+        SourceTooLargeError as soon as the buffer exceeds ``cap``
+        (worst case overshoot is ``cap + _READ_CHUNK - 1``).
+      - Local file (and ``file://``): pre-flight ``Path.stat().st_size``
+        check before ``read_bytes``; raises SourceTooLargeError on
+        oversize.
+      - ``cap=None`` falls back to the module default loaded by
+        configure_ingest (or the dataclass default, 100 MB, before
+        lifespan).
     """
+    if cap is None:
+        cap = _ingest_config.max_source_bytes
     if uri.startswith("file://"):
-        path = urlparse(uri).path
-        return Path(path).read_bytes()
+        # urlparse(uri).path on Windows produces leading-slash paths like
+        # /C:/Users/...; pre-existing services.py:144-145 behavior
+        # unchanged — Path() tolerates the leading slash on Windows.
+        return _read_file_capped(Path(urlparse(uri).path), cap, uri)
     if uri.startswith(("http://", "https://")):
         # Match urlretrieve default: no extra headers, follow redirects.
         with urlopen(uri) as resp:
-            return resp.read()
-    return Path(uri).read_bytes()
+            cl = resp.headers.get("Content-Length")
+            if cl is not None:
+                try:
+                    declared = int(cl)
+                except ValueError:
+                    declared = None
+                if declared is not None and declared > cap:
+                    raise SourceTooLargeError(
+                        f"URL source exceeds max_source_bytes "
+                        f"(Content-Length={declared} > cap={cap}): {uri}"
+                    )
+            buf = bytearray()
+            while True:
+                chunk = resp.read(_READ_CHUNK)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                if len(buf) > cap:
+                    raise SourceTooLargeError(
+                        f"URL source exceeds max_source_bytes during read "
+                        f"(>{cap}, header may be absent or false): {uri}"
+                    )
+            return bytes(buf)
+    return _read_file_capped(Path(uri), cap, uri)
+
+
+def _read_file_capped(path: Path, cap: int, uri: str) -> bytes:
+    """Read a local file, refusing to load anything larger than ``cap``."""
+    size = path.stat().st_size
+    if size > cap:
+        raise SourceTooLargeError(
+            f"File source exceeds max_source_bytes ({size} > {cap}): {uri}"
+        )
+    return path.read_bytes()
 
 
 def _source_file_from_uri(uri: str) -> str:
@@ -168,19 +254,49 @@ def _process_single_document(
     agent_notes: Optional[str],
     agent_metadata: Optional[dict],
     chunking_config: Optional[dict],
+    ingest_config: Optional[dict] = None,
     action: str = "ingest",
 ) -> dict[str, Any]:
     """Shared pipeline logic for convert_document and ingest.
 
     Returns a response dict (not JSON string).
     """
-    # Read source bytes for fingerprinting BEFORE extraction. URL sources are
-    # fetched here using the same urlretrieve-equivalent semantics the
-    # extractor uses on cache miss; this guarantees fingerprint-bytes ==
-    # extraction-bytes within a single ingest. See dedup.py and
-    # _read_source_bytes for the byte-stream invariant rationale.
+    # Resolve per-request ingest overrides against the YAML/module default
+    # (Batch G / ariadne--16a §F2). Mirrors the Batch F chunking_config
+    # validation pattern below: raise loudly on unknown keys so operator
+    # typos surface as 422 rather than silently no-op'ing. The validation
+    # is wrapped in its OWN try/except (mirroring the source-read pattern
+    # below) so the raised ValueError converts to the standard
+    # ``{"error": True, ...}`` dict that routes.py:282 turns into HTTP 422.
+    # WITHOUT this local catch the ValueError would propagate to FastAPI's
+    # global handler at app.py:125-137 and surface as HTTP 500 — beat 7's
+    # 422 contract requires the local catch.
+    effective_cap = _ingest_config.max_source_bytes
+    if ingest_config:
+        try:
+            valid_keys = {f.name for f in dataclasses.fields(IngestConfig)}
+            unknown = set(ingest_config) - valid_keys
+            if unknown:
+                raise ValueError(
+                    f"Unknown ingest config keys: {sorted(unknown)}. "
+                    f"Valid keys: {sorted(valid_keys)}."
+                )
+            effective_cap = ingest_config.get("max_source_bytes", effective_cap)
+        except ValueError as e:
+            return {
+                "error": True,
+                "message": f"Invalid ingest config: {e}",
+                "document_id": None,
+                "source_file": _source_file_from_uri(uri),
+            }
+
+    # Read source bytes for fingerprinting BEFORE extraction. The same
+    # buffer is reused by extract_from_bytes below — one fetch, one read,
+    # one buffer (Batch G / ariadne--16a §6). Cap-enforced via
+    # _read_source_bytes (URL: Content-Length first, then chunked
+    # accumulator; local file: stat-based pre-flight).
     try:
-        raw_bytes = _read_source_bytes(uri)
+        raw_bytes = _read_source_bytes(uri, cap=effective_cap)
     except Exception as e:
         return {
             "error": True,
@@ -263,8 +379,12 @@ def _process_single_document(
                 "markdown": existing.markdown,
             }
 
-    # Cache miss (or force=True): now do the expensive extraction.
-    result = _extractor.extract(uri)
+    # Cache miss (or force=True): now do the expensive extraction. Reuse
+    # the bytes already in `raw_bytes` instead of re-fetching from the URI
+    # (Batch G / ariadne--16a §5). Same buffer, no network or disk hit.
+    result = _extractor.extract_from_bytes(
+        raw_bytes, source_file=_source_file_from_uri(uri)
+    )
 
     if result.errors:
         return {

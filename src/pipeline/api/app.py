@@ -19,6 +19,7 @@ from pipeline.services import (
     configure_chunking,
     configure_embedding,
     configure_image_enrichment,
+    configure_ingest,
     configure_stores,
 )
 from pipeline.stores import create_stores, close_pool
@@ -67,6 +68,16 @@ async def lifespan(app: FastAPI):
         "Chunking defaults loaded (strategy=%s, min_tokens=%d)",
         config.chunking.strategy,
         config.chunking.min_chunk_tokens,
+    )
+
+    # Install YAML-loaded ingest defaults (ariadne--16a / Batch G).
+    # Per-request overrides still win at call time. configure_ingest
+    # validates max_source_bytes > 0 and raises ValueError loudly here
+    # if the YAML value is misconfigured (no silent zero-cap).
+    configure_ingest(config.ingest)
+    logger.info(
+        "Ingest defaults loaded (max_source_bytes=%d)",
+        config.ingest.max_source_bytes,
     )
 
     # Configure the shared embedding client from ariadne.yaml

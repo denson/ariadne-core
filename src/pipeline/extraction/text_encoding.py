@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from charset_normalizer import from_path
+from charset_normalizer import from_bytes, from_path
 
 
 def detect_and_decode(path: Path) -> tuple[str, str, float]:
@@ -35,6 +35,23 @@ def detect_and_decode(path: Path) -> tuple[str, str, float]:
         # The LLM layer will catch if this produced garbage.
         raw = path.read_bytes().decode("latin-1")
         return raw, "latin-1-fallback", 0.0
+    return str(result), result.encoding, result.coherence
+
+
+def detect_and_decode_bytes(content: bytes, source_file: str) -> tuple[str, str, float]:
+    """Decode raw bytes with automatic encoding detection.
+
+    Sibling of ``detect_and_decode(Path)`` for the bytes-only ingest path
+    (Batch G / ariadne--16a). Same charset-normalizer call shape; takes
+    bytes directly instead of reading from disk so the canonical
+    fingerprint→extraction flow does not re-touch the source. The
+    ``source_file`` argument is unused by detection but kept in the
+    signature so future loggers / error messages can quote the origin.
+    """
+    result = from_bytes(content).best()
+    if result is None:
+        # Symmetric latin-1 fallback (see detect_and_decode above).
+        return content.decode("latin-1"), "latin-1-fallback", 0.0
     return str(result), result.encoding, result.coherence
 
 

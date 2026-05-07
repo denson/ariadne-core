@@ -109,10 +109,16 @@ class _DisabledEmbeddingClient:
 
 
 def _make_extractor_mock(*, source_file: str, file_type: str = "txt") -> MagicMock:
-    """MagicMock standing in for services._extractor; fresh ExtractionResult per call."""
+    """MagicMock standing in for services._extractor; fresh ExtractionResult per call.
+
+    Post-Batch-G the canonical seam is ``extract_from_bytes(content,
+    source_file=...)`` — the legacy ``extract(uri)`` method is no
+    longer invoked from _process_single_document. These mocks follow
+    the new seam.
+    """
     mock = MagicMock()
 
-    def _fake_extract(uri: str) -> ExtractionResult:
+    def _fake_extract_from_bytes(content: bytes, source_file: str = source_file) -> ExtractionResult:
         return ExtractionResult(
             document_id="00000000-0000-0000-0000-000000000000",
             source_file=source_file,
@@ -129,7 +135,7 @@ def _make_extractor_mock(*, source_file: str, file_type: str = "txt") -> MagicMo
             errors=[],
         )
 
-    mock.extract.side_effect = _fake_extract
+    mock.extract_from_bytes.side_effect = _fake_extract_from_bytes
     return mock
 
 
@@ -373,7 +379,7 @@ def test_beat_6_cutover_old_fingerprint_does_not_match(monkeypatch):
     )
 
     # Extractor was called once on the new ingest (cache miss).
-    assert extractor.extract.call_count == 1
+    assert extractor.extract_from_bytes.call_count == 1
 
 
 # ── Beat 7: no regression on search/retrieval after fix ─────────────────────

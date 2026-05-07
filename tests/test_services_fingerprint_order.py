@@ -54,12 +54,18 @@ class _DisabledEmbeddingClient:
 def _make_extractor_mock(*, source_file: str) -> MagicMock:
     """Return a MagicMock standing in for ``services._extractor``.
 
-    Each call to ``.extract(uri)`` returns a fresh ExtractionResult whose
-    markdown is non-empty (so the empty-output branch of
-    _process_single_document is not taken)."""
+    Each call to ``.extract_from_bytes(content, source_file=...)`` returns
+    a fresh ExtractionResult whose markdown is non-empty (so the
+    empty-output branch of _process_single_document is not taken).
+
+    Post-Batch-G the canonical seam is ``extract_from_bytes``; the legacy
+    ``extract(uri)`` method is retained on the extractor but no longer
+    invoked from _process_single_document. These call-count assertions
+    follow the new seam.
+    """
     mock = MagicMock()
 
-    def _fake_extract(uri: str) -> ExtractionResult:
+    def _fake_extract_from_bytes(content: bytes, source_file: str = source_file) -> ExtractionResult:
         return ExtractionResult(
             document_id="00000000-0000-0000-0000-000000000000",
             source_file=source_file,
@@ -78,7 +84,7 @@ def _make_extractor_mock(*, source_file: str) -> MagicMock:
             errors=[],
         )
 
-    mock.extract.side_effect = _fake_extract
+    mock.extract_from_bytes.side_effect = _fake_extract_from_bytes
     return mock
 
 
@@ -127,9 +133,9 @@ def test_extractor_not_called_on_hit(monkeypatch):
     first = services._process_single_document(**_kwargs(uri, collection=collection))
     assert first.get("error") is not True, first
     assert first["was_dedup_skip"] is False
-    assert extractor.extract.call_count == 1, (
+    assert extractor.extract_from_bytes.call_count == 1, (
         f"first ingest should have called the extractor exactly once, "
-        f"got {extractor.extract.call_count}"
+        f"got {extractor.extract_from_bytes.call_count}"
     )
 
     second = services._process_single_document(**_kwargs(uri, collection=collection))
@@ -137,9 +143,9 @@ def test_extractor_not_called_on_hit(monkeypatch):
     assert second["was_dedup_skip"] is True, (
         "second ingest of identical bytes must dedup-skip"
     )
-    assert extractor.extract.call_count == 1, (
-        f"extractor.extract.call_count must remain 1 after dedup-skip; "
-        f"got {extractor.extract.call_count} — fingerprint may have moved "
+    assert extractor.extract_from_bytes.call_count == 1, (
+        f"extractor.extract_from_bytes.call_count must remain 1 after dedup-skip; "
+        f"got {extractor.extract_from_bytes.call_count} — fingerprint may have moved "
         "back to post-extraction (ariadne--k7n regression)"
     )
 
@@ -156,7 +162,7 @@ def test_extractor_IS_called_when_force_True_even_with_matching_fingerprint(
 
     first = services._process_single_document(**_kwargs(uri, collection=collection))
     assert first.get("error") is not True, first
-    assert extractor.extract.call_count == 1
+    assert extractor.extract_from_bytes.call_count == 1
 
     second = services._process_single_document(
         **_kwargs(uri, collection=collection, force=True)
@@ -166,9 +172,9 @@ def test_extractor_IS_called_when_force_True_even_with_matching_fingerprint(
     assert second["was_dedup_skip"] is False, (
         "force=True must bypass the dedup short-circuit"
     )
-    assert extractor.extract.call_count == 2, (
+    assert extractor.extract_from_bytes.call_count == 2, (
         f"force=True must invoke extraction even when fingerprint matches; "
-        f"got call_count={extractor.extract.call_count} — the dedup short-"
+        f"got call_count={extractor.extract_from_bytes.call_count} — the dedup short-"
         "circuit may have swallowed the force flag (ariadne--k7n regression)"
     )
 
@@ -195,7 +201,7 @@ def test_fingerprint_byte_stable_across_extractor_drift(monkeypatch):
     # simulating vision-API non-determinism.
     drift_state = {"calls": 0}
 
-    def _drifty_extract(uri: str) -> ExtractionResult:
+    def _drifty_extract_from_bytes(content: bytes, source_file: str = "sample.txt") -> ExtractionResult:
         drift_state["calls"] += 1
         return ExtractionResult(
             document_id="00000000-0000-0000-0000-000000000000",
@@ -216,7 +222,7 @@ def test_fingerprint_byte_stable_across_extractor_drift(monkeypatch):
         )
 
     extractor = MagicMock()
-    extractor.extract.side_effect = _drifty_extract
+    extractor.extract_from_bytes.side_effect = _drifty_extract_from_bytes
     monkeypatch.setattr(services, "_extractor", extractor)
 
     uri = str(_FIXTURE_TXT)
@@ -240,9 +246,9 @@ def test_fingerprint_byte_stable_across_extractor_drift(monkeypatch):
         "Fingerprint must be byte-stable across extractor drift "
         "(ariadne--k7n core invariant)"
     )
-    assert extractor.extract.call_count == 1, (
+    assert extractor.extract_from_bytes.call_count == 1, (
         "Extractor must run exactly once across two ingests of identical "
         "bytes; ran "
-        f"{extractor.extract.call_count} times — fingerprint may have "
+        f"{extractor.extract_from_bytes.call_count} times — fingerprint may have "
         "moved back to post-extraction"
     )

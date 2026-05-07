@@ -30,6 +30,15 @@ image_enrichment:
 markitdown:
   enable_plugins: true
 
+# --- Ingest ---
+ingest:
+  # Per-source cap (bytes) enforced before/during fetch by
+  # services._read_source_bytes. URL fetches fast-fail on Content-Length
+  # when the header is honest; otherwise the chunked-read accumulator
+  # catches the overrun (worst case ~1 MB slack at 100 MB cap). Local
+  # files are size-checked via Path.stat() before read_bytes().
+  max_source_bytes: 104857600  # 100 MB
+
 # --- Chunking ---
 chunking:
   # "auto" triggers per-file-type strategy selection (.pptx → by_page,

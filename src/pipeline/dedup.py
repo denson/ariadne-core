@@ -10,22 +10,10 @@ Phase 1 this uses an in-memory store; Phase 5 will swap in Postgres
 from __future__ import annotations
 
 import hashlib
-import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
-
-
-def normalize_text(text: str) -> str:
-    """Normalize text for fingerprinting: lowercase, trim, collapse whitespace.
-
-    Retained for backward compatibility; no longer invoked by
-    compute_fingerprint after the raw-bytes refactor (ariadne--k7n).
-    """
-    text = text.lower().strip()
-    text = re.sub(r"\s+", " ", text)
-    return text
 
 
 def compute_fingerprint(content: bytes) -> str:

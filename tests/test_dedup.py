@@ -5,22 +5,7 @@ from pipeline.dedup import (
     InMemoryDedupStore,
     StoredDocument,
     compute_fingerprint,
-    normalize_text,
 )
-
-
-class TestNormalization:
-    def test_lowercase(self):
-        assert normalize_text("Hello World") == "hello world"
-
-    def test_trim_whitespace(self):
-        assert normalize_text("  hello  ") == "hello"
-
-    def test_collapse_whitespace(self):
-        assert normalize_text("hello   world\n\tfoo") == "hello world foo"
-
-    def test_combined(self):
-        assert normalize_text("  Hello   World  \n") == "hello world"
 
 
 class TestFingerprint:
