@@ -623,7 +623,7 @@ Retrieve the full stored document by ID. Use after search to get complete conten
 | `include_chunks` | bool | `true` | Return all chunks with text, section, page info |
 | `include_interactions` | bool | `true` | Return all interaction records |
 
-**Response:** JSON with `document_id`, `source_file`, `title`, `file_type`, `engine`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio`, `content_fingerprint`, `collection`, `tags`, `processing_chain`, `content_markdown`, `chunks` array (each: `chunk_id`, `text`, `section`, `page`, `token_count`, `embedding_model`), `interactions` array (each: `agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`, `action`, `was_dedup_skip`, `created_at`).
+**Response:** JSON with `document_id`, `source_file`, `title`, `file_type`, `engine`, `processing_time_ms`, `output_tokens_estimate`, `token_savings_ratio`, `content_fingerprint`, `collection`, `tags`, `processing_chain`, `warnings`, `warnings_count`, `content_markdown`, `chunks` array (each: `chunk_id`, `text`, `section`, `page`, `token_count`, `embedding_model`), `interactions` array (each: `agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`, `action`, `was_dedup_skip`, `created_at`). `warnings` is the array of warning strings persisted on the `StoredDocument` at ingest time and survives across reads; `warnings_count` equals `len(warnings)`. Both fields are always present (empty array / `0` when no warnings were emitted).
 
 ---
 
