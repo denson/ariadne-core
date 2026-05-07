@@ -9,6 +9,8 @@ If no vision API is configured (no API key), images are left as-is.
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import re
 import time
 from dataclasses import dataclass, field
@@ -169,9 +171,39 @@ class ImageEnricher:
         Unlike ``enrich()``, which scans Markdown for embedded image references,
         this calls the vision client directly on a single image file. Used for
         standalone image ingestion where MarkItDown produces no extractable text.
+
+        Note: ``services._process_single_document`` no longer calls this
+        method — it now uses ``describe_image_from_bytes`` so the bytes
+        already fetched by ``_read_source_bytes`` flow through without a
+        second fetch or a tempfile round-trip (ariadne--tol). This method
+        is preserved for any other callers / SDK contract.
         """
         assert self._client is not None
         return self._client.describe_image_from_path(file_path)
+
+    def describe_image_from_bytes(
+        self, image_bytes: bytes, source_file: str
+    ) -> str:
+        """Get a description for a standalone image from raw bytes.
+
+        Mirrors ``describe_image`` but consumes the bytes already fetched
+        upstream (``services._read_source_bytes``), avoiding a second
+        fetch or a tempfile round-trip. The MIME type is guessed from
+        ``source_file``'s extension; a sensible default (``image/png``)
+        is used when guessing fails — matches the convention in
+        ``VisionClient.describe_image_from_path`` (vision.py:67).
+
+        Args:
+            image_bytes: Raw image bytes.
+            source_file: Display name; used for MIME guessing only.
+
+        Returns:
+            Text description of the image.
+        """
+        assert self._client is not None
+        mime_type = mimetypes.guess_type(source_file)[0] or "image/png"
+        data = base64.b64encode(image_bytes).decode("utf-8")
+        return self._client.describe_image_from_base64(data, mime_type=mime_type)
 
     def _describe_image(self, image_ref: str) -> str:
         """Get a description for an image via the vision API."""
