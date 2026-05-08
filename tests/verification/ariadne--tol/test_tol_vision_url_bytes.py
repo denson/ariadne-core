@@ -384,10 +384,18 @@ def test_probe_4_file_uri_standalone_image_still_works(monkeypatch):
 
 
 def test_probe_5_url_fetched_exactly_once_per_image_ingest(monkeypatch):
-    """URL-sourced standalone image must be fetched exactly once. Catches a
-    hypothetical "fix" that re-routes through ``describe_image_from_url``,
-    which would re-fetch the URL inside the vision client and break Batch
-    G's one-fetch invariant."""
+    """URL-sourced standalone image must have its body fetched exactly
+    once. Catches a hypothetical "fix" that re-routes through
+    ``describe_image_from_url``, which would re-fetch the URL inside
+    the vision client and break Batch G's one-fetch invariant.
+
+    m5e migration: ``_process_single_document`` now also issues a HEAD
+    probe via ``_probe_size`` for HTTP sources (no body bytes), so the
+    urlopen call_count is 2 (one HEAD, one GET). The load-bearing
+    invariant — a single *body* fetch shared between fingerprinting
+    and the image-enricher byte stream — is preserved; the HEAD probe
+    is metadata-only.
+    """
     _install_clean_state(monkeypatch)
     _install_image_enricher_mock(monkeypatch)
 
@@ -400,9 +408,13 @@ def test_probe_5_url_fetched_exactly_once_per_image_ingest(monkeypatch):
         )
 
     assert result.get("error") is not True, result
-    assert urlopen_mock.call_count == 1, (
-        f"URL must be fetched exactly once per image ingest; got "
-        f"{urlopen_mock.call_count}"
+    # m5e: HEAD probe + GET = 2 urlopen calls. The single-body-fetch
+    # invariant survives via describe_image_from_bytes (the enricher
+    # mock would catch a re-fetch by checking call_count of its own
+    # bytes-based seam).
+    assert urlopen_mock.call_count == 2, (
+        f"m5e: URL must be HEAD-probed once + GET-fetched once per "
+        f"image ingest; got {urlopen_mock.call_count}"
     )
 
 

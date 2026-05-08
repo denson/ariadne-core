@@ -151,3 +151,34 @@ def pg_dedup_store(pg_pool):
 def unique_collection():
     """Returns a fresh collection name unique to this test run."""
     return f"test_{uuid.uuid4().hex[:12]}"
+
+
+# ── m5e: confirmation-secret isolation ───────────────────────────────────────
+#
+# Tests that exercise the confirmation flow need a deterministic HMAC secret
+# so token-equivalence assertions are reproducible AND so a prior test that
+# mutates the secret cannot leak into a subsequent test. The secret is per-
+# process (no shared store), so this fixture is per-worker when pytest-xdist
+# is in use — each worker has its own confirmation module state and the
+# autouse fixture handles isolation within each worker. Cross-worker
+# contamination is structurally impossible.
+#
+# Tests that need a different secret value (e.g., to assert HMAC mismatch
+# across rotations) call ``configure_confirmation(secret=b"other-secret")``
+# inside the test body — the fixture's teardown still restores the saved-
+# at-setup value at the end.
+
+@pytest.fixture(autouse=True)
+def _confirmation_secret_isolation():
+    """Save/restore the m5e confirmation secret around each test."""
+    from pipeline.api import confirmation
+    saved = getattr(confirmation, "_CONFIRMATION_SECRET", None)
+    confirmation.configure_confirmation(secret=b"test-secret-do-not-ship")
+    try:
+        yield
+    finally:
+        # Restore the saved-at-setup value (which may itself be None if
+        # the test session had not yet configured a secret). Direct
+        # attribute write rather than a fresh call to configure_confirmation
+        # so a saved=None state is preserved exactly.
+        confirmation._CONFIRMATION_SECRET = saved

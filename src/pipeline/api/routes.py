@@ -47,11 +47,20 @@ class DocumentRequest(CallerMetadata):
     tags: list[str] = Field(default_factory=list)
     force: bool = False
     chunking_config: Optional[dict] = None
-    # Per-request ingest knobs (Batch G / ariadne--16a §F2). Currently
-    # accepts ``{"max_source_bytes": <int>}``; unknown keys raise 422 to
-    # surface operator typos. None falls back to YAML defaults from
-    # configure_ingest().
+    # Per-request ingest knobs (Batch G / ariadne--16a §F2). Accepts any
+    # field of pipeline.config.IngestConfig (e.g. ``max_source_bytes``,
+    # ``max_source_bytes_hard``, ``require_confirmation_above_soft``);
+    # unknown keys raise 422 to surface operator typos. None falls back
+    # to YAML defaults from configure_ingest().
     ingest_config: Optional[dict] = None
+    # m5e source-size confirmation flow: when the server returns HTTP 413
+    # with ``code: "confirmation_required"`` and a ``confirmation_token``,
+    # the caller re-submits the same request with the token in this
+    # field to bypass the soft-cap friction. The token is HMAC-signed and
+    # binds to the request URI; tokens are valid for
+    # ``confirmation_token_ttl_seconds`` (default 300) and may be re-used
+    # within that window.
+    confirmation_token: Optional[str] = None
 
 
 class SearchRequest(CallerMetadata):
@@ -282,17 +291,30 @@ async def submit_document(
         agent_metadata=req.agent_metadata,
         chunking_config=req.chunking_config,
         ingest_config=req.ingest_config,
+        confirmation_token=req.confirmation_token,
     )
 
     if result.get("error"):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": result.get("message"),
-                "document_id": result.get("document_id"),
-                "source_file": result.get("source_file"),
-            },
-        )
+        # m5e dispatch: route the m5e error codes to their wire status.
+        # Legacy paths (chunking-config errors, source-read errors,
+        # extraction failure, embedding failure, …) do NOT set ``code``;
+        # the ``.get(code, 422)`` default preserves the pre-m5e behavior
+        # (HTTP 422 with ``{message, document_id, source_file}`` plus
+        # any pre-existing extras). Pinned by §4 probe (l).
+        code = result.get("code", "")
+        status = {
+            "confirmation_required": 413,
+            "exceeds_hard_limit": 422,
+            "exceeds_soft_cap_strict": 422,
+        }.get(code, 422)
+        # Surface every key in the error-dict (minus the ``error: True``
+        # internal flag). For m5e codes that means soft_cap / hard_cap /
+        # confirmation_token / etc all flow to the client; for legacy
+        # codes the existing message / document_id / source_file shape
+        # is preserved verbatim because the legacy dicts only carry
+        # those keys.
+        detail = {k: v for k, v in result.items() if k != "error"}
+        raise HTTPException(status_code=status, detail=detail)
 
     return result
 

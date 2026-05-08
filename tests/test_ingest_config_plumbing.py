@@ -214,16 +214,18 @@ def test_beat_2_local_file_pre_flight_size_check(tmp_path: Path):
 
 
 def test_beat_3_url_fetched_exactly_once_per_ingest(monkeypatch):
-    """The canonical ingest path must fetch the URL exactly once. The
-    pre-Batch-G shape called urlopen for fingerprinting and then
+    """The canonical ingest path must fetch the URL body exactly once.
+    The pre-Batch-G shape called urlopen for fingerprinting and then
     urlretrieve again inside markitdown for extraction (two fetches per
     ingest); post-fix the same buffer flows through both calls.
 
-    Asserts:
-      services.urlopen.call_count == 1 (one fetch for fingerprinting)
-      markitdown.urlretrieve.call_count == 0 (no re-fetch by extractor;
-        the canonical seam is now extract_from_bytes which never calls
-        urlretrieve / _download_to_temp)
+    m5e migration: ``_process_single_document`` now also issues a HEAD
+    probe via ``_probe_size`` for HTTP sources (cheap, no body bytes),
+    so the urlopen call_count for an HTTP source is 2 (one HEAD, one
+    GET). The load-bearing invariant — a single *body* fetch shared
+    between fingerprinting and extraction — is preserved; the HEAD
+    probe is metadata-only. We assert (a) urlopen called twice (probe
+    + GET) AND (b) urlretrieve never called (no extractor re-fetch).
     """
     extractor = _install_clean_state(monkeypatch)
 
@@ -242,8 +244,11 @@ def test_beat_3_url_fetched_exactly_once_per_ingest(monkeypatch):
         )
 
     assert result.get("error") is not True, result
-    assert urlopen_mock.call_count == 1, (
-        f"URL must be fetched exactly once; got {urlopen_mock.call_count}"
+    # m5e: HEAD probe + GET = 2 urlopen calls. The "single body fetch"
+    # invariant lives at the urlretrieve assertion below.
+    assert urlopen_mock.call_count == 2, (
+        f"URL must be HEAD-probed once and GET-fetched once "
+        f"(m5e); got {urlopen_mock.call_count} urlopen calls"
     )
     assert urlretrieve_mock.call_count == 0, (
         f"markitdown.urlretrieve must NOT be called from the canonical "
@@ -351,10 +356,23 @@ def test_beat_4_local_file_read_exactly_once_per_ingest(monkeypatch):
 # ── Beat 7 — Per-request ingest_config override ─────────────────────────────
 
 
-def test_beat_7_per_request_cap_override_rejects_oversize(monkeypatch):
-    """Per-request ingest_config={"max_source_bytes": 1024} must trigger
-    the source-too-large error path against a 2 KB local file, even
-    though the YAML default (200 MB) would otherwise allow it."""
+def test_beat_7_per_request_cap_override_triggers_confirmation(monkeypatch):
+    """Per-request ``ingest_config={"max_source_bytes": 1024}`` against a
+    2 KB local file must trigger the m5e confirmation flow (default
+    deployment).
+
+    m5e migration of the legacy 422-on-oversize semantic. Pre-m5e the
+    soft cap was a strict cap (oversize → "Source read failed:" error-
+    dict → HTTP 422). Post-m5e the soft cap triggers the confirmation
+    flow: oversize → ``code: "confirmation_required"`` error-dict →
+    HTTP 413 with a token. The hard cap (5 GB default) is well above
+    the 2 KB fixture so this lands on the confirmation path, not the
+    hard-limit path.
+
+    Pinned by the design's §3.9 migration table: ``per-request
+    max_source_bytes override above default still triggers
+    413-confirmation when default soft cap is exceeded``.
+    """
     _install_clean_state(monkeypatch)
 
     # 2 KB local file
@@ -370,9 +388,92 @@ def test_beat_7_per_request_cap_override_rejects_oversize(monkeypatch):
             )
         )
         assert result.get("error") is True, result
-        # Source-too-large surfaces via the source-read except block.
-        assert result["message"].startswith("Source read failed:"), result
-        assert "max_source_bytes" in result["message"], result
+        assert result.get("code") == "confirmation_required", result
+        # Wire-shape pin: every m5e 413 field is present.
+        for field in (
+            "soft_cap",
+            "hard_cap",
+            "reported_size",
+            "source",
+            "confirmation_token",
+            "ttl_seconds",
+        ):
+            assert field in result, (field, result)
+        assert result["soft_cap"] == 1024, result
+        assert result["reported_size"] == 2048, result
+        assert result["confirmation_token"], result  # non-empty
+    finally:
+        big.unlink()
+
+
+def test_beat_7_per_request_hard_cap_override_rejects(monkeypatch):
+    """Per-request ``ingest_config={"max_source_bytes_hard": 1024}``
+    against a 2 KB local file must trigger the m5e hard-limit path
+    (HTTP 422 with ``code: "exceeds_hard_limit"``, no token).
+
+    Pinned by the design's §3.9 migration table: ``per-request
+    max_source_bytes_hard override (new) triggers 422-exceeds_hard_limit
+    when exceeded``. Confirms the hard cap is per-request-overridable
+    (matching the soft cap) and that bytes_seen >= effective_hard
+    short-circuits before any token issuance.
+    """
+    _install_clean_state(monkeypatch)
+
+    big = Path(__file__).parent / "fixtures" / "_batch_g_beat7_2k_hard.bin"
+    big.parent.mkdir(parents=True, exist_ok=True)
+    big.write_bytes(b"x" * 2048)
+    try:
+        result = services._process_single_document(
+            **_kwargs(
+                str(big),
+                collection="batch_g_beat7_hard",
+                ingest_config={
+                    "max_source_bytes": 512,  # also below file size
+                    "max_source_bytes_hard": 1024,  # 2 KB > this → hard
+                },
+            )
+        )
+        assert result.get("error") is True, result
+        assert result.get("code") == "exceeds_hard_limit", result
+        assert result.get("hard_cap") == 1024, result
+        assert result.get("reported_size") == 2048, result
+        # Hard-limit dict is intentionally narrow (no token, no soft_cap).
+        assert "confirmation_token" not in result, result
+    finally:
+        big.unlink()
+
+
+def test_beat_7_strict_mode_oversize_returns_strict_error(monkeypatch):
+    """``require_confirmation_above_soft=False`` restores the legacy
+    'soft cap acts strict' semantics. Oversize must produce the m5e
+    strict-mode error code, not the confirmation flow.
+
+    Distinguishes the three 422 sentinel codes per §11.B.4 (route A
+    risk 4): ``exceeds_soft_cap_strict`` carries ``soft_cap`` (the
+    strict-mode hint) AND ``hard_cap``; ``exceeds_hard_limit`` carries
+    ``hard_cap`` but NOT ``soft_cap``.
+    """
+    _install_clean_state(monkeypatch)
+
+    big = Path(__file__).parent / "fixtures" / "_batch_g_beat7_2k_strict.bin"
+    big.parent.mkdir(parents=True, exist_ok=True)
+    big.write_bytes(b"x" * 2048)
+    try:
+        result = services._process_single_document(
+            **_kwargs(
+                str(big),
+                collection="batch_g_beat7_strict",
+                ingest_config={
+                    "max_source_bytes": 1024,
+                    "require_confirmation_above_soft": False,
+                },
+            )
+        )
+        assert result.get("error") is True, result
+        assert result.get("code") == "exceeds_soft_cap_strict", result
+        assert result.get("soft_cap") == 1024, result
+        assert "hard_cap" in result, result
+        assert "confirmation_token" not in result, result
     finally:
         big.unlink()
 
