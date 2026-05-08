@@ -6,6 +6,7 @@ from ariadne_core_client.exceptions import (
     AriadneClientError,
     AriadneNotFoundError,
     AriadneServerError,
+    ConfirmationRequired,
 )
 from ariadne_core_client.models import (
     Collection,
@@ -27,6 +28,7 @@ __all__ = [
     "AriadneAuthError",
     "AriadneNotFoundError",
     "AriadneServerError",
+    "ConfirmationRequired",
     # Models
     "Collection",
     "Document",
