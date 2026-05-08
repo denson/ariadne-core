@@ -4,6 +4,37 @@ Wraps the endpoints documented in SPEC.md. Uses stdlib-only transport
 via _http.py. Returns dataclass models from models.py and raises the
 exceptions from exceptions.py.
 
+Source-size confirmation flow (m5e)
+-----------------------------------
+Sources between the server's soft cap (``IngestConfig.max_source_bytes``,
+default 200 MB) and hard cap (``max_source_bytes_hard``, default 5 GB)
+trigger an HTTP 413 ``confirmation_required`` response carrying an
+HMAC-signed ``confirmation_token``. The transport layer raises
+:class:`ConfirmationRequired` (a subclass of :class:`AriadneClientError`)
+with the structured fields. Re-submit the same call with
+``confirmation_token=err.confirmation_token`` to bypass the soft-cap
+check::
+
+    from ariadne_core_client import AriadneClient, ConfirmationRequired
+
+    c = AriadneClient()
+    try:
+        doc = c.ingest_url("https://example.org/big.pdf", collection="r")
+    except ConfirmationRequired as err:
+        # Surface size + source to the operator; on confirm, retry with
+        # the token. The hard cap is still enforced via the chunked-read
+        # accumulator on the actual fetch.
+        doc = c.ingest_url(
+            "https://example.org/big.pdf",
+            collection="r",
+            confirmation_token=err.confirmation_token,
+        )
+
+For ``ingest_file`` / ``ingest_bytes`` the client memoizes the server-
+side upload path within the session so the retry does not re-upload
+(see ``_uploaded_paths``); the upload is keyed by ``(local_path, mtime_ns)``
+for files and by ``("bytes", sha256(content))`` for bytes.
+
 Authentication (post-xft.5.5)
 -----------------------------
 The client is Bearer-JWT only. Every request carries
@@ -34,6 +65,7 @@ logged or printed.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from pathlib import Path
@@ -100,6 +132,14 @@ class AriadneClient:
         self.initiated_by = initiated_by
         self.model = model
         self.timeout = timeout
+        # m5e §5.4: session-scoped upload memoization. Prevents the
+        # rename-on-collision retry loop where a confirmation_required
+        # 413 → caller retries → re-uploads the same file → server
+        # returns ``name_N.pdf`` → token's URI binding fails. Keyed by
+        # ``(absolute_path, mtime_ns)`` for ``_upload`` and
+        # ``("bytes", sha256_hex)`` for ``ingest_bytes``. Per-instance,
+        # unbounded; reset by destroying the client.
+        self._uploaded_paths: dict[tuple, str] = {}
 
     # ------------------------------------------------------------------ helpers
 
@@ -273,6 +313,21 @@ class AriadneClient:
     # ------------------------------------------------------------- upload util
 
     def _upload(self, path: Path) -> dict[str, Any]:
+        # m5e §5.4: memoize ``(absolute_path, mtime_ns) -> server_path``
+        # within the session. Cache hit returns a synthesized response
+        # in the same shape as the real ``/api/upload`` reply
+        # (``{"path", "filename", "size_bytes"}``), so callers don't
+        # need to know whether they were satisfied from cache. mtime_ns
+        # invalidates on file modification — a modified file warrants
+        # a new upload because the previous token's content is stale.
+        cache_key = (str(path.resolve()), path.stat().st_mtime_ns)
+        cached = self._uploaded_paths.get(cache_key)
+        if cached is not None:
+            return {
+                "path": cached,
+                "filename": Path(cached).name,
+                "size_bytes": path.stat().st_size,
+            }
         response = _http.multipart_upload(
             self._endpoint("/api/upload"),
             headers=self._headers(),
@@ -285,6 +340,7 @@ class AriadneClient:
                 "Upload response missing 'path' field",
                 request_info=f"POST {self.host}/api/upload",
             )
+        self._uploaded_paths[cache_key] = response["path"]
         return response
 
     def _create_document(
@@ -298,6 +354,7 @@ class AriadneClient:
         chunking_config: dict[str, Any] | None,
         force: bool,
         timeout: int | None = None,
+        confirmation_token: str | None = None,
     ) -> Document:
         body: dict[str, Any] = {
             "uri": uri,
@@ -308,6 +365,8 @@ class AriadneClient:
             body["tags"] = list(tags)
         if chunking_config is not None:
             body["chunking_config"] = chunking_config
+        if confirmation_token is not None:
+            body["confirmation_token"] = confirmation_token
         body.update(
             self._caller_metadata(
                 agent_notes=agent_notes,
@@ -360,7 +419,15 @@ class AriadneClient:
         chunking_config: dict[str, Any] | None = None,
         force: bool = False,
         timeout: int | None = None,
+        confirmation_token: str | None = None,
     ) -> Document:
+        """Ingest a remote URL.
+
+        See module docstring for the m5e source-size confirmation flow:
+        if the source is between the soft and hard caps the call raises
+        :class:`ConfirmationRequired`; re-call with
+        ``confirmation_token=err.confirmation_token`` to proceed.
+        """
         effective_source = source if source is not None else url
         merged_metadata = self._handle_source(effective_source, agent_metadata)
         return self._create_document(
@@ -372,6 +439,7 @@ class AriadneClient:
             chunking_config=chunking_config,
             force=force,
             timeout=timeout,
+            confirmation_token=confirmation_token,
         )
 
     def ingest_file(
@@ -386,7 +454,16 @@ class AriadneClient:
         chunking_config: dict[str, Any] | None = None,
         force: bool = False,
         timeout: int | None = None,
+        confirmation_token: str | None = None,
     ) -> Document:
+        """Ingest a local file.
+
+        See module docstring for the m5e source-size confirmation flow.
+        On retry the upload is satisfied from the per-instance cache
+        keyed by ``(absolute_path, mtime_ns)`` so the second call does
+        not re-upload (which would otherwise rename to ``name_N.ext``
+        and break the token's URI binding).
+        """
         local_path = Path(path)
         if not local_path.is_file():
             raise AriadneClientError(f"File not found: {local_path}")
@@ -401,6 +478,7 @@ class AriadneClient:
             chunking_config=chunking_config,
             force=force,
             timeout=timeout,
+            confirmation_token=confirmation_token,
         )
 
     def ingest_bytes(
@@ -416,14 +494,50 @@ class AriadneClient:
         chunking_config: dict[str, Any] | None = None,
         force: bool = False,
         timeout: int | None = None,
+        confirmation_token: str | None = None,
     ) -> Document:
+        """Ingest in-memory bytes.
+
+        See module docstring for the m5e source-size confirmation flow.
+        On retry the upload is satisfied from the per-instance cache
+        keyed by ``("bytes", sha256(content))`` so the second call does
+        not re-upload. Distinct content ⇒ distinct fingerprint ⇒
+        distinct cache slot, so a script that ingests several different
+        byte payloads in one session does the right thing.
+        """
         if not isinstance(content, (bytes, bytearray)):
             raise AriadneClientError("ingest_bytes requires bytes content")
         safe_name = Path(filename).name or "upload.bin"
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp) / safe_name
-            tmp_path.write_bytes(bytes(content))
-            upload = self._upload(tmp_path)
+        # m5e §5.4: cache by content fingerprint (not temp-path, which is
+        # fresh per call). Cache hit reuses the already-uploaded server
+        # path; cache miss writes to a tempdir and uploads once.
+        fingerprint = hashlib.sha256(bytes(content)).hexdigest()
+        cache_key = ("bytes", fingerprint)
+        cached = self._uploaded_paths.get(cache_key)
+        if cached is not None:
+            upload = {
+                "path": cached,
+                "filename": Path(cached).name,
+                "size_bytes": len(content),
+            }
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp) / safe_name
+                tmp_path.write_bytes(bytes(content))
+                response = _http.multipart_upload(
+                    self._endpoint("/api/upload"),
+                    headers=self._headers(),
+                    filepath=tmp_path,
+                    field_name="file",
+                    timeout=max(self.timeout, 120),
+                )
+                if not isinstance(response, dict) or "path" not in response:
+                    raise AriadneClientError(
+                        "Upload response missing 'path' field",
+                        request_info=f"POST {self.host}/api/upload",
+                    )
+                upload = response
+                self._uploaded_paths[cache_key] = response["path"]
         merged_metadata = self._handle_source(source, agent_metadata)
         return self._create_document(
             uri=upload["path"],
@@ -434,6 +548,7 @@ class AriadneClient:
             chunking_config=chunking_config,
             force=force,
             timeout=timeout,
+            confirmation_token=confirmation_token,
         )
 
     def search(

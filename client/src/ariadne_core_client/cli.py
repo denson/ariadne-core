@@ -50,7 +50,10 @@ from ariadne_core_client.auth import (
     format_whoami_json,
 )
 from ariadne_core_client.client import AriadneClient
-from ariadne_core_client.exceptions import AriadneClientError
+from ariadne_core_client.exceptions import (
+    AriadneClientError,
+    ConfirmationRequired,
+)
 from ariadne_core_client.models import (
     Collection,
     Document,
@@ -155,6 +158,88 @@ def _iter_dir_files(root: Path, *, recursive: bool) -> Iterable[Path]:
             if path.name.startswith("."):
                 continue
             yield path
+
+
+def _format_size(n: int) -> str:
+    """Human-readable byte size — ~10 LOC stdlib helper.
+
+    Used by the m5e confirmation prompt to render soft/hard caps and
+    reported sizes alongside their raw byte counts.
+    """
+    if n < 1024:
+        return f"{n} B"
+    units = ("KB", "MB", "GB", "TB")
+    value = float(n)
+    for unit in units:
+        value /= 1024.0
+        if value < 1024.0 or unit == units[-1]:
+            return f"{value:.1f} {unit}"
+    return f"{n} B"  # pragma: no cover (loop always returns)
+
+
+def _confirm_source_size(
+    err: ConfirmationRequired, *, auto_yes: bool
+) -> bool:
+    """Return True if the caller confirms; False to abort.
+
+    Prompt is written to stderr (post-90e stream-split convention: stderr
+    is the operator-message stream; stdout is reserved for JSON
+    payloads). The prompt itself goes via ``sys.stderr.write/flush``,
+    NOT via ``input(prompt)`` — the stdlib's ``input`` writes its prompt
+    to stdout, which would corrupt ``--json`` mode. See design §5.5.
+
+    Auto-yes short-circuits to True with a single audit-trail line on
+    stderr (NOT silent — design §11.A.4 / Nit 4: stderr ≠ JSON
+    corruption, and the line is useful operator-side observability).
+
+    Non-TTY stdin without auto-yes is fail-fast: don't silently
+    auto-confirm (defeats the whole point of the soft cap), don't
+    silently auto-decline (loses the token without operator awareness).
+    """
+    size_human = _format_size(err.reported_size)
+    soft_human = _format_size(err.soft_cap)
+    hard_human = _format_size(err.hard_cap)
+    print(f"Source:        {err.source}", file=sys.stderr)
+    print(
+        f"Reported size: {size_human} ({err.reported_size:,} bytes)",
+        file=sys.stderr,
+    )
+    if err.content_type:
+        print(f"Content-type:  {err.content_type}", file=sys.stderr)
+    if err.last_modified:
+        print(f"Last modified: {err.last_modified}", file=sys.stderr)
+    print(
+        f"Default cap:   {soft_human} ; Hard limit: {hard_human}",
+        file=sys.stderr,
+    )
+
+    if auto_yes:
+        print("Proceed? [auto-confirmed via --yes]", file=sys.stderr)
+        return True
+
+    if not sys.stdin.isatty():
+        # Non-interactive without --yes: fail-fast. Don't lose the
+        # token by auto-declining; don't defeat the purpose by auto-
+        # confirming.
+        print(
+            "error: confirmation required but stdin is not a TTY. "
+            "Pass --yes to auto-confirm.",
+            file=sys.stderr,
+        )
+        return False  # caller exits with non-zero
+
+    # Write the prompt explicitly to stderr; pass empty string to
+    # input() so the stdlib's stdout-prompt behavior does NOT fire.
+    # Load-bearing for --json mode purity.
+    sys.stderr.write("Proceed? [y/N]: ")
+    sys.stderr.flush()
+    try:
+        answer = input("").strip().lower()
+    except EOFError:
+        # Closed stdin between isatty() check and read (rare, but real
+        # in test subprocesses with input=b""); treat as decline.
+        return False
+    return answer in ("y", "yes")
 
 
 # ----------------------------------------------------------------- formatters
@@ -357,10 +442,20 @@ def _ingest_one_file(
     source: str | None,
     as_json: bool,
     label: str | None = None,
+    confirmation_token: str | None = None,
 ) -> tuple[bool, Document | None, str | None]:
-    """Ingest a single file. Returns (ok, document, error_message)."""
+    """Ingest a single file. Returns (ok, document, error_message).
+
+    Note on the m5e selective re-raise (design §5.2.0 / §11.A.1):
+    ``ConfirmationRequired`` is a subclass of ``AriadneClientError`` but
+    must propagate so the call-site retry wrapper can prompt + re-issue
+    with a token. We re-raise it explicitly inside the broad
+    ``except AriadneClientError`` so the helper's tuple-of-failure
+    return contract is preserved for every other error class.
+    """
     prefix = f"{label} " if label else ""
-    if not as_json:
+    if not as_json and confirmation_token is None:
+        # Don't re-print the "ingesting ..." line on a confirmed retry.
         print(f"{prefix}ingesting {path}...", file=sys.stderr, flush=True)
     try:
         doc = client.ingest_file(
@@ -368,26 +463,51 @@ def _ingest_one_file(
             collection=collection,
             tags=tags,
             source=source,
+            confirmation_token=confirmation_token,
         )
         return True, doc, None
     except AriadneClientError as err:
+        # m5e: ConfirmationRequired is signal, not failure — let it
+        # propagate to the call-site retry wrapper. Every other
+        # AriadneClientError subclass continues to be handled here.
+        if isinstance(err, ConfirmationRequired):
+            raise
         return False, None, str(err)
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
     client = _build_client(args)
     tags = _parse_tags(args.tags)
+    auto_yes = bool(getattr(args, "yes", False))
 
     target = args.target
 
     # URL path -----------------------------------------------------------------
     if _is_url(target):
-        doc = client.ingest_url(
-            target,
-            collection=args.collection,
-            tags=tags,
-            source=args.source,
-        )
+        # m5e §5.2.2: literal retry shape. First call threads
+        # collection/tags/source; on ConfirmationRequired, retry
+        # threads the same kwargs PLUS confirmation_token. Drop-on-
+        # retry would silently produce a Document with different
+        # metadata than the operator intended.
+        try:
+            doc = client.ingest_url(
+                target,
+                collection=args.collection,
+                tags=tags,
+                source=args.source,
+            )
+        except ConfirmationRequired as err:
+            if not _confirm_source_size(err, auto_yes=auto_yes):
+                if sys.stdin.isatty():
+                    print("Aborted.", file=sys.stderr)
+                return 1
+            doc = client.ingest_url(
+                target,
+                collection=args.collection,
+                tags=tags,
+                source=args.source,
+                confirmation_token=err.confirmation_token,
+            )
         if args.json:
             _print_json(doc)
         else:
@@ -400,14 +520,32 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         raise AriadneClientError(f"Path not found: {path}")
 
     if path.is_file():
-        ok, doc, err = _ingest_one_file(
-            client,
-            path,
-            collection=args.collection,
-            tags=tags,
-            source=args.source,
-            as_json=args.json,
-        )
+        # m5e §5.2.2: literal retry shape. The helper re-raises
+        # ConfirmationRequired (selective re-raise per §5.2.0); the
+        # retry call threads the same kwargs PLUS confirmation_token.
+        try:
+            ok, doc, err = _ingest_one_file(
+                client,
+                path,
+                collection=args.collection,
+                tags=tags,
+                source=args.source,
+                as_json=args.json,
+            )
+        except ConfirmationRequired as cerr:
+            if not _confirm_source_size(cerr, auto_yes=auto_yes):
+                if sys.stdin.isatty():
+                    print("Aborted.", file=sys.stderr)
+                return 1
+            ok, doc, err = _ingest_one_file(
+                client,
+                path,
+                collection=args.collection,
+                tags=tags,
+                source=args.source,
+                as_json=args.json,
+                confirmation_token=cerr.confirmation_token,
+            )
         if not ok:
             print(f"error: {err}", file=sys.stderr)
             return 1
@@ -431,15 +569,48 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
         for idx, file_path in enumerate(files, 1):
             label = f"[{idx}/{len(files)}]"
-            ok, doc, err = _ingest_one_file(
-                client,
-                file_path,
-                collection=args.collection,
-                tags=tags,
-                source=args.source,
-                as_json=args.json,
-                label=label,
-            )
+            # m5e: same per-file retry shape as the single-file branch.
+            # --yes blanket-confirms every file in the batch.
+            try:
+                ok, doc, err = _ingest_one_file(
+                    client,
+                    file_path,
+                    collection=args.collection,
+                    tags=tags,
+                    source=args.source,
+                    as_json=args.json,
+                    label=label,
+                )
+            except ConfirmationRequired as cerr:
+                if not _confirm_source_size(cerr, auto_yes=auto_yes):
+                    if sys.stdin.isatty():
+                        print(
+                            f"{label} Aborted.",
+                            file=sys.stderr,
+                        )
+                    # Treat as a per-file failure and continue with
+                    # the rest of the batch (consistent with the
+                    # legacy "one file errored, others continue"
+                    # semantic at line ~466 below).
+                    failures += 1
+                    results.append(
+                        {
+                            "path": str(file_path),
+                            "ok": False,
+                            "error": "Aborted by operator at confirmation prompt.",
+                        }
+                    )
+                    continue
+                ok, doc, err = _ingest_one_file(
+                    client,
+                    file_path,
+                    collection=args.collection,
+                    tags=tags,
+                    source=args.source,
+                    as_json=args.json,
+                    label=label,
+                    confirmation_token=cerr.confirmation_token,
+                )
             if ok:
                 assert doc is not None
                 if doc.was_dedup_skip:
@@ -635,6 +806,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--recursive",
         action="store_true",
         help="When TARGET is a directory, walk it recursively.",
+    )
+    p_ingest.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help=(
+            "Auto-confirm sources above the server's soft cap "
+            "(m5e --max_source_bytes). Without this flag, the CLI "
+            "prompts y/N when the server requests confirmation. "
+            "Required when stdin is not a TTY (e.g. piped or scripted)."
+        ),
     )
     add_json_flag(p_ingest)
     add_host_flag(p_ingest)

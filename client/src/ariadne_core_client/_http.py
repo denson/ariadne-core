@@ -21,6 +21,7 @@ from ariadne_core_client.exceptions import (
     AriadneClientError,
     AriadneNotFoundError,
     AriadneServerError,
+    ConfirmationRequired,
 )
 
 
@@ -54,12 +55,74 @@ def _parse_error_body(body: bytes) -> str:
     return json.dumps(payload)[:500]
 
 
+def _parse_confirmation_required_body(body: bytes) -> dict | None:
+    """Return the parsed ``detail`` dict iff the body is an m5e
+    ``confirmation_required`` envelope; otherwise return None.
+
+    The m5e shape (per ``SPEC.md`` and ``tests/verification/ariadne--m5e/
+    test_routes_confirmation.py``) is::
+
+        {"detail": {
+            "code": "confirmation_required",
+            "message": "...",
+            "soft_cap": int,
+            "hard_cap": int,
+            "reported_size": int,
+            "source": str,
+            "content_type": str | None,
+            "last_modified": str | None,
+            "confirmation_token": str,
+            "ttl_seconds": int,
+        }}
+
+    A 413 from the legacy signed-upload path has no ``code`` /
+    ``confirmation_token`` field and falls through to the generic
+    ``AriadneClientError`` route.
+    """
+    if not body:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    detail = payload.get("detail")
+    if not isinstance(detail, dict):
+        return None
+    if detail.get("code") != "confirmation_required":
+        return None
+    if "confirmation_token" not in detail:
+        return None
+    return detail
+
+
 def _raise_for_http_error(err: urllib_error.HTTPError, request_info: str) -> None:
     status = err.code
     try:
         body = err.read()
     except Exception:
         body = b""
+    if status == 413:
+        # m5e confirmation flow: a 413 with the structured `detail` envelope
+        # raises ConfirmationRequired so the caller can surface size + token.
+        # Other 413 shapes (e.g., signed-upload size cap) fall through to
+        # the generic path so back-compat with pre-m5e callers is preserved.
+        confirm_body = _parse_confirmation_required_body(body)
+        if confirm_body is not None:
+            message = confirm_body.get("message") or "Confirmation required"
+            raise ConfirmationRequired(
+                message,
+                soft_cap=int(confirm_body["soft_cap"]),
+                hard_cap=int(confirm_body["hard_cap"]),
+                reported_size=int(confirm_body["reported_size"]),
+                source=str(confirm_body["source"]),
+                content_type=confirm_body.get("content_type"),
+                last_modified=confirm_body.get("last_modified"),
+                confirmation_token=str(confirm_body["confirmation_token"]),
+                ttl_seconds=int(confirm_body["ttl_seconds"]),
+                request_info=request_info,
+            )
     message = _parse_error_body(body) or err.reason or f"HTTP {status}"
     exc_cls = _exception_for_status(status)
     raise exc_cls(message, status_code=status, request_info=request_info)
