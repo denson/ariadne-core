@@ -77,12 +77,44 @@ class MarkitdownConfig:
 class IngestConfig:
     """Source-acquisition knobs (cap, future: parallelism / retry / allowlist).
 
-    `max_source_bytes` is enforced by services._read_source_bytes BEFORE
-    the bytes reach extraction, so a runaway URL or oversized file is
-    rejected loudly without OOM-ing the worker. Default 200 MB.
+    Two-tier cap (m5e):
+
+      * ``max_source_bytes`` — *soft* cap. Default 200 MB. Sources above this
+        trigger the m5e confirmation flow on POST /api/documents (the route
+        returns HTTP 413 with a structured ``confirmation_required`` body
+        carrying a HMAC-signed token; re-submit with ``confirmation_token``
+        in the body to proceed). The field name is unchanged from pre-m5e
+        (synonyms-over-renames discipline); the *meaning* rotated from
+        "hard refuse" to "soft cap that triggers confirmation" but the
+        symbol stays.
+
+      * ``max_source_bytes_hard`` — *hard* cap (refuse outright above this).
+        Default 5 GB. The chunked-read accumulator in
+        services._read_source_bytes still trips at ``effective_hard``
+        regardless of any token, so the memory-safety floor survives a
+        confirmed-but-grew source.
+
+      * ``confirmation_token_ttl_seconds`` — token TTL window. Default
+        300s. Tokens are HMAC-signed and stateless; a container restart
+        regenerates the per-process secret and invalidates in-flight
+        tokens (caller path is identical to ``EXPIRED`` — re-submit gets
+        a fresh 413).
+
+      * ``require_confirmation_above_soft`` — when False, the soft cap acts
+        as a strict cap (legacy "refuse outright" semantics, useful for CI
+        / scripted batch ingest). The wire response is HTTP 422 with
+        ``code: "exceeds_soft_cap_strict"``. Default True.
+
+    ``configure_ingest`` validates ``max_source_bytes_hard >= max_source_bytes``
+    and ``confirmation_token_ttl_seconds > 0`` so a misconfigured deployment
+    fails loud at lifespan-load instead of silently producing weird runtime
+    behavior.
     """
 
-    max_source_bytes: int = 209715200  # 200 MB; enforced before/during fetch
+    max_source_bytes: int = 209715200  # 200 MB; SOFT cap (m5e: triggers confirmation)
+    max_source_bytes_hard: int = 5_368_709_120  # 5 GB; refuse outright above this
+    confirmation_token_ttl_seconds: int = 300  # 5 min token TTL
+    require_confirmation_above_soft: bool = True  # If False, soft cap acts strict
 
 
 @dataclass

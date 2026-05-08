@@ -176,11 +176,23 @@ class TestF2_422_HTTPContract:
         assert "Invalid ingest config" in message, body
         assert "bogus_key_owned_by_typo" in message, body
 
-    def test_oversize_source_returns_422_not_500(self, monkeypatch, tmp_path):
-        """Per-request cap=1024 against a 4 KB local file must surface
-        as 422, NOT 500. Same defense-in-depth shape as bogus-key: the
-        SourceTooLargeError must be caught by services._process_single_document
-        and converted to the standard error-dict."""
+    def test_oversize_source_returns_413_confirmation_required(
+        self, monkeypatch, tmp_path
+    ):
+        """m5e migration of the legacy 422-on-oversize semantic.
+
+        Per-request ``max_source_bytes=1024`` against a 4 KB local file
+        must surface as **HTTP 413** with ``code: "confirmation_required"``
+        and a token in the body. Pre-m5e this was 422 ``Source read
+        failed``; post-m5e the soft cap triggers the confirmation flow
+        (default deployment with ``require_confirmation_above_soft=True``).
+
+        Defense-in-depth: the request must NOT surface as 500 (raw
+        SourceTooLargeError leak through global handler). The cap-aware
+        error-dict at services._process_single_document is the load-
+        bearing converter; this probe pins the route-layer status code
+        and wire shape.
+        """
         _install_clean_state(monkeypatch)
 
         big = tmp_path / "oversize.txt"
@@ -196,15 +208,48 @@ class TestF2_422_HTTPContract:
             },
         )
 
-        assert resp.status_code == 422, (
-            f"oversize source returned {resp.status_code} not 422. "
-            f"Body: {resp.text}"
+        assert resp.status_code == 413, (
+            f"oversize source must surface as 413 confirmation_required "
+            f"(m5e); got {resp.status_code}. Body: {resp.text}"
         )
         body = resp.json()
         detail = body.get("detail", body)
-        message = detail.get("message", "")
-        assert "Source read failed" in message, body
-        assert "max_source_bytes" in message, body
+        assert detail.get("code") == "confirmation_required", body
+        assert detail.get("reported_size") == 4096, body
+        assert detail.get("soft_cap") == 1024, body
+        assert detail.get("confirmation_token"), body  # non-empty string
+
+    def test_above_hard_cap_returns_422_exceeds_hard_limit(
+        self, monkeypatch, tmp_path
+    ):
+        """m5e: per-request ``max_source_bytes_hard`` override below the
+        file size must surface as 422 ``exceeds_hard_limit`` (no token).
+        The hard cap is the memory-safety floor that the confirmation
+        flow does NOT bypass (per design §11.B.4 / probe (f))."""
+        _install_clean_state(monkeypatch)
+
+        big = tmp_path / "huge.txt"
+        big.write_bytes(b"x" * 4096)
+
+        client = TestClient(_build_app_with_real_router())
+        resp = client.post(
+            "/api/documents",
+            json={
+                "uri": str(big),
+                "collection": "vera_16a_F2_hard",
+                "ingest_config": {
+                    "max_source_bytes": 512,
+                    "max_source_bytes_hard": 1024,
+                },
+            },
+        )
+
+        assert resp.status_code == 422, resp.text
+        body = resp.json()
+        detail = body.get("detail", body)
+        assert detail.get("code") == "exceeds_hard_limit", body
+        assert detail.get("hard_cap") == 1024, body
+        assert "confirmation_token" not in detail, body
 
     def test_no_override_succeeds_with_yaml_default(self, monkeypatch):
         """ingest_config absent (=> None) must use the YAML/dataclass
@@ -240,6 +285,10 @@ class TestURLSingleFetchAtRoute:
     trip the assertion."""
 
     def test_url_fetch_count_eq_1_via_route(self, monkeypatch):
+        """m5e migration: HEAD probe + GET = 2 urlopen calls per ingest.
+        The "single body fetch" invariant lives at the urlretrieve assertion
+        (extractor must not re-fetch); the urlopen count is now 2 because
+        the size probe runs HEAD before the GET."""
         _install_clean_state(monkeypatch)
 
         body = b"# vera independent route probe\n"
@@ -266,9 +315,9 @@ class TestURLSingleFetchAtRoute:
             )
 
         assert resp.status_code == 200, resp.text
-        assert urlopen_mock.call_count == 1, (
-            f"URL must be fetched exactly once via the route; got "
-            f"{urlopen_mock.call_count}"
+        assert urlopen_mock.call_count == 2, (
+            f"m5e: URL must be HEAD-probed once + GET-fetched once via "
+            f"the route; got {urlopen_mock.call_count} urlopen calls"
         )
         assert urlretrieve_mock.call_count == 0, (
             f"urlretrieve must NOT be called from the canonical route flow; "

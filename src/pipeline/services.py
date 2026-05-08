@@ -9,16 +9,24 @@ import asyncio
 import dataclasses
 import json
 import logging
+import mimetypes
 import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
+from pipeline.api.confirmation import (
+    ValidationResult,
+    issue_token,
+    validate_token,
+)
 from pipeline.chunking.chunker import (
     Chunk,
     ChunkingConfig as _ChunkerConfig,
@@ -68,6 +76,17 @@ _chunker_defaults_baseline: _ChunkerConfig = _ChunkerConfig()
 # FastAPI lifespan (tests, scripts).
 _ingest_config: IngestConfig = IngestConfig()
 
+# Per-design §2.3: TTL is server policy, not a per-request shape. Fields
+# in this set are valid IngestConfig fields (so configure_ingest accepts
+# them from YAML at startup) but a per-request override of any of them
+# raises the same unknown-keys 422 that a typo'd field would, surfacing
+# operator misuse loudly rather than silently flowing a per-request value
+# through. Add fields here only if the design promotes them to server-
+# only policy.
+_PER_REQUEST_DENYLIST: frozenset[str] = frozenset(
+    {"confirmation_token_ttl_seconds"}
+)
+
 
 def configure_embedding(config: EmbeddingConfig) -> None:
     """Configure the embedding client. Call before using store/search."""
@@ -98,14 +117,31 @@ def configure_stores(dedup_store, vector_store) -> None:
 def configure_ingest(config: IngestConfig) -> None:
     """Install YAML-loaded ingest defaults. Per-request overrides win at call time.
 
-    Validates ``max_source_bytes > 0`` so a misconfigured deployment fails
-    loud at lifespan-load time instead of silently rejecting every fetch
-    on the first byte.
+    Validates the cap-coherence + TTL invariants so a misconfigured
+    deployment fails loud at lifespan-load time instead of silently
+    producing weird runtime behavior:
+
+      * ``max_source_bytes > 0`` (existing).
+      * ``max_source_bytes_hard >= max_source_bytes`` (m5e new — a hard cap
+        below the soft cap is incoherent).
+      * ``confirmation_token_ttl_seconds > 0`` (m5e new — a zero/negative
+        TTL is unreachable).
     """
     if config.max_source_bytes <= 0:
         raise ValueError(
             f"IngestConfig.max_source_bytes must be > 0, got "
             f"{config.max_source_bytes}"
+        )
+    if config.max_source_bytes_hard < config.max_source_bytes:
+        raise ValueError(
+            f"IngestConfig.max_source_bytes_hard "
+            f"({config.max_source_bytes_hard}) must be >= "
+            f"IngestConfig.max_source_bytes ({config.max_source_bytes})"
+        )
+    if config.confirmation_token_ttl_seconds <= 0:
+        raise ValueError(
+            f"IngestConfig.confirmation_token_ttl_seconds must be > 0, got "
+            f"{config.confirmation_token_ttl_seconds}"
         )
     global _ingest_config
     _ingest_config = config
@@ -153,14 +189,30 @@ SUPPORTED_EXTENSIONS = {
 
 
 class SourceTooLargeError(ValueError):
-    """Raised when a source URI's bytes exceed IngestConfig.max_source_bytes.
+    """Raised when a source URI's bytes exceed the cap (m5e: soft or hard).
 
     Subclasses ValueError so any future caller that adds an explicit
     ``except ValueError`` clause picks this up with the right semantic.
-    In the current flow the error is caught generically by the
-    ``except Exception`` at the call site below and surfaced as HTTP 422
-    via routes.py:282 with the descriptive message.
+
+    m5e attribute (carried so ``_process_single_document`` can route soft-
+    vs-hard breaches to the right error code):
+
+      * ``bytes_seen`` — for the chunked-read accumulator path, the buffer
+        size at which the overrun was detected; for the fast-fail-on-
+        Content-Length path, the declared size; for local files, the
+        ``stat().st_size``. Always ``int``. The caller compares this
+        against ``effective_hard`` to decide soft-vs-hard; no further
+        classification is carried on the exception itself.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        bytes_seen: int,
+    ) -> None:
+        super().__init__(message)
+        self.bytes_seen = int(bytes_seen)
 
 
 _READ_CHUNK = 1024 * 1024  # 1 MB; size of each urlopen.read() iteration
@@ -207,9 +259,13 @@ def _read_source_bytes(uri: str, *, cap: int | None = None) -> bytes:
                 except ValueError:
                     declared = None
                 if declared is not None and declared > cap:
+                    # m5e: bytes_seen = declared size; soft-vs-hard
+                    # classification is decided by _process_single_document
+                    # based on bytes_seen vs effective_hard.
                     raise SourceTooLargeError(
                         f"URL source exceeds max_source_bytes "
-                        f"(Content-Length={declared} > cap={cap}): {uri}"
+                        f"(Content-Length={declared} > cap={cap}): {uri}",
+                        bytes_seen=declared,
                     )
             buf = bytearray()
             while True:
@@ -218,20 +274,30 @@ def _read_source_bytes(uri: str, *, cap: int | None = None) -> bytes:
                     break
                 buf.extend(chunk)
                 if len(buf) > cap:
+                    # m5e: bytes_seen = accumulator size at overrun (>= cap+1).
+                    # The caller compares bytes_seen against effective_hard to
+                    # decide soft-vs-hard. Worst-case overshoot is
+                    # cap + _READ_CHUNK - 1 (~1 MB extra fetch).
                     raise SourceTooLargeError(
                         f"URL source exceeds max_source_bytes during read "
-                        f"(>{cap}, header may be absent or false): {uri}"
+                        f"(>{cap}, header may be absent or false): {uri}",
+                        bytes_seen=len(buf),
                     )
             return bytes(buf)
     return _read_file_capped(Path(uri), cap, uri)
 
 
 def _read_file_capped(path: Path, cap: int, uri: str) -> bytes:
-    """Read a local file, refusing to load anything larger than ``cap``."""
+    """Read a local file, refusing to load anything larger than ``cap``.
+
+    m5e: ``bytes_seen`` populated from ``stat().st_size`` so the caller can
+    classify soft-vs-hard breach.
+    """
     size = path.stat().st_size
     if size > cap:
         raise SourceTooLargeError(
-            f"File source exceeds max_source_bytes ({size} > {cap}): {uri}"
+            f"File source exceeds max_source_bytes ({size} > {cap}): {uri}",
+            bytes_seen=size,
         )
     return path.read_bytes()
 
@@ -239,6 +305,219 @@ def _read_file_capped(path: Path, cap: int, uri: str) -> bytes:
 def _source_file_from_uri(uri: str) -> str:
     """Derive a display-name source_file from a URI without touching disk."""
     return Path(urlparse(uri).path).name if "://" in uri else Path(uri).name
+
+
+@dataclasses.dataclass
+class ProbeResult:
+    """Pre-flight metadata for a source URI (m5e §3.4).
+
+    ``size`` is None when the probe could not determine size (HEAD failure /
+    HTTP 405 / Content-Length missing); the caller falls through to the
+    chunked-read path where the accumulator gates against the cap.
+    ``content_type`` and ``last_modified`` are nullable for the same reason
+    and for unrecognized file types.
+    """
+
+    size: Optional[int] = None
+    content_type: Optional[str] = None
+    last_modified: Optional[str] = None
+
+
+def _probe_size(uri: str, *, timeout: float = 10.0) -> ProbeResult:
+    """Pre-flight probe — return size/content-type/last-modified without fetching the body.
+
+    For ``file://`` and bare-path: ``Path.stat()`` (size, mtime → ISO-8601 UTC),
+    ``mimetypes.guess_type(name)`` for content_type. Synchronous, no network.
+
+    For ``http(s)://``: HEAD via ``urllib.request.Request(uri, method="HEAD")``
+    with the given timeout. On HTTPError / URLError / no Content-Length →
+    ``size=None`` (caller falls through to GET). On 2xx, parses
+    ``Content-Length``, ``Content-Type``, and ``Last-Modified`` (RFC 7231,
+    normalized to ISO-8601 UTC via ``email.utils.parsedate_to_datetime``).
+    Malformed ``Last-Modified`` → ``last_modified=None`` (informational only).
+
+    **Invariant — do not change (m5e §3.4 / Nit 7):** the URI passed to
+    ``confirmation.issue_token(source_uri=...)`` downstream of this helper
+    is the **request-time URI** as submitted in the ``DocumentRequest`` body,
+    NOT any post-redirect URI surfaced by ``urlopen``'s automatic redirect
+    following. The token signs the URI the operator confirmed, not the URI
+    the redirect chain happened to resolve to at probe time. This helper
+    returns size / content-type / last-modified extracted from the redirect-
+    resolved response but **does not return** the resolved URI; the caller
+    in ``_process_single_document`` continues to use the original ``uri``
+    variable when calling ``issue_token``.
+    """
+    if uri.startswith("file://"):
+        path = Path(urlparse(uri).path)
+        return _probe_local_path(path)
+    if uri.startswith(("http://", "https://")):
+        return _probe_http_head(uri, timeout=timeout)
+    return _probe_local_path(Path(uri))
+
+
+def _probe_local_path(path: Path) -> ProbeResult:
+    """Local-file probe: stat + mimetypes guess. ``size=None`` on stat failure."""
+    try:
+        st = path.stat()
+    except (FileNotFoundError, OSError):
+        # File is unreachable — let the read path handle the failure with
+        # its own error message; the probe just reports "unknown".
+        return ProbeResult(size=None, content_type=None, last_modified=None)
+    size = st.st_size
+    content_type, _ = mimetypes.guess_type(path.name)
+    try:
+        last_modified = datetime.fromtimestamp(
+            st.st_mtime, tz=timezone.utc
+        ).isoformat()
+    except (OverflowError, OSError, ValueError):
+        last_modified = None
+    return ProbeResult(
+        size=size,
+        content_type=content_type,
+        last_modified=last_modified,
+    )
+
+
+def _probe_http_head(uri: str, *, timeout: float) -> ProbeResult:
+    """HTTP HEAD probe; ``size=None`` on any failure or missing Content-Length."""
+    try:
+        req = Request(uri, method="HEAD")
+        with urlopen(req, timeout=timeout) as resp:
+            cl = resp.headers.get("Content-Length")
+            try:
+                size: Optional[int] = int(cl) if cl is not None else None
+            except (TypeError, ValueError):
+                size = None
+            content_type = resp.headers.get("Content-Type")
+            if content_type:
+                # Strip any charset / boundary param; only the media type.
+                content_type = content_type.split(";", 1)[0].strip() or None
+            last_modified_hdr = resp.headers.get("Last-Modified")
+            last_modified: Optional[str] = None
+            if last_modified_hdr:
+                try:
+                    dt = parsedate_to_datetime(last_modified_hdr)
+                    if dt is not None:
+                        last_modified = dt.astimezone(
+                            timezone.utc
+                        ).isoformat()
+                except (TypeError, ValueError):
+                    last_modified = None
+            return ProbeResult(
+                size=size,
+                content_type=content_type,
+                last_modified=last_modified,
+            )
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+        # HTTP 405 (Method Not Allowed), DNS failure, TLS error, timeout —
+        # all map to "we don't know the size". Caller falls through to GET.
+        return ProbeResult(size=None, content_type=None, last_modified=None)
+
+
+def _format_size_human(n: int) -> str:
+    """Compact human-readable byte size for m5e error messages."""
+    if n < 1024:
+        return f"{n} B"
+    units = ["KB", "MB", "GB", "TB"]
+    f = float(n)
+    for u in units:
+        f /= 1024.0
+        if f < 1024.0:
+            return f"{f:.1f} {u}"
+    return f"{f:.1f} PB"
+
+
+def _hard_limit_error_dict(
+    uri: str, reported_size: int, hard_cap: int
+) -> dict[str, Any]:
+    """Build the m5e ``exceeds_hard_limit`` error dict (routes maps to 422)."""
+    return {
+        "error": True,
+        "code": "exceeds_hard_limit",
+        "message": (
+            f"Source size {reported_size} ({_format_size_human(reported_size)}) "
+            f"exceeds hard limit {hard_cap} ({_format_size_human(hard_cap)}); "
+            f"cannot override."
+        ),
+        "reported_size": reported_size,
+        "hard_cap": hard_cap,
+        "source": uri,
+    }
+
+
+def _soft_strict_error_dict(
+    uri: str, reported_size: int, soft_cap: int, hard_cap: int
+) -> dict[str, Any]:
+    """Build the m5e ``exceeds_soft_cap_strict`` error dict (routes maps to 422).
+
+    Emitted only when ``require_confirmation_above_soft=False`` (legacy
+    strict mode) and the probe / read observes a size between soft and hard.
+    """
+    return {
+        "error": True,
+        "code": "exceeds_soft_cap_strict",
+        "message": (
+            f"Source size {reported_size} ({_format_size_human(reported_size)}) "
+            f"exceeds strict cap {soft_cap} ({_format_size_human(soft_cap)}). "
+            f"This deployment has require_confirmation_above_soft=False; "
+            f"raise the cap server-side or use a deployment with "
+            f"confirmation enabled."
+        ),
+        "reported_size": reported_size,
+        "soft_cap": soft_cap,
+        "hard_cap": hard_cap,
+        "source": uri,
+    }
+
+
+def _confirmation_required_error_dict(
+    *,
+    uri: str,
+    reported_size: int,
+    soft_cap: int,
+    hard_cap: int,
+    content_type: Optional[str],
+    last_modified: Optional[str],
+    confirmation_token: str,
+    ttl_seconds: int,
+    size_precise: bool = True,
+) -> dict[str, Any]:
+    """Build the m5e ``confirmation_required`` error dict (routes maps to 413).
+
+    For the HEAD-fall-through path, ``size_precise=False`` and the message
+    notes that the size is at least the threshold-crossing observation
+    (Content-Length unavailable from server). For the HEAD-resolved or
+    file-stat path, ``size_precise=True`` and the message reports the
+    exact observed size.
+    """
+    if size_precise:
+        message = (
+            f"Source size {reported_size} ({_format_size_human(reported_size)}) "
+            f"exceeds default cap {soft_cap} ({_format_size_human(soft_cap)}). "
+            f"Confirm to proceed; this token is valid for {ttl_seconds}s and "
+            f"may be re-submitted to resume after a transient failure."
+        )
+    else:
+        message = (
+            f"Source size is at least {reported_size} bytes "
+            f"({_format_size_human(reported_size)}; Content-Length unavailable "
+            f"from server) and exceeds default cap {soft_cap} "
+            f"({_format_size_human(soft_cap)}). Confirm to proceed; this "
+            f"token is valid for {ttl_seconds}s."
+        )
+    return {
+        "error": True,
+        "code": "confirmation_required",
+        "message": message,
+        "soft_cap": soft_cap,
+        "hard_cap": hard_cap,
+        "reported_size": reported_size,
+        "source": uri,
+        "content_type": content_type,
+        "last_modified": last_modified,
+        "confirmation_token": confirmation_token,
+        "ttl_seconds": ttl_seconds,
+    }
 
 
 def _process_single_document(
@@ -256,6 +535,7 @@ def _process_single_document(
     chunking_config: Optional[dict],
     ingest_config: Optional[dict] = None,
     action: str = "ingest",
+    confirmation_token: Optional[str] = None,
 ) -> dict[str, Any]:
     """Shared pipeline logic for convert_document and ingest.
 
@@ -267,21 +547,51 @@ def _process_single_document(
     # typos surface as 422 rather than silently no-op'ing. The validation
     # is wrapped in its OWN try/except (mirroring the source-read pattern
     # below) so the raised ValueError converts to the standard
-    # ``{"error": True, ...}`` dict that routes.py:282 turns into HTTP 422.
+    # ``{"error": True, ...}`` dict that routes.py:287-295 turns into HTTP 422.
     # WITHOUT this local catch the ValueError would propagate to FastAPI's
-    # global handler at app.py:125-137 and surface as HTTP 500 — beat 7's
+    # global handler at app.py:136-157 and surface as HTTP 500 — beat 7's
     # 422 contract requires the local catch.
-    effective_cap = _ingest_config.max_source_bytes
+    #
+    # m5e: also resolves the soft / hard / strict-mode / TTL knobs against
+    # the per-request override. Unknown-keys validation is the same dict
+    # diff against IngestConfig fields, so the new fields automatically
+    # join the allowed set without an explicit add here.
+    effective_soft = _ingest_config.max_source_bytes
+    effective_hard = _ingest_config.max_source_bytes_hard
+    effective_require_confirm = _ingest_config.require_confirmation_above_soft
+    effective_ttl = _ingest_config.confirmation_token_ttl_seconds
     if ingest_config:
         try:
             valid_keys = {f.name for f in dataclasses.fields(IngestConfig)}
             unknown = set(ingest_config) - valid_keys
-            if unknown:
+            # Per design §2.3: denylisted fields are valid IngestConfig
+            # field names (so YAML startup accepts them) but are server-
+            # policy knobs that MUST NOT be overridden per-request. Surface
+            # the operator's mistake via the same 422 path as a typo.
+            denied = set(ingest_config) & _PER_REQUEST_DENYLIST
+            if unknown or denied:
+                problems = sorted(unknown | denied)
+                reason_bits = []
+                if unknown:
+                    reason_bits.append(f"unknown: {sorted(unknown)}")
+                if denied:
+                    reason_bits.append(
+                        f"server-policy (not per-request): {sorted(denied)}"
+                    )
                 raise ValueError(
-                    f"Unknown ingest config keys: {sorted(unknown)}. "
-                    f"Valid keys: {sorted(valid_keys)}."
+                    f"Unknown ingest config keys: {problems}. "
+                    f"Valid keys: {sorted(valid_keys - _PER_REQUEST_DENYLIST)}. "
+                    f"({'; '.join(reason_bits)})"
                 )
-            effective_cap = ingest_config.get("max_source_bytes", effective_cap)
+            effective_soft = ingest_config.get(
+                "max_source_bytes", effective_soft
+            )
+            effective_hard = ingest_config.get(
+                "max_source_bytes_hard", effective_hard
+            )
+            effective_require_confirm = ingest_config.get(
+                "require_confirmation_above_soft", effective_require_confirm
+            )
         except ValueError as e:
             return {
                 "error": True,
@@ -290,14 +600,143 @@ def _process_single_document(
                 "source_file": _source_file_from_uri(uri),
             }
 
+    # m5e size-check flow:
+    #
+    #   1. If a confirmation_token is present, validate it. On VALID, skip
+    #      the size probe and read at effective_hard (the chunked-read
+    #      accumulator still trips on a confirmed-but-grew source above
+    #      hard, which surfaces as exceeds_hard_limit 422). On any non-
+    #      VALID result, fall through to step 2 (which will re-issue a
+    #      fresh token via the 413 path).
+    #   2. Probe size via _probe_size. If size known: branch on
+    #      effective_hard / effective_soft / require_confirmation_above_soft.
+    #      If size unknown (HEAD failed / Content-Length absent / local
+    #      stat failed): set size_precise=False for any token issued
+    #      downstream and read at effective_soft so the chunked-read
+    #      accumulator triggers the confirmation flow at the soft cap
+    #      boundary (caller branches on bytes_seen vs effective_hard).
+    read_cap = effective_soft  # default; overridden below
+    size_precise_for_token = True
+
+    if confirmation_token:
+        validation = validate_token(confirmation_token, source_uri=uri)
+        if validation == ValidationResult.VALID:
+            logger.info(
+                "confirmation-token: validated",
+                extra={"source_file": _source_file_from_uri(uri)},
+            )
+            read_cap = effective_hard
+        else:
+            # Tampered / expired / URI-mismatch all fall through to the
+            # probe path; the probe's outcome will re-issue a fresh token
+            # via the 413 path. Operator-side log records the result tag
+            # so forensics can distinguish the cases.
+            logger.warning(
+                "confirmation-token: %s (re-issuing via probe path)",
+                validation.value,
+                extra={"source_file": _source_file_from_uri(uri)},
+            )
+            confirmation_token = None  # treat as absent for the probe path
+
+    if not confirmation_token:
+        probe = _probe_size(uri)
+        if probe.size is not None:
+            # Hard-cap breach takes priority — refuse outright, no token.
+            if probe.size >= effective_hard:
+                return _hard_limit_error_dict(
+                    uri, probe.size, effective_hard
+                )
+            # Strict mode: soft cap acts as a strict cap, no token.
+            if (
+                probe.size >= effective_soft
+                and not effective_require_confirm
+            ):
+                return _soft_strict_error_dict(
+                    uri, probe.size, effective_soft, effective_hard
+                )
+            # Soft-cap breach + confirmation enabled: issue token.
+            if (
+                probe.size >= effective_soft
+                and effective_require_confirm
+            ):
+                # NOTE: source_uri is the request-time URI, not any
+                # post-redirect URI surfaced inside _probe_size's HEAD
+                # response. See _probe_size docstring for the invariant.
+                token, _ = issue_token(
+                    source_uri=uri,
+                    reported_size=probe.size,
+                    size_precise=True,
+                    ttl_seconds=effective_ttl,
+                )
+                return _confirmation_required_error_dict(
+                    uri=uri,
+                    reported_size=probe.size,
+                    soft_cap=effective_soft,
+                    hard_cap=effective_hard,
+                    content_type=probe.content_type,
+                    last_modified=probe.last_modified,
+                    confirmation_token=token,
+                    ttl_seconds=effective_ttl,
+                )
+            # Below soft cap: proceed with read at soft cap (existing flow).
+            read_cap = effective_soft
+        else:
+            # Probe failed; gate the read at soft cap so the accumulator
+            # can trigger the confirmation flow at that boundary. Tokens
+            # issued downstream from the bytes-seen overrun get
+            # size_precise=False.
+            read_cap = effective_soft
+            size_precise_for_token = False
+
     # Read source bytes for fingerprinting BEFORE extraction. The same
     # buffer is reused by extract_from_bytes below — one fetch, one read,
     # one buffer (Batch G / ariadne--16a §6). Cap-enforced via
     # _read_source_bytes (URL: Content-Length first, then chunked
     # accumulator; local file: stat-based pre-flight).
     try:
-        raw_bytes = _read_source_bytes(uri, cap=effective_cap)
+        raw_bytes = _read_source_bytes(uri, cap=read_cap)
+    except SourceTooLargeError as e:
+        # m5e: classify soft-vs-hard via bytes_seen against effective_hard.
+        # If the read was capped at effective_hard (token-validated path),
+        # any breach is necessarily a hard-cap breach. If the read was
+        # capped at effective_soft (no token / probe failed) and bytes_seen
+        # < effective_hard, it's a soft-cap breach → confirmation flow.
+        bytes_seen = getattr(e, "bytes_seen", read_cap + 1)
+        if bytes_seen >= effective_hard:
+            return _hard_limit_error_dict(uri, bytes_seen, effective_hard)
+        # bytes_seen between soft and hard.
+        if not effective_require_confirm:
+            return _soft_strict_error_dict(
+                uri, bytes_seen, effective_soft, effective_hard
+            )
+        token, _ = issue_token(
+            source_uri=uri,
+            reported_size=bytes_seen,
+            size_precise=size_precise_for_token,
+            ttl_seconds=effective_ttl,
+        )
+        # Probe might have surfaced metadata even when size was None
+        # (e.g., HEAD returned 200 without Content-Length but with
+        # Content-Type / Last-Modified). For now we only carry probe
+        # metadata when probe.size was set; the fall-through path leaves
+        # content_type / last_modified as None to avoid an extra HEAD on
+        # a path that already failed once.
+        return _confirmation_required_error_dict(
+            uri=uri,
+            reported_size=bytes_seen,
+            soft_cap=effective_soft,
+            hard_cap=effective_hard,
+            content_type=None,
+            last_modified=None,
+            confirmation_token=token,
+            ttl_seconds=effective_ttl,
+            size_precise=size_precise_for_token,
+        )
     except Exception as e:
+        # Legacy non-cap source-read failure path: preserves the pre-m5e
+        # error-dict shape (no `code` key) so the dispatch table at
+        # routes.py for unknown codes falls through to the default 422
+        # branch. See §3.3 closing constraint + §4 probe (l).
         return {
             "error": True,
             "message": f"Source read failed: {e}",

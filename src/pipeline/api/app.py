@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from pipeline.api.confirmation import configure_confirmation
 from pipeline.api.discovery import router as discovery_router
 from pipeline.api.routes import router
 from pipeline.config import load_config
@@ -72,13 +73,27 @@ async def lifespan(app: FastAPI):
 
     # Install YAML-loaded ingest defaults (ariadne--16a / Batch G).
     # Per-request overrides still win at call time. configure_ingest
-    # validates max_source_bytes > 0 and raises ValueError loudly here
-    # if the YAML value is misconfigured (no silent zero-cap).
+    # validates the cap-coherence + TTL invariants and raises ValueError
+    # loudly here if the YAML value is misconfigured (no silent zero-cap,
+    # no silent hard < soft, no silent zero-TTL).
     configure_ingest(config.ingest)
     logger.info(
-        "Ingest defaults loaded (max_source_bytes=%d)",
+        "Ingest defaults loaded (max_source_bytes=%d, "
+        "max_source_bytes_hard=%d, "
+        "require_confirmation_above_soft=%s, "
+        "confirmation_token_ttl_seconds=%d)",
         config.ingest.max_source_bytes,
+        config.ingest.max_source_bytes_hard,
+        config.ingest.require_confirmation_above_soft,
+        config.ingest.confirmation_token_ttl_seconds,
     )
+
+    # m5e: install the per-process HMAC secret used by the source-size
+    # confirmation flow (api/confirmation.py). secret=None regenerates
+    # 32 bytes via secrets.token_bytes; tokens issued before a container
+    # restart are invalidated by the restart and the caller path is
+    # identical to EXPIRED (re-submit gets a fresh 413 with a new token).
+    configure_confirmation()
 
     # Configure the shared embedding client from ariadne.yaml
     if config.embedding.api_key:
