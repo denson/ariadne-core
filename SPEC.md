@@ -377,8 +377,8 @@ Common HTTP status codes:
 - `401` — Authentication failed (see [Authentication](#authentication) for the full `detail` string table — `missing_token`, `wrong_scheme`, `malformed_token`, `invalid_signature`, `wrong_audience`, `wrong_issuer`, `expired_token`, `unknown_kid`, `missing_sub_claim`, `invalid_token`)
 - `404` — Document or collection not found
 - `410` — Soft-delete window expired (restore too late)
-- `413` — File too large
-- `422` — Extraction failed (encoding error, unsupported format, corrupt file), source read failed (file not found, URL fetch error), embedding failed (transient provider error), OR per-request `chunking_config` validation failed (unknown keys — see "Per-request chunking config" under `POST /api/documents`). Ingest is transactional: on a 422 no document row is written.
+- `413` — Source size between the soft cap (`max_source_bytes`, default 200 MB) and the hard cap (`max_source_bytes_hard`, default 5 GB) on `POST /api/documents` when `require_confirmation_above_soft=true`. The response body carries `code: "confirmation_required"` and a server-issued HMAC `confirmation_token`; re-submit the same request with the token to bypass the soft-cap check. See "Source-size confirmation flow" under `POST /api/documents` for the structured body shape and walkthrough.
+- `422` — Extraction failed (encoding error, unsupported format, corrupt file), source read failed (file not found, URL fetch error), embedding failed (transient provider error), per-request `chunking_config` validation failed (unknown keys — see "Per-request chunking config" under `POST /api/documents`), per-request `ingest_config` validation failed (unknown keys, OR a server-policy key like `confirmation_token_ttl_seconds` that cannot be overridden per-request — see "Per-request size caps" under `POST /api/documents`), source size at or above the hard cap (`code: "exceeds_hard_limit"`, no token), OR source size between caps when `require_confirmation_above_soft=false` (`code: "exceeds_soft_cap_strict"`, no token; legacy strict mode). Ingest is transactional: on a 422 no document row is written.
 - `503` — Embedding not configured (search endpoint only)
 
 ---
@@ -431,6 +431,8 @@ Convert a document to clean Markdown. By default, also chunks, embeds, and store
 | `tags` | list[str] | `[]` | Tags applied to the document. Searchable via the `tags` filter |
 | `force` | bool | `false` | Re-process even if fingerprint already exists in this collection |
 | `chunking_config` | dict | `null` | Override chunking. Keys: `strategy` (`"by_title"`, `"by_page"`, `"fixed_size"`), `max_characters`, `overlap` |
+| `ingest_config` | dict | `null` | Per-request override for ingest knobs (`max_source_bytes`, `max_source_bytes_hard`, `require_confirmation_above_soft`). Unknown keys — and server-policy keys that cannot be overridden per-request, namely `confirmation_token_ttl_seconds` — raise 422. See "Per-request size caps" below. |
+| `confirmation_token` | string | `null` | Opaque token (HMAC-signed; treat as a string, do not parse) returned by a prior 413 `confirmation_required` response. Re-submit with this token to bypass the soft-cap check. The hard cap is still enforced via the chunked-read accumulator. See "Source-size confirmation flow" below. |
 | `agent_id` | string | `null` | Caller identity |
 | `agent_type` | string | `null` | Client type (e.g. `"claude-code"`, `"script"`) |
 | `model` | string | `null` | LLM model the caller is running |
@@ -454,6 +456,82 @@ failure: fix the underlying provider issue, then re-ingest with
 **Chunking auto-selection:** If no `chunking_config` is provided, the strategy is chosen by file type: `.pptx` -> `by_page`, `.csv`/`.xlsx` -> `fixed_size`, `.txt` with no headings -> `fixed_size` with high overlap (`overlap=400`), everything else -> `by_title`.
 
 **Per-request chunking config — layering and validation:** A per-request `chunking_config` payload layers onto the auto-selected baseline: omitted knobs inherit from `auto_select_strategy()` output, not from the chunker dataclass defaults. Worked example: a per-request payload `{"strategy": "by_title"}` on a headingless `.txt` resolves to `ChunkingConfig(strategy="by_title", overlap=400, ...)` — auto-select's `overlap=400` boost survives the underlying `dataclasses.replace` because the per-request payload did not override `overlap`. Unknown keys in `chunking_config` raise `ValueError` naming both the offending key(s) and the valid keys; the route layer captures this and surfaces it as **HTTP 422** with `message: "Invalid chunking config: Unknown chunking config keys: [...]. Valid keys: [...]."`.
+
+**Per-request size caps:** A per-request `ingest_config` payload overrides the server's `IngestConfig` defaults for the lifetime of one request. Recognized fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_source_bytes` | int | `209715200` (200 MB) | **Soft cap.** Sources at or above this size trigger the confirmation flow (HTTP 413 with `confirmation_required`) when `require_confirmation_above_soft=true`. Field name unchanged from pre-m5e; the meaning rotated from "hard refuse" to "soft cap that triggers confirmation," but callers passing the same field continue to work. |
+| `max_source_bytes_hard` | int | `5368709120` (5 GB) | **Hard cap.** Sources at or above this size are refused outright with HTTP 422 `exceeds_hard_limit` — no token, no override path. Also enforced as the post-confirmation memory-safety floor: a confirmed-but-grew source still aborts at the hard cap via the chunked-read accumulator. Must be `>= max_source_bytes`. |
+| `require_confirmation_above_soft` | bool | `true` | When `true`, sources between the soft and hard caps return 413 `confirmation_required`. When `false`, the soft cap acts as a strict cap (legacy semantics) and sources between caps return HTTP 422 `exceeds_soft_cap_strict` — no token. Useful for CI / scripted batch ingest that prefers fail-fast over confirmation. |
+
+**Server-policy fields (NOT per-request overridable):** `confirmation_token_ttl_seconds` (default `300`, the TTL stamped into a 413's `ttl_seconds` field) is a deployment-policy knob configurable only at startup via the YAML config — not via `ingest_config`. A request that sets it returns HTTP 422 with the unknown-keys error message, surfacing the operator's mistake loudly rather than silently flowing a per-request value through. The denylist is intentional and will grow as more fields are promoted to server-only policy.
+
+Unknown keys (typos, fields not in `IngestConfig`) and denied keys (server-policy fields like `confirmation_token_ttl_seconds`) both raise the same **HTTP 422** with `message: "Invalid ingest config: Unknown ingest config keys: [...]. Valid keys: [...]. (...)"`.
+
+**Source-size confirmation flow:** For sources between the soft and hard caps, the server probes the source size before reading and returns a structured 413 `confirmation_required` response carrying an HMAC-signed `confirmation_token`. The caller re-submits the same request body with the token in the `confirmation_token` field to bypass the soft-cap check. Sequence:
+
+1. Client submits `POST /api/documents` with `uri` and no `confirmation_token`.
+2. Server probes the source size (HTTP HEAD with `Content-Length` for `http(s)://`, `Path.stat()` for `file://` and bare paths).
+3. **`size >= max_source_bytes_hard`** → HTTP **422** with `code: "exceeds_hard_limit"`. No token; the request is fatal at this URI until the source shrinks or `max_source_bytes_hard` is raised server-side.
+4. **`max_source_bytes <= size < max_source_bytes_hard`** AND `require_confirmation_above_soft=true` → HTTP **413** with `code: "confirmation_required"` and a structured body (see below) including `confirmation_token` and `ttl_seconds`.
+5. The client surfaces the size to the operator (UX is client-side; the server is neutral on how confirmation is gathered) and, on confirm, re-submits the same `uri` with `confirmation_token` set to the value from the 413 body.
+6. Server validates the token (HMAC + URI match + `exp`). On VALID it bypasses the soft-cap check and reads up to the hard cap. On TAMPERED / EXPIRED / URI_MISMATCH it returns a fresh 413 with a new token (the simplest UX — caller sees "your token didn't apply, here's a new one"). The hard cap is still enforced via the chunked-read accumulator: a confirmed-but-grew source can still fail with `exceeds_hard_limit` 422 mid-fetch.
+7. **`max_source_bytes <= size < max_source_bytes_hard`** AND `require_confirmation_above_soft=false` → HTTP **422** with `code: "exceeds_soft_cap_strict"`. No token; this deployment has opted out of the confirmation flow.
+
+**HEAD failure / `Content-Length` absent:** HEAD failures (405, timeout, network error) and `Content-Length`-missing responses fall through to the GET path. The chunked-read accumulator gates the read at the soft cap; on overrun the server classifies the threshold-crossing observation against the hard cap and returns either `confirmation_required` 413 (soft<size<hard, with `reported_size = bytes_seen` and an "is at least N bytes" message) or `exceeds_hard_limit` 422 (size at or above hard).
+
+**413 response body (`confirmation_required`):**
+
+```json
+{
+  "detail": {
+    "code": "confirmation_required",
+    "message": "Source size 364445696 (347 MB) exceeds default cap 209715200 (200 MB). Confirm to proceed; this token is valid for 300s and may be re-submitted to resume after a transient failure.",
+    "soft_cap": 209715200,
+    "hard_cap": 5368709120,
+    "reported_size": 364445696,
+    "source": "https://example.org/big.pdf",
+    "content_type": "application/pdf",
+    "last_modified": "2026-04-15T12:00:00+00:00",
+    "confirmation_token": "eyJ2IjoxLCJ1cmkiOi...HZGFEN0pfczQ",
+    "ttl_seconds": 300
+  }
+}
+```
+
+`content_type` and `last_modified` are nullable. For `file://` and bare-path sources, `last_modified` is the file's mtime as ISO-8601 UTC and `content_type` is the MIME type guessed via `mimetypes.guess_type` from the filename (nullable if unrecognized). For HTTP sources, the `Last-Modified` header (RFC 7231) is normalized to ISO-8601 UTC; if HEAD did not return either header, the field is `null`. When the size came from a chunked-read overrun (HEAD missing or `Content-Length` absent) the message is phrased "Source size is at least N bytes (Content-Length unavailable from server)" and the token is tagged with `size_precise: false` internally — the caller sees the same wire shape either way.
+
+**422 response body (`exceeds_hard_limit`):**
+
+```json
+{
+  "detail": {
+    "code": "exceeds_hard_limit",
+    "message": "Source size 6442450944 (6.0 GB) exceeds hard limit 5368709120 (5.0 GB); cannot override.",
+    "reported_size": 6442450944,
+    "hard_cap": 5368709120,
+    "source": "https://example.org/huge.zip"
+  }
+}
+```
+
+**422 response body (`exceeds_soft_cap_strict`):**
+
+```json
+{
+  "detail": {
+    "code": "exceeds_soft_cap_strict",
+    "message": "Source size 364445696 (347 MB) exceeds strict cap 209715200 (200 MB). This deployment has require_confirmation_above_soft=False; raise the cap server-side or use a deployment with confirmation enabled.",
+    "reported_size": 364445696,
+    "soft_cap": 209715200,
+    "hard_cap": 5368709120,
+    "source": "https://example.org/big.pdf"
+  }
+}
+```
+
+All three shapes nest under the standard `detail:` envelope. Tokens are valid for `confirmation_token_ttl_seconds` and may be re-used (read-only validation; multi-shot within TTL is supported, covers transient retries during a real ingest). A container restart regenerates the per-process HMAC secret and invalidates in-flight tokens; the caller path is identical to `EXPIRED` — re-submit gets a fresh 413 with a new token.
 
 **Image handling:** If the file is an image format and no vision API key is configured, a warning is returned explaining that a vision API key is needed for image content extraction.
 
@@ -747,6 +825,8 @@ Batch ingestion of files already on the server. Processes all supported files in
 **Response:** JSON with `files_found`, `files_processed`, `files_skipped` (dedup), `files_errored`, `results` array (each: `document_id`, `source_file`, `was_dedup_skip`, `error`).
 
 Processing is synchronous. Files are processed concurrently (up to 4 at a time). For large directories this may take minutes. The endpoint returns the full summary when done.
+
+**Oversized files in batch mode:** Files at or above the soft cap (`max_source_bytes`) are skipped with a per-file error logged in the `results` array; the `confirmation_token` is **not** surfaced to the batch caller. Batch ingest is by construction autonomous (no operator at the prompt to confirm a single file out of a directory), so per-file confirmation is structurally inappropriate. Callers needing the oversized-source workflow should use single-file ingest via `POST /api/documents`, which returns the structured 413 with the token. Files above the hard cap (`max_source_bytes_hard`) are likewise skipped-and-logged in batch mode; the same per-file error shape is used.
 
 **Note:** This endpoint only works with server-side paths. For local files, use the client package (`client.ingest_file()`) or the CLI (`ariadne ingest`), which handle upload + conversion automatically.
 
