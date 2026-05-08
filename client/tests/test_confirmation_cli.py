@@ -151,30 +151,8 @@ def _run_canned_server(canned: list[dict]) -> Iterator[str]:
         thread.join(timeout=2.0)
 
 
-def _confirm_required_body(
-    *,
-    confirmation_token: str = "tok-cli",
-    soft_cap: int = 1024,
-    hard_cap: int = 1_073_741_824,
-    reported_size: int = 4096,
-    source: str = "https://example.org/big.pdf",
-    content_type: str | None = "application/pdf",
-    last_modified: str | None = "2026-05-08T00:00:00Z",
-    ttl_seconds: int = 300,
-    message: str = "Source size exceeds soft cap; confirm to proceed.",
-) -> dict:
-    return {
-        "code": "confirmation_required",
-        "message": message,
-        "soft_cap": soft_cap,
-        "hard_cap": hard_cap,
-        "reported_size": reported_size,
-        "source": source,
-        "content_type": content_type,
-        "last_modified": last_modified,
-        "confirmation_token": confirmation_token,
-        "ttl_seconds": ttl_seconds,
-    }
+# Hoisted per tjw.2 f3: shared 413-body factory lives in conftest.
+from conftest import _confirm_required_body  # noqa: E402  (after stdlib block)
 
 
 def _document_response() -> dict:
@@ -527,3 +505,77 @@ def test_k_json_yes_audit_trail_on_stderr_only() -> None:
         assert needle not in stdout, (
             f"prompt fragment {needle!r} on stdout in --json --yes mode: {stdout!r}"
         )
+
+
+# ============================================================================
+# Probe (v4): mid-batch decline — file 2 of 3 declined, files 1 + 3 succeed
+# ============================================================================
+
+
+def test_v4_mid_batch_decline_continues_with_remaining_files(tmp_path) -> None:
+    """tjw.2 v4 — integrated probe: a 3-file directory where the middle
+    file triggers ConfirmationRequired and the operator declines (or
+    stdin is non-TTY without ``--yes``, which fail-fasts the same way).
+    Files 1 and 3 must complete; file 2 must be marked as a per-file
+    failure; the loop must not abort the whole batch.
+
+    Wire shape (per-file):
+        file 1 → upload OK → /api/documents 200 (success)
+        file 2 → upload OK → /api/documents 413 confirmation_required
+                 → CLI decline → counted as failure, NO retry POST
+        file 3 → upload OK → /api/documents 200 (success)
+
+    Canned /api/documents responses: [200, 413, 200]. Files iterate in
+    sorted order so a.txt, b.txt, c.txt is the actual sequence."""
+    # Three files, sorted-iter order = a, b, c.
+    (tmp_path / "a.txt").write_bytes(b"alpha")
+    (tmp_path / "b.txt").write_bytes(b"beta")  # the over-soft-cap one (canned 413)
+    (tmp_path / "c.txt").write_bytes(b"gamma")
+
+    canned = [
+        {"status": 200, "body": _document_response()},
+        {
+            "status": 413,
+            "body": {"detail": _confirm_required_body(confirmation_token="t-mid")},
+        },
+        {"status": 200, "body": _document_response()},
+    ]
+    with _run_canned_server(canned) as host:
+        result = _run_cli(
+            ["ingest", str(tmp_path)],
+            host=host,
+            # n\n is operator-decline at a TTY prompt; under non-TTY
+            # subprocess (the realistic case) the CLI takes the
+            # fail-fast branch which ALSO returns False from
+            # _confirm_source_size — same per-file-failure path.
+            stdin_bytes=b"n\n",
+        )
+
+    # Exit 1 because file 2 errored (failures > 0).
+    assert result.returncode == 1, _decode(result.stderr)
+
+    docs_calls = [
+        r for r in _CannedHandler.requests_seen if r.get("kind") == "documents"
+    ]
+    # Exactly 3 docs POSTs — file 2's decline must NOT trigger a retry POST.
+    assert len(docs_calls) == 3, (
+        f"expected 3 /api/documents POSTs (one per file, no retry on decline); "
+        f"got {len(docs_calls)}"
+    )
+    # None of the docs POSTs should carry confirmation_token — file 2's
+    # token is dropped (decline), files 1 + 3 never got a token.
+    for i, call in enumerate(docs_calls, 1):
+        assert "confirmation_token" not in (call.get("json_body") or {}), (
+            f"docs POST {i} unexpectedly carried confirmation_token: "
+            f"{call.get('json_body')}"
+        )
+
+    # Stderr should reflect: 2 successes, 1 errored. The non-JSON branch
+    # prints a summary line "ingested N/3 (M errored)" — pin that.
+    stderr = _decode(result.stderr)
+    assert "ingested 2/3" in stderr, (
+        f"expected 'ingested 2/3' summary line; got stderr: {stderr!r}"
+    )
+    assert "1 errored" in stderr, (
+        f"expected '1 errored' in summary; got stderr: {stderr!r}"
+    )

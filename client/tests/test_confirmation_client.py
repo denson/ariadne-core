@@ -50,35 +50,11 @@ from ariadne_core_client.exceptions import (
     ConfirmationRequired,
 )
 
+# Hoisted per tjw.2 f3: shared 413-body factory lives in conftest.
+from conftest import _confirm_required_body
+
 
 # --------------------------------------------------------------------- helpers
-
-
-def _confirm_required_body(
-    *,
-    confirmation_token: str = "tok-abc",
-    soft_cap: int = 1024,
-    hard_cap: int = 1_073_741_824,
-    reported_size: int = 4096,
-    source: str = "https://example.org/big.pdf",
-    content_type: str | None = "application/pdf",
-    last_modified: str | None = "2026-05-08T00:00:00Z",
-    ttl_seconds: int = 300,
-    message: str = "Source size exceeds soft cap; confirm to proceed.",
-) -> dict[str, Any]:
-    """Build the ``detail`` dict the server returns inside the 413 body."""
-    return {
-        "code": "confirmation_required",
-        "message": message,
-        "soft_cap": soft_cap,
-        "hard_cap": hard_cap,
-        "reported_size": reported_size,
-        "source": source,
-        "content_type": content_type,
-        "last_modified": last_modified,
-        "confirmation_token": confirmation_token,
-        "ttl_seconds": ttl_seconds,
-    }
 
 
 def _http_error_413(detail: dict[str, Any], *, url: str = "http://localhost/api/documents") -> HTTPError:
@@ -301,7 +277,9 @@ def test_parse_confirmation_required_body_returns_none_when_token_missing() -> N
 def test_parse_confirmation_required_body_recognizes_full_shape() -> None:
     import json
 
-    body = json.dumps({"detail": _confirm_required_body()}).encode("utf-8")
+    body = json.dumps(
+        {"detail": _confirm_required_body(confirmation_token="tok-abc")}
+    ).encode("utf-8")
     parsed = _parse_confirmation_required_body(body)
     assert parsed is not None
     assert parsed["code"] == "confirmation_required"

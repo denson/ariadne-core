@@ -139,7 +139,7 @@ class AriadneClient:
         # ``(absolute_path, mtime_ns)`` for ``_upload`` and
         # ``("bytes", sha256_hex)`` for ``ingest_bytes``. Per-instance,
         # unbounded; reset by destroying the client.
-        self._uploaded_paths: dict[tuple, str] = {}
+        self._uploaded_paths: dict[tuple[str, int] | tuple[str, str], str] = {}
 
     # ------------------------------------------------------------------ helpers
 
@@ -312,15 +312,20 @@ class AriadneClient:
 
     # ------------------------------------------------------------- upload util
 
-    def _upload(self, path: Path) -> dict[str, Any]:
-        # m5e §5.4: memoize ``(absolute_path, mtime_ns) -> server_path``
-        # within the session. Cache hit returns a synthesized response
-        # in the same shape as the real ``/api/upload`` reply
-        # (``{"path", "filename", "size_bytes"}``), so callers don't
-        # need to know whether they were satisfied from cache. mtime_ns
-        # invalidates on file modification — a modified file warrants
-        # a new upload because the previous token's content is stale.
-        cache_key = (str(path.resolve()), path.stat().st_mtime_ns)
+    def _upload_with_cache_key(
+        self,
+        path: Path,
+        cache_key: tuple[str, int] | tuple[str, str],
+    ) -> dict[str, Any]:
+        # m5e §5.4: shared upload-with-memoization core. Cache hit returns
+        # a synthesized response in the same shape as the real
+        # ``/api/upload`` reply (``{"path", "filename", "size_bytes"}``),
+        # so callers don't need to know whether they were satisfied from
+        # cache. The cache key shape is the caller's choice:
+        #   - ``_upload`` passes ``(absolute_path, mtime_ns)`` — mtime
+        #     invalidates on file modification.
+        #   - ``ingest_bytes`` passes ``("bytes", sha256_hex)`` — content
+        #     fingerprint, since the temp-path is fresh per call.
         cached = self._uploaded_paths.get(cache_key)
         if cached is not None:
             return {
@@ -342,6 +347,12 @@ class AriadneClient:
             )
         self._uploaded_paths[cache_key] = response["path"]
         return response
+
+    def _upload(self, path: Path) -> dict[str, Any]:
+        # resolve() canonicalizes case on Windows NTFS — same path different
+        # casing hits same cache slot (correct for content-addressable dedup).
+        cache_key = (str(path.resolve()), path.stat().st_mtime_ns)
+        return self._upload_with_cache_key(path, cache_key)
 
     def _create_document(
         self,
@@ -504,40 +515,34 @@ class AriadneClient:
         not re-upload. Distinct content ⇒ distinct fingerprint ⇒
         distinct cache slot, so a script that ingests several different
         byte payloads in one session does the right thing.
+
+        Note: identical content at different filenames hits the same cache
+        slot; only the first call's filename is preserved server-side per
+        session.
         """
         if not isinstance(content, (bytes, bytearray)):
             raise AriadneClientError("ingest_bytes requires bytes content")
         safe_name = Path(filename).name or "upload.bin"
         # m5e §5.4: cache by content fingerprint (not temp-path, which is
         # fresh per call). Cache hit reuses the already-uploaded server
-        # path; cache miss writes to a tempdir and uploads once.
+        # path; cache miss writes to a tempdir and uploads via the
+        # shared ``_upload_with_cache_key`` core.
         fingerprint = hashlib.sha256(bytes(content)).hexdigest()
-        cache_key = ("bytes", fingerprint)
-        cached = self._uploaded_paths.get(cache_key)
-        if cached is not None:
+        cache_key: tuple[str, str] = ("bytes", fingerprint)
+        if cache_key in self._uploaded_paths:
+            # Cache hit: no temp file needed; synthesize the upload reply
+            # directly so we can pass ``len(content)`` for size_bytes.
+            cached_path = self._uploaded_paths[cache_key]
             upload = {
-                "path": cached,
-                "filename": Path(cached).name,
+                "path": cached_path,
+                "filename": Path(cached_path).name,
                 "size_bytes": len(content),
             }
         else:
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp) / safe_name
                 tmp_path.write_bytes(bytes(content))
-                response = _http.multipart_upload(
-                    self._endpoint("/api/upload"),
-                    headers=self._headers(),
-                    filepath=tmp_path,
-                    field_name="file",
-                    timeout=max(self.timeout, 120),
-                )
-                if not isinstance(response, dict) or "path" not in response:
-                    raise AriadneClientError(
-                        "Upload response missing 'path' field",
-                        request_info=f"POST {self.host}/api/upload",
-                    )
-                upload = response
-                self._uploaded_paths[cache_key] = response["path"]
+                upload = self._upload_with_cache_key(tmp_path, cache_key)
         merged_metadata = self._handle_source(source, agent_metadata)
         return self._create_document(
             uri=upload["path"],

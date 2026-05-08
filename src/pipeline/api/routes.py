@@ -60,7 +60,12 @@ class DocumentRequest(CallerMetadata):
     # binds to the request URI; tokens are valid for
     # ``confirmation_token_ttl_seconds`` (default 300) and may be re-used
     # within that window.
-    confirmation_token: Optional[str] = None
+    #
+    # rv0: max_length=4096 bounds the DoS surface. Legitimate HMAC-signed
+    # tokens are well under 1 KB; 4096 leaves comfortable headroom while
+    # rejecting megabyte-sized payloads at validation (422) before they
+    # reach the HMAC verifier and consume server memory.
+    confirmation_token: Optional[str] = Field(default=None, max_length=4096)
 
 
 class SearchRequest(CallerMetadata):
