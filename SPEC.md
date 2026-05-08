@@ -822,7 +822,26 @@ Batch ingestion of files already on the server. Processes all supported files in
 | `agent_notes` | string | `null` | Why this ingestion is being done |
 | `agent_metadata` | dict | `null` | Structured metadata |
 
-**Response:** JSON with `files_found`, `files_processed`, `files_skipped` (dedup), `files_errored`, `results` array (each: `document_id`, `source_file`, `was_dedup_skip`, `error`).
+**Response (top-level fields):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `files_found` | int | Total files matching `file_types` (or all supported extensions if null), respecting `recursive`. |
+| `files_processed` | int | Files newly ingested in this call (no error and not a dedup skip). |
+| `files_skipped` | int | Files matched by content-fingerprint dedup against an existing document; no new row written. |
+| `files_errored` | int | Files where extraction or storage raised an exception. |
+| `results` | list[ResultEntry] | Per-file outcomes, one entry per file in `files_found`. |
+
+**`ResultEntry` shape (each element of `results`):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source_file` | string | File **basename** (e.g. `report.pdf`), not the full server-side path. The directory prefix from `path` is stripped; only the leaf name is returned. |
+| `document_id` | string \| null | The new document's UUID on success, the existing document's UUID on a dedup skip, or `null` when the file errored before a document row could be assigned. |
+| `was_dedup_skip` | bool | `true` if this file's content fingerprint matched an already-stored document (no new row written; `document_id` points at the existing row). `false` for newly-ingested files and for errored files. |
+| `error` | string \| null | Human-readable error message when the file failed to ingest; `null` on success and on dedup skips. |
+
+The four counters partition `files_found` exactly: `files_processed + files_skipped + files_errored == files_found`. Dedup skips are not errors; they are a successful no-op that preserves the prior document row.
 
 Processing is synchronous. Files are processed concurrently (up to 4 at a time). For large directories this may take minutes. The endpoint returns the full summary when done.
 
