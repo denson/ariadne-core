@@ -7,6 +7,11 @@ so tests can observe what the client sends without touching the network.
 The client in `client.py` imports the module (`from ariadne_core_client import _http`)
 and calls `_http.json_request(...)` / `_http.multipart_upload(...)`, so replacing
 attributes on the module is enough — no monkeypatching of every call site needed.
+
+Also exports `_confirm_required_body` (importable factory, not a fixture)
+that mints the ``detail`` dict the m5e flow returns inside a 413 body.
+Hoisted from per-file copies in test_confirmation_client.py + test_confirmation_cli.py
+per ariadne--tjw.2 f3.
 """
 
 from __future__ import annotations
@@ -16,6 +21,41 @@ from typing import Any
 import pytest
 
 from ariadne_core_client import _http
+
+
+# ── m5e confirmation-required body factory (hoisted per tjw.2 f3) ────────────
+
+
+def _confirm_required_body(
+    *,
+    confirmation_token: str = "tok-test",
+    soft_cap: int = 1024,
+    hard_cap: int = 1_073_741_824,
+    reported_size: int = 4096,
+    source: str = "https://example.org/big.pdf",
+    content_type: str | None = "application/pdf",
+    last_modified: str | None = "2026-05-08T00:00:00Z",
+    ttl_seconds: int = 300,
+    message: str = "Source size exceeds soft cap; confirm to proceed.",
+) -> dict[str, Any]:
+    """Build the ``detail`` dict the server returns inside the 413 body.
+
+    Default ``confirmation_token="tok-test"`` is a placeholder; call sites
+    that assert on the literal string pass an explicit ``confirmation_token=``
+    kwarg.
+    """
+    return {
+        "code": "confirmation_required",
+        "message": message,
+        "soft_cap": soft_cap,
+        "hard_cap": hard_cap,
+        "reported_size": reported_size,
+        "source": source,
+        "content_type": content_type,
+        "last_modified": last_modified,
+        "confirmation_token": confirmation_token,
+        "ttl_seconds": ttl_seconds,
+    }
 
 
 class HttpCapture:

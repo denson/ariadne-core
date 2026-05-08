@@ -939,6 +939,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args) or 0)
+    except ConfirmationRequired:
+        # ConfirmationRequired must always be handled by the per-_cmd_*
+        # wrapper that knows how to surface the prompt. If it leaks all
+        # the way up here, a future _cmd_* called an ingest_* helper
+        # without wrapping. Surface a distinct exit code (2) so the
+        # regression is loud, not a silent ``error: [413] ...``.
+        print(
+            "internal error: confirmation required prompt was not surfaced",
+            file=sys.stderr,
+        )
+        return 2
     except AriadneClientError as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
