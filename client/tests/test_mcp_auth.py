@@ -81,12 +81,25 @@ def _hermetic_env(tmp_home: Path, *, extra: dict[str, str] | None = None) -> dic
 
 
 def _run_script(env: dict[str, str], *, timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    """Invoke ``mcp_auth.py`` as a subprocess and return the completed process."""
+    """Invoke ``mcp_auth.py`` as a subprocess and return the completed process.
+
+    ``encoding="utf-8", errors="replace"`` is load-bearing on Windows.
+    Without an explicit encoding, ``text=True`` defaults to the platform
+    encoding (cp1252 on Windows) which crashes on non-cp1252 bytes that
+    the child Python's traceback formatter emits — e.g. en-dash / em-dash
+    characters that Python prints when formatting some URL-related
+    errors. ``errors="replace"`` keeps the parent's reader thread from
+    raising ``UnicodeDecodeError`` on otherwise-irrelevant stderr noise;
+    every assertion in this module checks for substring presence /
+    absence, which replacement codepoints (``\\ufffd``) do not affect.
+    """
     return subprocess.run(  # noqa: S603 — controlled args
         [sys.executable, str(_SCRIPT)],
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
 

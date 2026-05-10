@@ -389,8 +389,10 @@ Health check. No authentication required.
 
 **Response:**
 ```json
-{"status": "healthy", "version": "0.1.0", "engine": "markitdown", "embedding_enabled": true}
+{"status": "healthy", "version": "0.1.0", "commit": "4a33658", "engine": "markitdown", "embedding_enabled": true}
 ```
+
+The `commit` field is the short (7-char) SHA of the deployed commit, resolved on first request from `RAILWAY_GIT_COMMIT_SHA` (Railway-injected when deploying from a GitHub trigger), then `GIT_COMMIT`, then `.git/HEAD` for local dev, then the literal string `"unknown"`. Cached at module level for the lifetime of the process; a container restart re-reads it (which is the lifecycle event a SHA flip corresponds to anyway).
 
 **Client method:** `client.health()`
 

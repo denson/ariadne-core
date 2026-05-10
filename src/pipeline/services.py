@@ -246,8 +246,9 @@ def _read_source_bytes(uri: str, *, cap: int | None = None) -> bytes:
         cap = _ingest_config.max_source_bytes
     if uri.startswith("file://"):
         # urlparse(uri).path on Windows produces leading-slash paths like
-        # /C:/Users/...; pre-existing services.py:144-145 behavior
-        # unchanged — Path() tolerates the leading slash on Windows.
+        # /C:/Users/...; the pre-existing _read_source_bytes file://
+        # behavior is unchanged — Path() tolerates the leading slash on
+        # Windows.
         return _read_file_capped(Path(urlparse(uri).path), cap, uri)
     if uri.startswith(("http://", "https://")):
         # Match urlretrieve default: no extra headers, follow redirects.
@@ -547,10 +548,11 @@ def _process_single_document(
     # typos surface as 422 rather than silently no-op'ing. The validation
     # is wrapped in its OWN try/except (mirroring the source-read pattern
     # below) so the raised ValueError converts to the standard
-    # ``{"error": True, ...}`` dict that routes.py:287-295 turns into HTTP 422.
-    # WITHOUT this local catch the ValueError would propagate to FastAPI's
-    # global handler at app.py:136-157 and surface as HTTP 500 — beat 7's
-    # 422 contract requires the local catch.
+    # ``{"error": True, ...}`` dict that routes.submit_document turns into
+    # HTTP 422 (its ``if result.get("error")`` branch). WITHOUT this
+    # local catch the ValueError would propagate to FastAPI's global
+    # handler (api.app.unhandled_exception_handler) and surface as
+    # HTTP 500 — beat 7's 422 contract requires the local catch.
     #
     # m5e: also resolves the soft / hard / strict-mode / TTL knobs against
     # the per-request override. Unknown-keys validation is the same dict
@@ -969,13 +971,16 @@ def _process_single_document(
         #    raise-on-unknown-key behavior so operator typos surface as
         #    a clear ValueError instead of silently no-op'ing (per the
         #    R4 ARGUS revision). The validation is wrapped in its OWN
-        #    try/except (mirroring the ingest_config equivalent at
-        #    services.py:268-291) so the raised ValueError converts to
-        #    the standard ``{"error": True, ...}`` dict that
-        #    routes.py:287 turns into HTTP 422. WITHOUT this local catch
-        #    the ValueError would propagate to FastAPI's global handler
-        #    at app.py:125-137 and surface as HTTP 500 — the 422 contract
-        #    requires the local catch (parallel to Batch G F2).
+        #    try/except (mirroring the ingest_config validation block
+        #    above in this same _process_single_document body) so the
+        #    raised ValueError converts to the standard
+        #    ``{"error": True, ...}`` dict that routes.submit_document
+        #    turns into HTTP 422 (its ``if result.get("error")`` branch).
+        #    WITHOUT this local catch the ValueError would propagate to
+        #    FastAPI's global handler
+        #    (api.app.unhandled_exception_handler) and surface as HTTP
+        #    500 — the 422 contract requires the local catch (parallel
+        #    to Batch G F2).
         if chunking_config:
             try:
                 valid_keys = {f.name for f in dataclasses.fields(_ChunkerConfig)}
@@ -1032,8 +1037,8 @@ def _process_single_document(
         # metadata-hygiene warnings below — all of which must land in the list
         # BEFORE store_document is called. PgDedupStore.store_document
         # snapshots `doc.warnings or []` into the SQL parameter dict and
-        # commits before returning (dedup.py:294-300), so any append after
-        # the call never reaches Postgres. The two probe calls answer the
+        # commits at the end of the function body, so any append after the
+        # call never reaches Postgres. The two probe calls answer the
         # probe-time question; the function's own internal SELECT-in-
         # transaction remains the race-correct signal for its bool return,
         # which we don't second-guess from here.
@@ -1075,7 +1080,7 @@ def _process_single_document(
     if store:
         # All warnings must be appended BEFORE store_document — PgDedupStore
         # snapshots warnings into the SQL params at call time and commits
-        # before returning (dedup.py:294-300). Return value (was_resurrected)
+        # at the end of its function body. Return value (was_resurrected)
         # ignored here; would_resurrect above drove the user-facing warning
         # using probe-time state.
         _dedup_store.store_document(stored_doc)

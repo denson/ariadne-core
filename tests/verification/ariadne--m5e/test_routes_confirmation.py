@@ -23,87 +23,21 @@ from __future__ import annotations
 import base64
 import json
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from pipeline import services
 from pipeline.api import confirmation
-from pipeline.api.app import app as production_app
-from pipeline.api.routes import router
 from pipeline.config import IngestConfig
-from pipeline.dedup import InMemoryDedupStore
 from pipeline.extraction.markitdown import ExtractionResult, MarkItDownExtractor
-from pipeline.storage.base import InMemoryVectorStore
 
-from tests.conftest import override_auth
-
-
-# ── Fixtures + helpers ─────────────────────────────────────────────────────
+from tests.verification._shared import FIXTURE_TXT, build_app, install_clean_state
 
 
-_FIXTURE_TXT = (
-    Path(__file__).resolve().parents[2] / "fixtures" / "sample.txt"
-)
-
-
-class _DisabledEmbeddingClient:
-    def __init__(self) -> None:
-        self.enabled = False
-        self.model = None
-
-    def embed_texts(self, texts):  # pragma: no cover
-        raise AssertionError("disabled")
-
-
-def _fake_extraction_result(source_file: str) -> ExtractionResult:
-    return ExtractionResult(
-        document_id="00000000-0000-0000-0000-000000000000",
-        source_file=source_file,
-        markdown="# fake\n\nhello world\n",
-        title="fake",
-        file_type="txt",
-        pages=None,
-        engine="markitdown-mock",
-        processing_time_ms=1,
-        output_tokens_estimate=10,
-        token_savings_ratio=None,
-        processing_chain=[{"step": "extraction", "tool": "markitdown-mock"}],
-        warnings=[],
-        errors=[],
-    )
-
-
-def _make_extractor_mock() -> MagicMock:
-    mock = MagicMock()
-    mock.extract_from_bytes.side_effect = (
-        lambda content, source_file: _fake_extraction_result(source_file)
-    )
-    return mock
-
-
-def _install_clean_state(monkeypatch) -> MagicMock:
-    monkeypatch.setattr(services, "_dedup_store", InMemoryDedupStore())
-    monkeypatch.setattr(services, "_vector_store", InMemoryVectorStore())
-    monkeypatch.setattr(services, "_embedding_client", _DisabledEmbeddingClient())
-    monkeypatch.setattr(services, "_ingest_config", IngestConfig())
-    extractor = _make_extractor_mock()
-    monkeypatch.setattr(services, "_extractor", extractor)
-    return extractor
-
-
-def _build_app() -> FastAPI:
-    app = FastAPI()
-    handler = production_app.exception_handlers[Exception]
-    app.add_exception_handler(Exception, handler)
-    app.include_router(router, prefix="/api")
-    override_auth(app)
-    return app
-
-
+# m5e-specific helper — kept inline because no other probe dir parses
+# the HMAC token payload.
 def _decode_token_payload(token: str) -> dict:
     payload_part, _ = token.split(".", 1)
     pad = "=" * ((4 - len(payload_part) % 4) % 4)
@@ -117,11 +51,11 @@ def _decode_token_payload(token: str) -> dict:
 def test_a_below_soft_cap_returns_200(monkeypatch):
     """Below soft cap, the happy path is unchanged from pre-m5e: 200,
     parsed Document body, no error fields."""
-    _install_clean_state(monkeypatch)
-    client = TestClient(_build_app())
+    install_clean_state(monkeypatch)
+    client = TestClient(build_app())
     resp = client.post(
         "/api/documents",
-        json={"uri": str(_FIXTURE_TXT), "collection": "m5e_a"},
+        json={"uri": str(FIXTURE_TXT), "collection": "m5e_a"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -136,11 +70,11 @@ def test_a_below_soft_cap_returns_200(monkeypatch):
 def test_b_soft_breach_returns_413_with_full_body(monkeypatch, tmp_path):
     """Synthetic 4 KB local file with per-request soft cap = 1024.
     Asserts every field in §2.6's response shape."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "soft_breach.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     resp = client.post(
         "/api/documents",
         json={
@@ -183,11 +117,11 @@ def test_b_soft_breach_returns_413_with_full_body(monkeypatch, tmp_path):
 
 
 def test_c_token_resubmit_proceeds(monkeypatch, tmp_path):
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "resubmit.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     first = client.post(
         "/api/documents",
         json={
@@ -219,11 +153,11 @@ def test_c_token_resubmit_proceeds(monkeypatch, tmp_path):
 
 
 def test_d_tampered_token_returns_413_with_fresh(monkeypatch, tmp_path):
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "tampered.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     first = client.post(
         "/api/documents",
         json={
@@ -263,13 +197,13 @@ def test_d_tampered_token_returns_413_with_fresh(monkeypatch, tmp_path):
 
 
 def test_d_uri_mismatch_returns_413_with_fresh(monkeypatch, tmp_path):
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big_a = tmp_path / "uri_a.txt"
     big_a.write_bytes(b"x" * 4096)
     big_b = tmp_path / "uri_b.txt"
     big_b.write_bytes(b"y" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     first = client.post(
         "/api/documents",
         json={
@@ -298,7 +232,7 @@ def test_d_uri_mismatch_returns_413_with_fresh(monkeypatch, tmp_path):
 
 
 def test_d_expired_token_returns_413_with_fresh(monkeypatch, tmp_path):
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     # Per design §2.3, ``confirmation_token_ttl_seconds`` is a server-
     # policy knob, not a per-request override. To exercise the expired-
     # token path, mutate the active singleton's TTL field directly;
@@ -312,7 +246,7 @@ def test_d_expired_token_returns_413_with_fresh(monkeypatch, tmp_path):
     big = tmp_path / "expired.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     first = client.post(
         "/api/documents",
         json={
@@ -348,11 +282,11 @@ def test_d_expired_token_returns_413_with_fresh(monkeypatch, tmp_path):
 def test_e_multi_shot_token_within_ttl(monkeypatch, tmp_path):
     """Token can be reused multiple times within TTL: nothing is
     invalidated on success."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "multi.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     first = client.post(
         "/api/documents",
         json={
@@ -379,11 +313,11 @@ def test_e_multi_shot_token_within_ttl(monkeypatch, tmp_path):
 
 
 def test_f_above_hard_cap_returns_422_no_token(monkeypatch, tmp_path):
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "hard.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     resp = client.post(
         "/api/documents",
         json={
@@ -425,7 +359,7 @@ def test_g_head_405_falls_through_then_chunked_overrun_yields_413(
 ):
     """HEAD raises HTTPError(405); fall through to GET; chunked-read
     accumulator overrun produces 413 with ``size_precise=False`` token."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
 
     body = b"x" * (services._READ_CHUNK + 100)  # > soft cap of 1024
     chunks_iter = iter([body[: services._READ_CHUNK], body[services._READ_CHUNK:], b""])
@@ -480,7 +414,7 @@ def test_g_head_no_content_length_falls_through(monkeypatch, tmp_path):
     """HEAD returns 200 but headers lack Content-Length; probe.size = None;
     fall through to GET; chunked-read overrun yields 413 with
     size_precise=False."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
 
     body = b"x" * (services._READ_CHUNK + 50)
     chunks_iter = iter([body[: services._READ_CHUNK], body[services._READ_CHUNK:], b""])
@@ -529,11 +463,11 @@ def test_g_head_no_content_length_falls_through(monkeypatch, tmp_path):
 def test_h_strict_mode_soft_breach_returns_422(monkeypatch, tmp_path):
     """``require_confirmation_above_soft=False`` → 422 ``exceeds_soft_cap_strict``,
     with ``soft_cap`` field (distinguishing from ``exceeds_hard_limit``)."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "strict.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     resp = client.post(
         "/api/documents",
         json={
@@ -558,10 +492,10 @@ def test_h_three_422_codes_are_distinguishable(monkeypatch, tmp_path):
     """``exceeds_hard_limit`` (no soft_cap), ``exceeds_soft_cap_strict``
     (soft_cap present), legacy errors (no code) — three sentinel shapes
     that must remain distinguishable on the wire (per §11.B.4 / probe l)."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "distinct.txt"
     big.write_bytes(b"x" * 4096)
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
 
     # exceeds_hard_limit
     r_hard = client.post("/api/documents", json={
@@ -596,11 +530,11 @@ def test_h_three_422_codes_are_distinguishable(monkeypatch, tmp_path):
 def test_i_token_validates_with_size_growth(monkeypatch, tmp_path):
     """Issue token for size N; re-submit with file grown to N+1MB still
     below hard cap → proceeds (200). Pin: no SIZE_MISMATCH path."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "growth.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     first = client.post("/api/documents", json={
         "uri": str(big),
         "collection": "m5e_i_grow",
@@ -621,11 +555,11 @@ def test_i_token_validates_with_size_growth(monkeypatch, tmp_path):
 
 
 def test_i_token_validates_with_size_shrinkage(monkeypatch, tmp_path):
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "shrink.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     first = client.post("/api/documents", json={
         "uri": str(big),
         "collection": "m5e_i_shrink",
@@ -650,11 +584,11 @@ def test_i_hard_cap_still_enforces_after_token_validate(monkeypatch, tmp_path):
     grown above hard cap → 422 ``exceeds_hard_limit``. The chunked-read
     accumulator at effective_hard catches the overrun on the actual
     fetch; token-validity does NOT bypass effective_hard."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "hard_after.txt"
     big.write_bytes(b"x" * 4096)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     first = client.post("/api/documents", json={
         "uri": str(big),
         "collection": "m5e_i_hard",
@@ -688,7 +622,7 @@ def test_i_hard_cap_still_enforces_after_token_validate(monkeypatch, tmp_path):
 def test_j_http_last_modified_normalized_to_iso8601(monkeypatch):
     """Mock HEAD response with RFC 7231 Last-Modified; assert the wire
     body's last_modified field is ISO-8601 UTC."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
 
     head_resp = MagicMock()
     head_resp.headers = {
@@ -726,7 +660,7 @@ def test_j_http_last_modified_normalized_to_iso8601(monkeypatch):
 
 
 def test_j_malformed_last_modified_falls_to_null(monkeypatch):
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
 
     head_resp = MagicMock()
     head_resp.headers = {
@@ -813,7 +747,7 @@ def _trigger_legacy(client, monkeypatch, *, raise_factory, json_payload, expecte
 def test_l_extraction_failure_legacy_shape(monkeypatch):
     """Extraction failure produces the pre-m5e error-dict shape: no code,
     just ``{message, document_id, source_file}``."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
 
     # Mutate the extractor to return errors=[...] which triggers the
     # services.py:389-395 path.
@@ -835,9 +769,9 @@ def test_l_extraction_failure_legacy_shape(monkeypatch):
     )
     monkeypatch.setattr(services, "_extractor", failing)
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     resp = client.post("/api/documents", json={
-        "uri": str(_FIXTURE_TXT),
+        "uri": str(FIXTURE_TXT),
         "collection": "m5e_l_extract",
     })
     assert resp.status_code == 422, resp.text
@@ -849,10 +783,10 @@ def test_l_extraction_failure_legacy_shape(monkeypatch):
 
 def test_l_invalid_chunking_config_legacy_shape(monkeypatch):
     """Bogus chunking_config key surfaces with no ``code`` field."""
-    _install_clean_state(monkeypatch)
-    client = TestClient(_build_app())
+    install_clean_state(monkeypatch)
+    client = TestClient(build_app())
     resp = client.post("/api/documents", json={
-        "uri": str(_FIXTURE_TXT),
+        "uri": str(FIXTURE_TXT),
         "collection": "m5e_l_chunk",
         "chunking_config": {"bogus_chunk_key": 1},
     })
@@ -865,10 +799,10 @@ def test_l_invalid_chunking_config_legacy_shape(monkeypatch):
 
 def test_l_invalid_ingest_config_legacy_shape(monkeypatch):
     """Bogus ingest_config key surfaces with no ``code`` field."""
-    _install_clean_state(monkeypatch)
-    client = TestClient(_build_app())
+    install_clean_state(monkeypatch)
+    client = TestClient(build_app())
     resp = client.post("/api/documents", json={
-        "uri": str(_FIXTURE_TXT),
+        "uri": str(FIXTURE_TXT),
         "collection": "m5e_l_ingest",
         "ingest_config": {"bogus_ingest_key": 1},
     })
@@ -883,8 +817,8 @@ def test_l_source_read_failed_non_cap_legacy_shape(monkeypatch):
     """Non-cap source-read failure (e.g., file does not exist) surfaces
     with no ``code`` field — the legacy ``Source read failed:`` shape
     is preserved verbatim."""
-    _install_clean_state(monkeypatch)
-    client = TestClient(_build_app())
+    install_clean_state(monkeypatch)
+    client = TestClient(build_app())
     resp = client.post("/api/documents", json={
         "uri": "/does/not/exist.txt",
         "collection": "m5e_l_read",
