@@ -11,11 +11,15 @@ class Health:
     """Server health check response."""
     status: str = ""
     version: str = ""
+    commit: str = ""
     engine: str = ""
     embedding_enabled: bool = False
 
     def __repr__(self) -> str:
-        return f"Health(status={self.status!r}, version={self.version!r}, embedding={self.embedding_enabled})"
+        return (
+            f"Health(status={self.status!r}, version={self.version!r}, "
+            f"commit={self.commit!r}, embedding={self.embedding_enabled})"
+        )
 
 
 @dataclass

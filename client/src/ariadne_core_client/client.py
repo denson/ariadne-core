@@ -68,6 +68,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -89,6 +90,15 @@ from ariadne_core_client.models import (
 )
 
 DEFAULT_INGEST_TIMEOUT = 600  # seconds — embedding a large doc can take 3-5 min
+
+# Cap on entries kept in ``AriadneClient._uploaded_paths``. A long-running
+# client (daemon, persistent agent ingesting many files) would otherwise
+# grow the cache without bound. 1000 is the cap chosen for ariadne--nud
+# §2 — large enough that a typical session never evicts, small enough
+# that the worst-case footprint is bounded at ~64 KB on a 64-bit interp.
+# Eviction is FIFO via ``OrderedDict.popitem(last=False)``: the oldest
+# entry leaves first.
+_UPLOADED_PATHS_CACHE_MAX = 1000
 
 
 class AriadneClient:
@@ -137,9 +147,21 @@ class AriadneClient:
         # 413 → caller retries → re-uploads the same file → server
         # returns ``name_N.pdf`` → token's URI binding fails. Keyed by
         # ``(absolute_path, mtime_ns)`` for ``_upload`` and
-        # ``("bytes", sha256_hex)`` for ``ingest_bytes``. Per-instance,
-        # unbounded; reset by destroying the client.
-        self._uploaded_paths: dict[tuple[str, int] | tuple[str, str], str] = {}
+        # ``("bytes", sha256_hex)`` for ``ingest_bytes``.
+        #
+        # Bounded at ``_UPLOADED_PATHS_CACHE_MAX`` (nud §2): a long-
+        # running daemon ingesting tens of thousands of distinct files
+        # would otherwise grow this cache without bound. Eviction is
+        # FIFO — first-inserted entry is the first evicted; new
+        # insertions go to the back via ``OrderedDict.move_to_end`` on
+        # write. We do NOT mark cache hits as recently-used; mtime_ns
+        # already invalidates files that change on disk, and the
+        # confirmation-token TTL (5 min default) bounds how long a
+        # stale cache slot can possibly matter for the retry path that
+        # this cache exists to serve.
+        self._uploaded_paths: OrderedDict[
+            tuple[str, int] | tuple[str, str], str
+        ] = OrderedDict()
 
     # ------------------------------------------------------------------ helpers
 
@@ -312,10 +334,26 @@ class AriadneClient:
 
     # ------------------------------------------------------------- upload util
 
+    def _remember_upload(
+        self,
+        cache_key: tuple[str, int] | tuple[str, str],
+        server_path: str,
+    ) -> None:
+        """Record ``cache_key -> server_path`` with FIFO eviction at the
+        nud §2 cap. Centralizes the bounded-write so every site that
+        populates ``_uploaded_paths`` participates in the cap.
+        """
+        self._uploaded_paths[cache_key] = server_path
+        self._uploaded_paths.move_to_end(cache_key)
+        while len(self._uploaded_paths) > _UPLOADED_PATHS_CACHE_MAX:
+            self._uploaded_paths.popitem(last=False)
+
     def _upload_with_cache_key(
         self,
         path: Path,
         cache_key: tuple[str, int] | tuple[str, str],
+        *,
+        size_bytes_override: int | None = None,
     ) -> dict[str, Any]:
         # m5e §5.4: shared upload-with-memoization core. Cache hit returns
         # a synthesized response in the same shape as the real
@@ -325,13 +363,25 @@ class AriadneClient:
         #   - ``_upload`` passes ``(absolute_path, mtime_ns)`` — mtime
         #     invalidates on file modification.
         #   - ``ingest_bytes`` passes ``("bytes", sha256_hex)`` — content
-        #     fingerprint, since the temp-path is fresh per call.
+        #     fingerprint. ``size_bytes_override=len(content)`` lets the
+        #     caller skip a tempfile ``stat`` on cache hit.
+        #
+        # nud §5: cache-hit and cache-miss return the same shape and the
+        # same downstream metadata (the dict's ``path`` value is what
+        # ``_create_document`` consumes; ``filename`` / ``size_bytes``
+        # are returned for parity with the server's reply but are not
+        # downstream-consumed).
         cached = self._uploaded_paths.get(cache_key)
         if cached is not None:
+            size_bytes = (
+                size_bytes_override
+                if size_bytes_override is not None
+                else path.stat().st_size
+            )
             return {
                 "path": cached,
                 "filename": Path(cached).name,
-                "size_bytes": path.stat().st_size,
+                "size_bytes": size_bytes,
             }
         response = _http.multipart_upload(
             self._endpoint("/api/upload"),
@@ -345,7 +395,7 @@ class AriadneClient:
                 "Upload response missing 'path' field",
                 request_info=f"POST {self.host}/api/upload",
             )
-        self._uploaded_paths[cache_key] = response["path"]
+        self._remember_upload(cache_key, response["path"])
         return response
 
     def _upload(self, path: Path) -> dict[str, Any]:
@@ -414,6 +464,7 @@ class AriadneClient:
         return Health(
             status=data.get("status", "") or "",
             version=data.get("version", "") or "",
+            commit=data.get("commit", "") or "",
             engine=data.get("engine", "") or "",
             embedding_enabled=bool(data.get("embedding_enabled", False)),
         )
@@ -525,19 +576,21 @@ class AriadneClient:
         safe_name = Path(filename).name or "upload.bin"
         # m5e §5.4: cache by content fingerprint (not temp-path, which is
         # fresh per call). Cache hit reuses the already-uploaded server
-        # path; cache miss writes to a tempdir and uploads via the
-        # shared ``_upload_with_cache_key`` core.
+        # path; cache miss writes to a tempdir and uploads. Both paths
+        # flow through ``_upload_with_cache_key`` so the response shape
+        # is identical (nud §5 alignment); the cache-hit branch passes
+        # ``size_bytes_override=len(content)`` so it does not need a
+        # real Path on disk to satisfy ``stat()``.
         fingerprint = hashlib.sha256(bytes(content)).hexdigest()
         cache_key: tuple[str, str] = ("bytes", fingerprint)
         if cache_key in self._uploaded_paths:
-            # Cache hit: no temp file needed; synthesize the upload reply
-            # directly so we can pass ``len(content)`` for size_bytes.
-            cached_path = self._uploaded_paths[cache_key]
-            upload = {
-                "path": cached_path,
-                "filename": Path(cached_path).name,
-                "size_bytes": len(content),
-            }
+            # Sentinel path — never stat'd; ``size_bytes_override`` short-
+            # circuits the stat call in ``_upload_with_cache_key``.
+            upload = self._upload_with_cache_key(
+                Path(safe_name),
+                cache_key,
+                size_bytes_override=len(content),
+            )
         else:
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp) / safe_name

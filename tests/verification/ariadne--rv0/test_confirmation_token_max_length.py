@@ -14,84 +14,9 @@ tests/verification/ariadne--m5e/test_routes_confirmation.py).
 """
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pipeline import services
-from pipeline.api.app import app as production_app
-from pipeline.api.routes import router
-from pipeline.config import IngestConfig
-from pipeline.dedup import InMemoryDedupStore
-from pipeline.extraction.markitdown import ExtractionResult
-from pipeline.storage.base import InMemoryVectorStore
-
-from tests.conftest import override_auth
-
-
-# ── Fixtures + helpers (mirrors m5e test scaffolding) ─────────────────────────
-
-
-_FIXTURE_TXT = (
-    Path(__file__).resolve().parents[2] / "fixtures" / "sample.txt"
-)
-
-
-class _DisabledEmbeddingClient:
-    def __init__(self) -> None:
-        self.enabled = False
-        self.model = None
-
-    def embed_texts(self, texts):  # pragma: no cover
-        raise AssertionError("disabled")
-
-
-def _fake_extraction_result(source_file: str) -> ExtractionResult:
-    return ExtractionResult(
-        document_id="00000000-0000-0000-0000-000000000000",
-        source_file=source_file,
-        markdown="# fake\n\nhello\n",
-        title="fake",
-        file_type="txt",
-        pages=None,
-        engine="markitdown-mock",
-        processing_time_ms=1,
-        output_tokens_estimate=10,
-        token_savings_ratio=None,
-        processing_chain=[{"step": "extraction", "tool": "markitdown-mock"}],
-        warnings=[],
-        errors=[],
-    )
-
-
-def _make_extractor_mock() -> MagicMock:
-    mock = MagicMock()
-    mock.extract_from_bytes.side_effect = (
-        lambda content, source_file: _fake_extraction_result(source_file)
-    )
-    return mock
-
-
-def _install_clean_state(monkeypatch) -> MagicMock:
-    monkeypatch.setattr(services, "_dedup_store", InMemoryDedupStore())
-    monkeypatch.setattr(services, "_vector_store", InMemoryVectorStore())
-    monkeypatch.setattr(services, "_embedding_client", _DisabledEmbeddingClient())
-    monkeypatch.setattr(services, "_ingest_config", IngestConfig())
-    extractor = _make_extractor_mock()
-    monkeypatch.setattr(services, "_extractor", extractor)
-    return extractor
-
-
-def _build_app() -> FastAPI:
-    app = FastAPI()
-    handler = production_app.exception_handlers[Exception]
-    app.add_exception_handler(Exception, handler)
-    app.include_router(router, prefix="/api")
-    override_auth(app)
-    return app
+from tests.verification._shared import build_app, install_clean_state
 
 
 # ── Probe A: 4097-char token → 422 validation error naming the field ───────
@@ -103,13 +28,13 @@ def test_a_token_above_max_length_returns_422(monkeypatch, tmp_path):
     ``confirmation_token`` and indicate the max_length constraint, so a
     caller debugging from the error body can fix the call site without
     reading the SPEC."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "rv0_a.txt"
     big.write_bytes(b"x" * 16)
 
     over_limit_token = "a" * 4097
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     resp = client.post(
         "/api/documents",
         json={
@@ -157,7 +82,7 @@ def test_b_token_at_max_length_reaches_hmac_path(monkeypatch, tmp_path):
     This is the load-bearing distinction: at length 4097 the request
     dies at validation; at length 4096 it reaches the HMAC verifier.
     The test pins that boundary."""
-    _install_clean_state(monkeypatch)
+    install_clean_state(monkeypatch)
     big = tmp_path / "rv0_b.txt"
     # Force the soft-cap path so the request ENGAGES the confirmation
     # flow (with no valid token, the server falls through to "issue a
@@ -167,7 +92,7 @@ def test_b_token_at_max_length_reaches_hmac_path(monkeypatch, tmp_path):
 
     at_limit_token = "a" * 4096
 
-    client = TestClient(_build_app())
+    client = TestClient(build_app())
     resp = client.post(
         "/api/documents",
         json={

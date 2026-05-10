@@ -16,6 +16,8 @@ initiated_by). Auth model:
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
@@ -26,6 +28,142 @@ from pipeline.auth_oauth import Principal, require_user
 import pipeline.services as _svc
 
 router = APIRouter()
+
+
+# ── Build / commit identification ───────────────────────────────────────────
+#
+# /api/health surfaces a ``commit`` field so an operator (or PLINY's deploy-
+# verification routine) can distinguish "new commit live" from "previous
+# deploy still serving" without separately consulting the GitHub Deployments
+# API. Resolution order on first read:
+#
+#   1. ``RAILWAY_GIT_COMMIT_SHA`` — auto-injected by Railway when the deploy
+#      originated from a GitHub trigger (Railway docs: Variables Reference,
+#      verified 2026-05-09).
+#   2. ``GIT_COMMIT`` — generic hosting fallback.
+#   3. ``.git/HEAD`` (and any ref it points to) — local dev outside Railway.
+#   4. ``"unknown"`` — no signal available; surface honestly rather than
+#      pin to a stale value.
+#
+# Cached at module level: read once on first request, reused thereafter.
+# A container restart re-reads (which is the lifecycle event a SHA flip
+# corresponds to anyway).
+
+_COMMIT_SHA_CACHE: Optional[str] = None
+
+
+def _read_commit_from_dot_git(start_dir: Optional[Path] = None) -> Optional[str]:
+    """Read the current commit SHA from ``.git/HEAD`` (and the ref it
+    points to). Returns the short 7-char SHA, or ``None`` if the repo
+    isn't reachable or HEAD is unparseable.
+
+    Handles both layouts:
+
+    1. Regular checkout — ``<start_dir>/.git`` is a directory, HEAD and
+       refs both live there.
+    2. Linked worktree (Denson's standard pattern) — ``<start_dir>/.git``
+       is a *file* containing ``gitdir: <path>`` that points at
+       ``<main-repo>/.git/worktrees/<name>/``. The linked dir holds the
+       per-worktree HEAD; ``refs/heads/*`` live in the shared *commondir*
+       (the main repo's ``.git/``), located via the ``commondir`` file
+       inside the linked dir. Without this branch, ``_resolve_commit_sha``
+       returns ``"unknown"`` from any worktree, which silently breaks
+       PLINY's deploy-verification signal during local development.
+
+    ``start_dir`` defaults to ``Path.cwd()`` (matches prior behavior); a
+    test may pass an explicit directory to drive both layouts under
+    ``tmp_path`` without ``monkeypatch.chdir``.
+
+    Sentinel-on-fail: any unresolvable case returns ``None`` so the
+    caller falls through to ``"unknown"``. We do NOT consult
+    ``packed-refs`` — refs that exist only in packed form fall through
+    to ``"unknown"`` rather than failing loudly. (Operators in that
+    state can use ``GIT_COMMIT`` instead.)
+    """
+    base = start_dir if start_dir is not None else Path.cwd()
+    dot_git = base / ".git"
+    if not dot_git.exists():
+        return None
+
+    if dot_git.is_dir():
+        git_dir = dot_git
+        common_dir = dot_git
+    else:
+        # Worktree layout — ``.git`` is a file with a ``gitdir:`` pointer.
+        try:
+            pointer = dot_git.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not pointer.startswith("gitdir:"):
+            return None
+        gitdir_value = pointer[len("gitdir:"):].strip()
+        if not gitdir_value:
+            return None
+        gitdir_path = Path(gitdir_value)
+        if not gitdir_path.is_absolute():
+            gitdir_path = (dot_git.parent / gitdir_path).resolve()
+        if not gitdir_path.is_dir():
+            return None
+        git_dir = gitdir_path
+        # ``commondir`` inside the linked dir points at the shared
+        # ``.git`` (main repo) where ``refs/heads/*`` actually live.
+        # If absent, fall back to ``git_dir`` (degenerate but safe —
+        # ref-walk will then miss and return None).
+        commondir_file = git_dir / "commondir"
+        common_dir = git_dir
+        if commondir_file.is_file():
+            try:
+                cd_value = commondir_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                cd_value = ""
+            if cd_value:
+                cd_path = Path(cd_value)
+                if not cd_path.is_absolute():
+                    cd_path = (git_dir / cd_path).resolve()
+                if cd_path.is_dir():
+                    common_dir = cd_path
+
+    head_file = git_dir / "HEAD"
+    if not head_file.is_file():
+        return None
+    try:
+        head = head_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if head.startswith("ref: "):
+        ref_rel = head[len("ref: "):].strip()
+        if not ref_rel:
+            return None
+        ref_path = common_dir / ref_rel
+        if not ref_path.is_file():
+            return None
+        try:
+            sha = ref_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+    else:
+        sha = head
+    if len(sha) < 7:
+        return None
+    return sha[:7]
+
+
+def _resolve_commit_sha() -> str:
+    """Memoized resolution of the current deploy's commit SHA."""
+    global _COMMIT_SHA_CACHE
+    if _COMMIT_SHA_CACHE is not None:
+        return _COMMIT_SHA_CACHE
+    for var in ("RAILWAY_GIT_COMMIT_SHA", "GIT_COMMIT"):
+        val = os.environ.get(var)
+        if val:
+            _COMMIT_SHA_CACHE = val[:7]
+            return _COMMIT_SHA_CACHE
+    from_git = _read_commit_from_dot_git()
+    if from_git:
+        _COMMIT_SHA_CACHE = from_git
+        return _COMMIT_SHA_CACHE
+    _COMMIT_SHA_CACHE = "unknown"
+    return _COMMIT_SHA_CACHE
 
 
 # ── Request/Response models ──────────────────────────────────────────────────
@@ -264,6 +402,7 @@ async def health():
     return {
         "status": "healthy",
         "version": "0.1.0",
+        "commit": _resolve_commit_sha(),
         "engine": "markitdown",
         "embedding_enabled": _svc._embedding_client.enabled,
     }
