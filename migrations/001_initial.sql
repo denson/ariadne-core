@@ -105,6 +105,14 @@ CREATE INDEX idx_interactions_agent ON document_interactions (agent_id);
 CREATE INDEX idx_interactions_agent_type ON document_interactions (agent_type);
 CREATE INDEX idx_interactions_collection ON document_interactions (collection_id);
 
+-- GIN index supporting the POST /api/search ``metadata`` (JSONB
+-- containment ``@>``) and ``metadata_exists`` (key existence ``?``)
+-- filters. Folded forward from migration 002 so fresh deploys get
+-- the index in the initial pass. IF NOT EXISTS keeps the legacy
+-- backfill path (where 002 may already have run separately) safe.
+CREATE INDEX IF NOT EXISTS idx_interactions_agent_metadata
+    ON document_interactions USING GIN (agent_metadata);
+
 -- ============================================================================
 -- Chunks: document segments with vector embeddings
 --

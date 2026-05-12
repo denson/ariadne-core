@@ -1205,16 +1205,82 @@ def _count_chunks_for_document(document_id: str) -> int:
     )
 
 
+def _jsonb_contains(haystack: Any, needle: Any) -> bool:
+    """Pure-Python mirror of Postgres' ``jsonb @> jsonb`` containment.
+
+    Containment is recursive: a JSONB value ``haystack`` contains
+    ``needle`` when every (key, value) pair in ``needle`` exists in
+    ``haystack`` with a value that itself contains the corresponding
+    needle value. For arrays the rule is "every element of needle has a
+    matching contained element in haystack." For scalars, equality.
+
+    This mirrors the semantics PgVectorStore relies on via the ``@>``
+    operator so the two backends return identical result sets for the
+    same input. Keep in lock-step with that operator's behavior — if Pg
+    semantics ever diverge from this Python implementation, the
+    InMemoryVectorStore tests will not catch the regression.
+
+    See: PostgreSQL docs § 9.16 "JSON Functions and Operators".
+    """
+    if isinstance(needle, dict):
+        if not isinstance(haystack, dict):
+            return False
+        for k, v in needle.items():
+            if k not in haystack:
+                return False
+            if not _jsonb_contains(haystack[k], v):
+                return False
+        return True
+    if isinstance(needle, list):
+        if not isinstance(haystack, list):
+            return False
+        # Every needle element must be contained-by some haystack element.
+        for n in needle:
+            if not any(_jsonb_contains(h, n) for h in haystack):
+                return False
+        return True
+    return haystack == needle
+
+
+def _latest_agent_metadata(document_id: str) -> dict[str, Any] | None:
+    """Return the latest interaction's ``agent_metadata`` for a document.
+
+    Mirrors what GET /api/documents (include=agent_metadata) and
+    /api/search response shapes already do: surface "the latest
+    interaction's agent_metadata dict per row." Returns ``None`` if no
+    interactions exist OR the latest one has ``agent_metadata=None``
+    (the two cases are observationally equivalent for filter purposes).
+
+    Chronological-order assumption: both backends' ``get_interactions``
+    return interactions in append order (InMemory: list append in
+    ``record_interaction`` call order; Pg: ``ORDER BY created_at``).
+    ``[-1]`` therefore gives the most-recent interaction. If a future
+    refactor of either store's ``get_interactions`` changes return
+    order, this helper silently picks the wrong row — keep the
+    contract.
+    """
+    interactions = _dedup_store.get_interactions(document_id)
+    if not interactions:
+        return None
+    return interactions[-1].agent_metadata
+
+
 def _post_filter_results(
     results: list, filters: dict[str, Any]
 ) -> list:
-    """Post-filter search results for source_file, file_type, tags.
+    """Post-filter search results for source_file, file_type, tags, metadata.
 
     Used with InMemoryVectorStore which doesn't have access to document
     metadata during search. Looks up the source document from the dedup
     store to apply these filters.
+
+    The ``metadata`` and ``metadata_exists`` filters resolve against
+    the *latest* interaction's ``agent_metadata`` per document, matching
+    PgVectorStore's correlated-subquery shape. Filter composition is
+    AND across keys (a doc must satisfy every requested filter).
     """
-    if not any(k in filters for k in ("source_file", "file_type", "tags")):
+    relevant_keys = ("source_file", "file_type", "tags", "metadata", "metadata_exists")
+    if not any(k in filters for k in relevant_keys):
         return results
 
     filtered = []
@@ -1237,6 +1303,17 @@ def _post_filter_results(
             doc_tags = set(doc.tags) if doc.tags else set()
             if not filter_tags & doc_tags:
                 continue
+
+        if "metadata" in filters or "metadata_exists" in filters:
+            latest = _latest_agent_metadata(r.document_id) or {}
+            if "metadata" in filters:
+                if not _jsonb_contains(latest, filters["metadata"]):
+                    continue
+            if "metadata_exists" in filters:
+                # AND-composed: every requested key must be present
+                # as a top-level key in the latest agent_metadata.
+                if not all(k in latest for k in filters["metadata_exists"]):
+                    continue
 
         filtered.append(r)
 

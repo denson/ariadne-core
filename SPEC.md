@@ -774,7 +774,7 @@ Semantic search over all stored document chunks. Returns ranked results with sou
 | `agent_notes` | string | `null` | Why this search is being performed |
 | `agent_metadata` | dict | `null` | Structured metadata |
 
-**Current filters:**
+**Filters:**
 
 | Filter key | Type | Behavior |
 |------------|------|----------|
@@ -783,17 +783,12 @@ Semantic search over all stored document chunks. Returns ranked results with sou
 | `source_file` | string | Substring match (case-insensitive) against filename |
 | `file_type` | string | Exact match against extension. Both `.pdf` and `pdf` accepted |
 | `tags` | list[str] | Match documents with any of these tags (OR logic) |
+| `metadata` | dict | JSONB containment match against the latest interaction's `agent_metadata`. Nested keys supported: `{"nested": {"field": "value"}}` matches documents where `agent_metadata.nested.field == "value"`. |
+| `metadata_exists` | list[str] | Find documents that have these keys in the latest interaction's `agent_metadata` (regardless of value) |
 
 Unknown filter keys are silently ignored.
 
-**Planned metadata filters** (not yet implemented):
-
-| Filter key | Type | Behavior |
-|------------|------|----------|
-| `metadata` | dict | JSONB containment match — find documents where `agent_metadata` contains these key-value pairs. Works for nested keys too: `{"nested": {"field": "value"}}` matches documents where `agent_metadata.nested.field == "value"`. |
-| `metadata_exists` | list[str] | Find documents that have these keys in `agent_metadata` (regardless of value) |
-
-These will enable queries like "find all documents from project P176874" or "find all documents that have a wb_doc_type field."
+See § Search › Filters for composition semantics and indexing details.
 
 **Response:** JSON with `query`, `top_k`, `collection`, `results_count`, `results` array. Each result: `chunk_id`, `document_id`, `collection`, `text`, `section`, `page`, `token_count`, `relevance_score`, `embedding_model`, `interactions` array.
 
@@ -1131,19 +1126,14 @@ Search supports filtering to narrow results before vector comparison:
 | `source_file` | string | Substring match (case-insensitive) on filename |
 | `file_type` | string | Exact match on extension (`.pdf` and `pdf` both work) |
 | `tags` | list[str] | Match documents with any of these tags (OR logic) |
+| `metadata` | dict | JSONB containment against the latest interaction's `agent_metadata`. Nested keys supported: `{"labels": {"project": "atlas"}}` matches docs where `agent_metadata.labels.project == "atlas"`. |
+| `metadata_exists` | list[str] | Every listed key must be present (as a top-level key) in the latest interaction's `agent_metadata`. Value-agnostic. |
 
-Filters compose — you can use `collection` + `tags` + `file_type` together.
+Filters compose with AND semantics across keys — `collection` + `tags` + `metadata` together narrow further on each axis. Inside `tags`, the listed tags compose with OR. Inside `metadata_exists`, the listed keys compose with AND (every key must be present).
 
-### Planned: metadata filters
+`metadata` and `metadata_exists` resolve against the *latest* interaction's `agent_metadata` per document — matching the "agent_metadata is per-interaction" convention used everywhere else in the system (see § Metadata Conventions and the `agent_metadata` include on `GET /api/documents`). A GIN index on `document_interactions(agent_metadata)` makes both operators index-eligible at scale. Malformed input (`metadata` not a dict, `metadata_exists` not a list of strings) returns 422 before the embedding API is called.
 
-These are not yet implemented but are part of the design:
-
-| Filter | Type | Behavior |
-|--------|------|----------|
-| `metadata` | dict | JSONB containment — find documents where `agent_metadata` contains these key-value pairs. Supports nested keys: `{"nested": {"field": "value"}}` |
-| `metadata_exists` | list[str] | Find documents that have these keys in `agent_metadata`, regardless of value |
-
-These will enable queries like "find all documents from project P176874" or "find all documents that have a `wb_doc_type` field." The underlying Postgres JSONB already supports this via `@>` containment, `->>` field access, and `?` key existence — the work is exposing it through the API.
+**Note on latest-interaction semantics.** Each `document_interactions` row stores the `agent_metadata` dict that was submitted on that call — not the merged result. After `PATCH /api/documents/{id}` with a partial `agent_metadata` body (e.g. `{"status": "reviewed"}`), the latest interaction's `agent_metadata` is just `{"status": "reviewed"}`; keys set by earlier interactions are not re-included. Filter against the latest-interaction surface accordingly — to match a doc reliably across PATCH updates, pass the keys you care about on every PATCH, or filter against `metadata_exists` on a key set by ingestion.
 
 ### Search behavior notes
 

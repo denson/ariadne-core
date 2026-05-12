@@ -127,6 +127,53 @@ class PgVectorStore:
                 where_clauses.append("d.tags && %(filter_tags)s::text[]")
                 params["filter_tags"] = filters["tags"]
                 need_doc_join = True
+            # ``metadata`` and ``metadata_exists`` resolve against the
+            # *latest* ``document_interactions.agent_metadata`` per
+            # document — matching the SPEC's "per-interaction"
+            # convention and the existing GET/list read pattern that
+            # surfaces "the latest interaction's agent_metadata dict".
+            #
+            # We use a correlated subquery picking the most recent
+            # interaction row per document, then apply ``@>`` for
+            # containment and ``?`` for key existence against its
+            # ``agent_metadata`` JSONB. A GIN index on
+            # ``document_interactions(agent_metadata)`` (migration 002)
+            # makes both operators index-eligible.
+            #
+            # Composition: ``metadata`` and each entry in
+            # ``metadata_exists`` AND together (default filter
+            # composition), matching the top-level AND semantics other
+            # filter keys already use.
+            if "metadata" in filters or "metadata_exists" in filters:
+                need_doc_join = True
+                # ``ORDER BY created_at DESC, id DESC`` gives a
+                # deterministic latest-row pick when two interactions
+                # share the same microsecond — without the ``id`` tie-
+                # breaker the planner is free to return either row and
+                # the filter becomes flaky. ``id`` is a unique UUID
+                # PRIMARY KEY (see migrations/001_initial.sql) so the
+                # second sort key fully orders any same-instant pair.
+                latest_meta_sql = (
+                    "(SELECT di.agent_metadata FROM document_interactions di "
+                    "WHERE di.document_id = d.id "
+                    "ORDER BY di.created_at DESC, di.id DESC LIMIT 1)"
+                )
+                if "metadata" in filters:
+                    where_clauses.append(
+                        f"{latest_meta_sql} @> %(filter_metadata)s::jsonb"
+                    )
+                    params["filter_metadata"] = json.dumps(filters["metadata"])
+                if "metadata_exists" in filters:
+                    # One ``?`` clause per requested key, AND-composed.
+                    # Parameterise each key individually so it survives
+                    # quoting; psycopg's ``?`` operator works against
+                    # text parameters bound as the right operand.
+                    for idx, key in enumerate(filters["metadata_exists"]):
+                        pname = f"filter_meta_key_{idx}"
+                        where_clauses.append(
+                            f"{latest_meta_sql} ? %({pname})s"
+                        )
+                        params[pname] = key
 
         where_sql = ""
         if where_clauses:
