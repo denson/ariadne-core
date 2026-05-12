@@ -983,6 +983,79 @@ def test_p15_gating_signal_no_perceptible_lag(client):
     assert ingest["ingest_status"] == "ok"
 
 
+# ── _ingest_bw_write propagates was_dedup_skip ─────────────────────────────
+
+
+def test_ingest_response_propagates_was_dedup_skip():
+    """Phase-3 wire-shape invariant caught by CATO's cold-read review.
+
+    ``_ingest_bw_write``'s success-return dict must carry
+    ``was_dedup_skip`` from the underlying ``_process_single_document``
+    result. The bulk-seed adapter (``scripts/seed_bw_corpus.py``) relies
+    on this key to drive its ``dedup_skipped`` counter — Phase 3's helper
+    was dropping it on the success path, so the seed script's counter
+    never incremented in production. See SPEC §Bulk seed adapter +
+    revision R1 of ariadne--8fd.6.
+
+    Two-case shape:
+    - Case 1: ``_process_single_document`` returns ``was_dedup_skip=False``
+      (a fresh ingest) → ``_ingest_bw_write`` returns
+      ``was_dedup_skip=False``.
+    - Case 2: ``_process_single_document`` returns ``was_dedup_skip=True``
+      (cache hit on content_fingerprint) → ``_ingest_bw_write`` returns
+      ``was_dedup_skip=True``.
+    """
+    from pipeline import services
+    from pipeline.auth_oauth import Principal
+
+    common_kwargs: dict[str, Any] = {
+        "slug": "myproj",
+        "source_type": "body",
+        "ticket_id": "bw-dd",
+        "bw_show_snapshot": {
+            "status": "open",
+            "assignee": "",
+            "parent": None,
+            "labels": [],
+        },
+        "text": "body text",
+        "comment_n": None,
+        "principal": Principal(user_id="test"),
+    }
+
+    async def drive(process_return: dict[str, Any]) -> dict[str, Any]:
+        with patch.object(
+            bw_ingest, "_bw_history_head",
+            return_value=("a" * 40, "alice"),
+        ):
+            with patch.object(
+                services, "_process_single_document", return_value=process_return,
+            ):
+                return await bw_ingest._ingest_bw_write(**common_kwargs)
+
+    # Case 1: new ingest.
+    result_new = asyncio.run(drive({
+        "document_id": "d" * 32,
+        "was_dedup_skip": False,
+    }))
+    assert result_new["ingest_status"] == "ok"
+    assert result_new["was_dedup_skip"] is False, (
+        "new-ingest path must surface was_dedup_skip=False; "
+        f"got {result_new!r}"
+    )
+
+    # Case 2: dedup hit.
+    result_dedup = asyncio.run(drive({
+        "document_id": "e" * 32,
+        "was_dedup_skip": True,
+    }))
+    assert result_dedup["ingest_status"] == "ok"
+    assert result_dedup["was_dedup_skip"] is True, (
+        "dedup-hit path must surface was_dedup_skip=True; "
+        f"got {result_dedup!r}"
+    )
+
+
 # ── P16 (D2.1 async/sync seam — event loop responsive) ──────────────────────
 
 

@@ -1113,6 +1113,42 @@ A non-zero `bw_ingest_file_fallback_pending_lines` means Postgres is currently u
 
 **Searchable surface.** The set of `agent_metadata` keys above is the filter surface; combine with the `metadata` / `metadata_exists` filters documented in the §Search › Filters table to query bw-derived documents. The collection name equals the slug, so `POST /api/search` with `{"collection": "<slug>", "filters": {"metadata": {"ticket_id": "<id>"}}}` returns the body + every comment for that ticket.
 
+### Bulk seed adapter (scripts/seed_bw_corpus.py)
+
+`scripts/seed_bw_corpus.py` is a generic one-shot adapter for migrating an existing `bw` (beadwork) repo onto a target Ariadne deployment via the Phase 2 HTTP surface + Phase 3 inline ingest. Phase 4 of the bw integration (`ariadne--8fd.6`).
+
+**Invocation:**
+
+```bash
+python scripts/seed_bw_corpus.py \
+    --bw-repo /path/to/source-bw-repo \
+    --project target-slug \
+    [--limit N] \
+    [--ariadne-host URL] \
+    [--dry-run] \
+    [--start-after TICKET_ID] \
+    [--state-file PATH] \
+    [--rate-limit-sleep SECONDS]
+```
+
+**Mechanism:**
+
+- **Source enumeration via `git show`** (no `bw` CLI dependency on the caller's machine). The script reads `git show beadwork:issues` for the ticket listing and `git show beadwork:issues/<id>.json` for each ticket body + its inline comment list.
+- **POST per ticket** to `POST /api/bw/projects/{slug}/tickets` with the `TicketCreate` body (`title`, `description`, `priority`, `type`, `parent`). The server's `bw create` generates a fresh target ticket ID — the script does not pass through source IDs (bw does not accept them at create time).
+- **POST per comment** to `POST /api/bw/projects/{slug}/tickets/{target_id}/comments` with the `CommentCreate` body. Phase 3's `_ingest_bw_write` handles each Ariadne ingest inline as part of the POST.
+- **Auth via `ariadne_core_client.auth`** — same precedence chain as `ariadne login` / `mcp_auth.py` (`ARIADNE_ACCESS_TOKEN` env → keyring access token → silent refresh). No new auth surface invented in the script.
+
+**Idempotency (two cooperating layers):**
+
+1. **Script-level state file** at `<bw-repo>/.ariadne_seed_state.json` by default (override via `--state-file`). Records `{source_ticket_id: {target_id, target_comments, seeded_at}}`. On restart the script skips every source ticket already in the map; if the source has grown additional comments since the last run, only the new comments are POSTed. Written atomically via temp-then-rename after every successfully-processed ticket so a mid-run crash leaves a coherent on-disk state.
+2. **Ariadne `content_fingerprint` dedup.** Phase 3's ingest layer reports `ariadne_ingest.was_dedup_skip=true` whenever the embed payload matches an existing document. The script tallies this in the `dedup_skipped` counter — distinct from `tickets_skipped_state` so the operator can tell "skipped because we did this last run" (state-file) apart from "POSTed but Ariadne already had identical content" (content-fingerprint).
+
+**Failure handling.** A 4xx or 5xx on any POST increments `errors`, logs the response body (first 300 chars), and continues with the next ticket / comment. A network failure retries once with a fixed 5-second backoff before being counted. The process exit code is `0` when `errors == 0`, otherwise `1`. Config / argument errors exit `2`.
+
+**Known limitations (Phase 4).** `status`, `assignee`, and `labels` from the source ticket are NOT propagated — seeded tickets land on the target with `status: open`, no `labels`, no `assignee`. The Phase 2 `POST /tickets` body does not accept those fields at create-time, and the Phase 4 deliverable does not emit follow-up PATCHes. Operators who need fidelity must extend the script post-seed (`bw status` / `bw label` / `bw start --assignee` against each target ticket) or wait on a follow-up enhancement.
+
+**Operator action gating (out of scope for `ariadne--8fd.6`).** Running the full bulk seed against a large corpus is a separate PRINCIPAL operator action — not part of the Phase 4 deliverable. Bulk-seed cost is dominated by the Gemini embedding round-trip per POST: at typical throughput, an 11k-ticket corpus runs over multiple hours under the account's rate-limit allowance. The script's `--rate-limit-sleep` knob exists to ride under the upstream rate cap without surfacing as 429s mid-run.
+
 ---
 
 ## Client package
