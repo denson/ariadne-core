@@ -127,10 +127,12 @@ def pg_dedup_store(pg_pool):
 
     original_store_document = store.store_document
 
-    def tracking_store_document(doc):
+    def tracking_store_document(doc, **kwargs):
+        # Forward kwargs (e.g. ariadne--5f2's ``agent_metadata=``) so the
+        # fixture wrapper stays transparent to signature additions.
         if doc.collection_id not in created_collections:
             created_collections.append(doc.collection_id)
-        return original_store_document(doc)
+        return original_store_document(doc, **kwargs)
 
     store.store_document = tracking_store_document  # type: ignore[method-assign]
 

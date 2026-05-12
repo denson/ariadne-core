@@ -121,7 +121,12 @@ class DedupStore(Protocol):
         include_deleted: bool = False,
     ) -> StoredDocument | None: ...
 
-    def store_document(self, doc: StoredDocument) -> bool: ...
+    def store_document(
+        self,
+        doc: StoredDocument,
+        *,
+        agent_metadata: dict[str, Any] | None = None,
+    ) -> bool: ...
 
     def record_interaction(self, interaction: DocumentInteraction) -> None: ...
 
@@ -216,8 +221,22 @@ class PgDedupStore:
                     return None
                 return _row_to_stored_document(row, collection)
 
-    def store_document(self, doc: StoredDocument) -> bool:
+    def store_document(
+        self,
+        doc: StoredDocument,
+        *,
+        agent_metadata: dict[str, Any] | None = None,
+    ) -> bool:
         """Insert or upsert a document.
+
+        When ``agent_metadata`` is supplied, it is folded into the
+        ``documents.metadata`` JSONB column at INSERT time (initial seed)
+        and shallow-merged on UPSERT (re-ingest / resurrection) — same
+        merge semantics as ``update_document_metadata``. This replaces
+        the prior bw-bridge inline seed step in
+        ``bw_ingest._ingest_bw_write``, so subsequent body-doc lookups
+        via ``documents.metadata @> {...}`` can find newly-ingested rows
+        without a follow-up PATCH-meta call.
 
         Returns True if the upsert resurrected a previously soft-deleted row
         (i.e. the row existed with deleted_at IS NOT NULL before this call).
@@ -244,13 +263,23 @@ class PgDedupStore:
                 prior = cur.fetchone()
                 was_resurrected = bool(prior and prior[0])
 
+                # Render agent_metadata once for INSERT (raw seed) and
+                # UPSERT (shallow-merge with EXCLUDED.metadata). The
+                # COALESCE on the UPSERT side mirrors update_document_metadata:
+                # preserves existing keys not present in the new payload,
+                # overwrites keys that are.
+                agent_meta_json = (
+                    _json.dumps(agent_metadata) if agent_metadata is not None else "{}"
+                )
+
                 cur.execute(
                     """
                     INSERT INTO documents (
                         id, collection_id, source_file, content_fingerprint,
                         file_type, engine, markdown, title,
                         processing_time_ms, output_tokens_estimate,
-                        token_savings_ratio, processing_chain, tags, warnings
+                        token_savings_ratio, processing_chain, tags, warnings,
+                        metadata
                     ) VALUES (
                         %(id)s::uuid,
                         (SELECT id FROM collections WHERE name = %(collection)s),
@@ -258,7 +287,8 @@ class PgDedupStore:
                         %(file_type)s, %(engine)s, %(markdown)s, %(title)s,
                         %(processing_time_ms)s, %(output_tokens_estimate)s,
                         %(token_savings_ratio)s, %(processing_chain)s::jsonb,
-                        %(tags)s, %(warnings)s
+                        %(tags)s, %(warnings)s,
+                        %(agent_metadata)s::jsonb
                     )
                     ON CONFLICT (collection_id, content_fingerprint)
                         WHERE content_fingerprint IS NOT NULL
@@ -271,6 +301,8 @@ class PgDedupStore:
                         token_savings_ratio = EXCLUDED.token_savings_ratio,
                         tags = EXCLUDED.tags,
                         warnings = EXCLUDED.warnings,
+                        metadata = COALESCE(documents.metadata, '{}'::jsonb)
+                                   || EXCLUDED.metadata,
                         deleted_at = NULL,
                         deletion_scheduled_at = NULL,
                         updated_at = now()
@@ -291,6 +323,7 @@ class PgDedupStore:
                         "processing_chain": _json.dumps(doc.processing_chain),
                         "tags": doc.tags,
                         "warnings": doc.warnings or [],
+                        "agent_metadata": agent_meta_json,
                     },
                 )
                 row = cur.fetchone()
@@ -883,8 +916,20 @@ class InMemoryDedupStore:
             return None
         return doc
 
-    def store_document(self, doc: StoredDocument) -> bool:
+    def store_document(
+        self,
+        doc: StoredDocument,
+        *,
+        agent_metadata: dict[str, Any] | None = None,
+    ) -> bool:
         """Insert or upsert a document.
+
+        When ``agent_metadata`` is supplied, it is shallow-merged into the
+        per-document metadata dict at ingest time — symmetric with the
+        PG store's seed of ``documents.metadata``. This is what lets
+        ``_resolve_body_doc_id`` (and other ``documents.metadata @> {...}``
+        callers) find the doc by JSONB containment immediately after
+        ingest without a follow-up PATCH-meta step.
 
         Returns True if the upsert resurrected a previously soft-deleted row
         at the same (collection, fingerprint) key.
@@ -897,6 +942,15 @@ class InMemoryDedupStore:
             # resurrected content as active.
             del self._deletions[prior.document_id]
         self._documents[key] = doc
+        if agent_metadata is not None:
+            # Shallow-merge, mirroring update_document_metadata's JSONB
+            # ``COALESCE(metadata, '{}') || EXCLUDED.metadata`` semantics.
+            # Does NOT propagate source_reference here: record_interaction
+            # (called downstream by _process_single_document on the ingest
+            # success path) handles that propagation for both backends, so
+            # adding it here would double-write to the same surface.
+            existing = self._doc_metadata.setdefault(doc.document_id, {})
+            existing.update(agent_metadata)
         return was_resurrected
 
     def record_interaction(self, interaction: DocumentInteraction) -> None:

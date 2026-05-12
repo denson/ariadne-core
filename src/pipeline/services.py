@@ -1117,7 +1117,18 @@ def _process_single_document(
         # at the end of its function body. Return value (was_resurrected)
         # ignored here; would_resurrect above drove the user-facing warning
         # using probe-time state.
-        _dedup_store.store_document(stored_doc)
+        #
+        # agent_metadata flows in here so documents.metadata is seeded at
+        # INSERT time. Without this, the bw → Ariadne body-doc lookup
+        # (documents.metadata @> {ticket_id, source_type=body}) would
+        # return None until a separate PATCH-meta call populated metadata.
+        # Phase 3 (ariadne--8fd.5) worked around this with an inline
+        # update_document_metadata call right after _process_single_document
+        # returned; that workaround is now subsumed by this kwarg —
+        # store_document and update_document_metadata share the same
+        # shallow-merge JSONB semantics. None falls through as '{}'::jsonb
+        # for non-bw ingest paths (regular POST /api/ingest).
+        _dedup_store.store_document(stored_doc, agent_metadata=agent_metadata)
         logger.info(
             "dedup-miss-store",
             extra={

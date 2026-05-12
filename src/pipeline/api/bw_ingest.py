@@ -179,8 +179,8 @@ def _build_agent_metadata(
         if kind is not None:
             # Per design §D1.8 W8: if two labels share the same kind
             # (e.g., ``kind:person`` and ``kind:venue``), the second
-            # overwrites the first. Operator convention in Conan corpus
-            # is one-value-per-kind; flagged as a weakness in design §4.
+            # overwrites the first. Operator convention is
+            # one-value-per-kind; flagged as a weakness in design §4.
             labels_dict[kind] = value
         # Every label — kinded or bare — joins labels_flat in raw form.
         labels_flat.append(raw)
@@ -372,7 +372,7 @@ def _resolve_body_doc_id(*, slug: str, ticket_id: str) -> str | None:
     §D3.1 step 5 + §W2: at v1 scale this is a SEQ SCAN against
     ``documents`` (the Phase 1 GIN index covers ``document_interactions``,
     not ``documents``); fine at 10²-10³ docs per collection, would need a
-    partial index at the full Conan-corpus scale (Phase 4's problem).
+    partial index at full-corpus scale (Phase 4's problem).
     """
     from pipeline.services import _dedup_store
 
@@ -601,32 +601,11 @@ async def _ingest_bw_write(
             "error": str(e),
         }
 
-    # Seed ``documents.metadata`` with the ingest-time agent_metadata so
-    # the body-doc lookup (D3.1 step 5) can find this row by JSONB
-    # containment. ``store_document`` does NOT populate documents.metadata
-    # (it only writes the document's content / fingerprint / file_type /
-    # tags); without this seed step, ``_resolve_body_doc_id`` against
-    # ``documents.metadata @> {"ticket_id": X, "source_type": "body"}``
-    # would silently return None on the very first body PATCH-meta call.
-    # Also seeds the same field on comment docs so a future "find me all
-    # docs for this ticket" query (used by the delete path) works.
-    if isinstance(result, dict) and not result.get("error"):
-        doc_id = result.get("document_id")
-        if doc_id:
-            try:
-                from pipeline.services import _dedup_store
-
-                await asyncio.to_thread(
-                    _dedup_store.update_document_metadata,
-                    document_id=doc_id,
-                    agent_metadata=metadata,
-                )
-            except Exception as e:
-                logger.warning(
-                    "bw_ingest_metadata_seed_failed "
-                    "(slug=%s, ticket=%s, doc=%s): %s",
-                    slug, ticket_id, doc_id, e,
-                )
+    # ``documents.metadata`` is now seeded at INSERT time by
+    # ``store_document(agent_metadata=...)`` inside _process_single_document
+    # (ariadne--5f2). The previous inline update_document_metadata seed
+    # call was the workaround for store_document not populating the
+    # column; it has been subsumed and removed.
 
     # _process_single_document can return ``{"error": True, ...}`` for
     # non-exception failures (extraction empty, embedding failed, etc.).
@@ -1357,7 +1336,7 @@ async def _body_doc_currency_check(
 
 async def _replay_ingest(payload: dict[str, Any]) -> None:
     """Re-run ``_ingest_bw_write``'s storage tail with the captured payload."""
-    from pipeline.services import _process_single_document, _dedup_store
+    from pipeline.services import _process_single_document
 
     metadata = payload["metadata"]
     text = payload["text"]
@@ -1383,14 +1362,10 @@ async def _replay_ingest(payload: dict[str, Any]) -> None:
     )
     if isinstance(result, dict) and result.get("error"):
         raise RuntimeError(str(result.get("message")))
-    # Same metadata-seed step as the live path — see _ingest_bw_write.
-    doc_id = result.get("document_id") if isinstance(result, dict) else None
-    if doc_id:
-        await asyncio.to_thread(
-            _dedup_store.update_document_metadata,
-            document_id=doc_id,
-            agent_metadata=metadata,
-        )
+    # documents.metadata is seeded at INSERT time inside
+    # _process_single_document → store_document(agent_metadata=...) per
+    # ariadne--5f2. The follow-up update_document_metadata call that
+    # previously lived here has been removed.
 
 
 async def _replay_patch_meta(payload: dict[str, Any]) -> None:
