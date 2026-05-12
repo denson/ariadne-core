@@ -1,0 +1,992 @@
+"""HTTP surface for the ``bw`` (beadwork) CLI.
+
+ariadne--8fd.2 (Phase 2). Wraps the ``bw`` binary so an agent (or a
+human via the REST API) can drive beadwork repositories that live on
+the Railway-mounted volume — without holding a shell on the host.
+
+Design notes (locked by the Phase 2 plan; do NOT re-litigate here):
+
+  • URL convention: path-prefix-per-project. Every endpoint hangs off
+    ``/api/bw/projects/{slug}/...``. The slug identifies a beadwork
+    repo on disk (one git working tree per slug, rooted at
+    ``BW_REPOS_ROOT/{slug}``). Slug must match a strict allow-list
+    pattern to prevent path traversal.
+
+  • Method convention: action-endpoint pattern. ``POST .../close``,
+    ``POST .../defer``, ``POST .../labels`` — each ``bw`` subcommand
+    that mutates state maps to a POST against a sub-path named after
+    the action. Read-only subcommands map to GET. Removal of an
+    enumerable child (a label, a dep) maps to DELETE.
+
+  • Auth: every endpoint takes the same ``require_user`` dependency
+    used by ``/api/search`` and ``/api/documents``. v1 is single-user
+    (no per-action ACL); a valid Auth0 Bearer JWT is sufficient.
+
+  • Concurrency: per-slug in-process ``asyncio.Lock``. Acquired by
+    write-shape endpoints; reads (``list``, ``show``, ``history``,
+    ``ready``, ``blocked``, ``export``) skip the lock because git
+    reads are concurrent-safe. This works because the FastAPI app
+    runs as a single uvicorn process — multi-instance deploys would
+    need distributed locking, but that is explicitly out of scope
+    for v1 (see ariadne--8fd.5 / Phase 5 for the deploy shape).
+
+  • bw invocation: subprocess. The ``-C <dir>`` global flag points
+    ``bw`` at the per-slug repo; we pass ``--json`` to every
+    subcommand that supports it and parse the resulting JSON. The
+    few subcommands that don't (``sync``, ``onboard``, ``prime``,
+    ``import``, ``export``) return their stdout verbatim in a
+    documented ``output`` shape.
+
+  • bw exit-code mapping: non-zero → HTTP 400 with bw's stderr in
+    the response body's ``detail`` (caller error — bad ticket id,
+    invalid date, missing required arg). Unexpected failures
+    (binary missing, JSON parse fail on a --json subcommand,
+    subprocess timeout) → HTTP 500.
+
+  • Backup hook: stub for v1. ``_backup_push(slug)`` logs ``TODO``
+    and increments a per-slug counter on the module. Real
+    ``git push`` to a configured remote is wired in Phase 5
+    alongside the volume provisioning and remote-config envs.
+    Stubbing here keeps the call-site stable for Phase 5 to
+    swap in the real push.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+from typing import Any, Optional
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
+from pydantic import BaseModel, Field, field_validator
+
+from pipeline.auth_oauth import Principal, require_user
+
+logger = logging.getLogger("ariadne.bw")
+
+# ── Configuration ───────────────────────────────────────────────────────────
+#
+# All bw-routes config flows through these module-level knobs. They are
+# read at module import time from the environment because every value
+# is process-stable (changing them requires a restart anyway). Tests
+# override them via monkeypatch on this module.
+
+# Base directory under which per-slug bw repos live. The expected
+# layout on Railway is ``/data/bw-repos/{slug}/`` with a populated
+# git working tree. Local dev / tests override via the env var or
+# direct monkeypatch.
+BW_REPOS_ROOT: str = os.environ.get("BW_REPOS_ROOT", "/data/bw-repos")
+
+# Path to the bw binary. ``shutil.which("bw")`` at module import time
+# gives the resolved path so we surface a clean 500 on first request
+# rather than a cryptic FileNotFoundError mid-call. None is permitted
+# (tests mock _run_bw and never invoke shutil.which).
+BW_BINARY: Optional[str] = shutil.which("bw")
+
+# Subprocess timeout per bw call. bw operations are local-git and
+# normally sub-second; a 30s ceiling catches a hung child without
+# making timeouts a common failure mode under load.
+BW_SUBPROCESS_TIMEOUT_SECONDS: float = 30.0
+
+# Slug allow-list. Matches the lowercase-letters/digits/dash/underscore
+# convention used throughout the ariadne workspace and rejects anything
+# that could path-traverse (``..``), shell-escape (``;``, ``|``, ``$``),
+# or smuggle in a path separator (``/``, ``\``). Anchored at both ends.
+_SLUG_PATTERN = re.compile(r"^[a-z0-9_-]{1,64}$")
+
+# Path-param NUL-byte guard. Percent-encoded ``%00`` survives Starlette
+# routing and the decoded ``\x00`` reaches the handler — and then
+# ``subprocess.run`` raises ``ValueError`` on argv with embedded NULs.
+# Apply this pattern to every str path param that becomes an argv
+# element (``ticket_id``, ``label``, ``target``) so the request 422s
+# at validation time with a clean field-level error instead of cascading
+# to a 500. (The ``slug`` path param has its own stricter allow-list.)
+_PATH_PARAM_NO_NUL = r"^[^\x00]+$"
+
+
+def _validate_slug(slug: str) -> None:
+    """Raise 422 if ``slug`` is not in the allow-list.
+
+    Slug is user-controllable via URL. The whole point of validating
+    against an anchored character class (rather than blacklisting bad
+    characters) is to keep this trivially auditable: if it isn't
+    lowercase letters / digits / dash / underscore, it isn't allowed.
+    """
+    if not _SLUG_PATTERN.match(slug):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_slug",
+                "message": (
+                    "Slug must match ^[a-z0-9_-]{1,64}$. Got: "
+                    f"{slug!r}"
+                ),
+            },
+        )
+
+
+def _resolve_repo_path(slug: str) -> str:
+    """Return the absolute path of the per-slug bw repo.
+
+    Re-validates the slug (defence in depth — the only callers are
+    bw routes, which validate at the entry point, but the cost of a
+    second check is one regex match).
+    """
+    _validate_slug(slug)
+    return os.path.join(BW_REPOS_ROOT, slug)
+
+
+# ── Per-slug write lock ─────────────────────────────────────────────────────
+#
+# bw mutations rewrite the git working tree of the underlying repo;
+# concurrent writes against the same slug would race the orphan-branch
+# commit. A per-slug ``asyncio.Lock`` serializes writes within this
+# process. Reads skip the lock — bw's read subcommands (``list``,
+# ``show``, ``history``, ``ready``, ``blocked``, ``export``) walk the
+# git tree and do not commit, so concurrent reads are safe.
+
+_slug_locks: dict[str, asyncio.Lock] = {}
+_slug_locks_guard = asyncio.Lock()
+
+
+async def _lock_for(slug: str) -> asyncio.Lock:
+    """Return the lock for ``slug``, creating it on first request.
+
+    ``_slug_locks_guard`` ensures the dict mutation is atomic across
+    concurrent coroutines; without it two simultaneous writers for a
+    brand-new slug could each create their own Lock and serialize
+    against different objects, defeating the point.
+    """
+    async with _slug_locks_guard:
+        lock = _slug_locks.get(slug)
+        if lock is None:
+            lock = asyncio.Lock()
+            _slug_locks[slug] = lock
+        return lock
+
+
+# ── Backup hook (stub for v1; Phase 5 swaps in real push) ───────────────────
+#
+# After a successful write, we want to push the orphan branch to a
+# remote so the on-disk state isn't the only copy. The real push
+# (``git push <BW_BACKUP_REMOTE_{slug}> beadwork``) lands in Phase 5
+# with the env-var wiring and Railway volume provisioning. Stub it
+# here so the call-site is stable and the deferred work is visible.
+
+# Per-slug counter of skipped backup pushes. Unbounded by design for v1
+# — the slug allow-list caps cardinality at the regex (lowercase alnum +
+# dash/underscore, <=64 chars), and only operator-known slugs ever get
+# entries because slugs must already exist on disk. Phase 5 replaces
+# this counter with a proper metric (Prometheus gauge) when the real
+# git-push backup is wired.
+_backup_skip_count: dict[str, int] = {}
+
+
+def _backup_push(slug: str) -> None:
+    """Stub: log TODO and bump the skip-counter for ``slug``.
+
+    Phase 5 will replace this with a real ``git push`` to the remote
+    configured via ``BW_BACKUP_REMOTE_{slug.upper()}``. On failure,
+    Phase 5 must log a warning and bump a backup-lag counter — and
+    MUST NOT fail the original write (the write already succeeded;
+    the backup is a separate durability layer).
+    """
+    _backup_skip_count[slug] = _backup_skip_count.get(slug, 0) + 1
+    logger.info(
+        "bw backup push skipped (TODO ariadne--8fd.5 / Phase 5): "
+        "slug=%s skip_count=%d",
+        slug,
+        _backup_skip_count[slug],
+    )
+
+
+# ── Subprocess seam ─────────────────────────────────────────────────────────
+
+
+async def _run_bw(
+    slug: str,
+    *args: str,
+    json_output: bool = True,
+    timeout: Optional[float] = None,
+) -> dict[str, Any]:
+    """Invoke ``bw -C <repo> <args>`` and return a parsed result.
+
+    Subprocess is a blocking syscall, and FastAPI runs ``async def``
+    routes directly on the event loop — so we MUST NOT call
+    ``subprocess.run`` synchronously from a route handler. The full
+    bw call (which can run up to ``BW_SUBPROCESS_TIMEOUT_SECONDS``)
+    would pause every other coroutine on the same worker for the
+    duration. ``asyncio.to_thread`` offloads the blocking call to
+    the default thread-pool executor and ``await``s the result, so
+    the event loop stays responsive while the bw subprocess runs.
+
+    The return shape is always a ``dict``. For ``--json`` subcommands
+    the dict is bw's parsed JSON (which is itself either a dict or a
+    list — lists get wrapped as ``{"items": [...]}`` so the caller
+    sees a uniform shape). For non-JSON subcommands the dict is
+    ``{"output": <stdout>, "stderr": <stderr>}``.
+
+    Errors:
+
+      • bw exit != 0 → HTTPException(400) with bw's stderr in detail.
+        These are caller errors (bad id, invalid date, missing arg)
+        and should surface to the API caller as 400.
+
+      • bw binary missing → HTTPException(500). This is a deploy
+        problem, not a caller problem.
+
+      • Subprocess timeout → HTTPException(500). Same.
+
+      • JSON parse failure on a ``--json`` subcommand → HTTPException(500).
+        bw promised JSON and didn't deliver — that's a bw bug or a
+        version mismatch, neither of which the caller can fix.
+
+    Args:
+        slug: Already-validated slug; resolves to the per-slug repo path.
+        *args: bw subcommand + flags + positional args.
+        json_output: True if ``--json`` is already in ``args`` (or
+            implicit) and the caller wants the result parsed. False
+            for subcommands that have no ``--json`` (sync, onboard,
+            prime, export, import).
+        timeout: Subprocess timeout override (defaults to
+            ``BW_SUBPROCESS_TIMEOUT_SECONDS``). Tests override to
+            assert the timeout path.
+    """
+    if BW_BINARY is None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "bw_binary_missing",
+                "message": (
+                    "The bw binary was not found on PATH at app import. "
+                    "Check the Dockerfile install step (Phase 5)."
+                ),
+            },
+        )
+
+    repo_path = _resolve_repo_path(slug)
+    cmd = [BW_BINARY, "-C", repo_path, *args]
+    effective_timeout = timeout if timeout is not None else BW_SUBPROCESS_TIMEOUT_SECONDS
+
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=effective_timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "bw_timeout",
+                "message": (
+                    f"bw call timed out after {effective_timeout}s "
+                    f"(argv={cmd[2:]})"
+                ),
+            },
+        ) from e
+    except FileNotFoundError as e:
+        # bw binary disappeared between import-time which() and now.
+        # Surface as 500 — the operator needs to know the deploy is
+        # broken, not the caller.
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "bw_binary_missing",
+                "message": str(e),
+            },
+        ) from e
+
+    if proc.returncode != 0:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "bw_exit_nonzero",
+                "exit_code": proc.returncode,
+                "stderr": (proc.stderr or "").strip(),
+                "stdout": (proc.stdout or "").strip(),
+            },
+        )
+
+    if not json_output:
+        return {
+            "output": proc.stdout,
+            "stderr": proc.stderr,
+        }
+
+    # --json path: parse stdout. Empty stdout is treated as an empty
+    # dict (some bw subcommands legitimately print nothing on success
+    # — e.g. ``dep add`` with --json on certain versions). The caller
+    # will see ``{}`` rather than a 500.
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "bw_json_parse",
+                "message": str(e),
+                "stdout": raw[:2000],
+            },
+        ) from e
+
+    # Normalize list outputs to ``{"items": [...]}`` so every endpoint
+    # returns a JSON object at the top level (matches the existing
+    # /api/* convention and keeps OpenAPI declarations honest).
+    if isinstance(parsed, list):
+        return {"items": parsed}
+    if isinstance(parsed, dict):
+        return parsed
+    return {"value": parsed}
+
+
+# ── Request models ─────────────────────────────────────────────────────────
+#
+# Pydantic v2 ``field_validator`` is used to reject null bytes (``\x00``)
+# in user-text fields. ``subprocess.run`` raises ``ValueError`` when an
+# argv element contains a NUL — that would cascade to the global 500
+# handler with no helpful detail. Catching it at the request boundary
+# turns the same bad input into a clean 422 with field-level pointer.
+
+
+def _reject_null_byte(v: Optional[str]) -> Optional[str]:
+    """Reject null bytes in user-text fields.
+
+    Returns ``v`` unchanged for ``None`` (Optional fields) and for
+    strings that don't contain ``\\x00``. Raises ``ValueError`` (which
+    Pydantic surfaces as 422) otherwise.
+    """
+    if v is None:
+        return v
+    if "\x00" in v:
+        raise ValueError("null byte not allowed in user-text fields")
+    return v
+
+
+class TicketCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=512)
+    description: Optional[str] = None
+    priority: Optional[int] = Field(default=None, ge=0, le=4)
+    type: Optional[str] = None
+    defer: Optional[str] = None
+    due: Optional[str] = None
+    parent: Optional[str] = None
+
+    # Every str/Optional[str] field on this model becomes an argv element
+    # to ``bw create``; ``subprocess.run`` raises ValueError on embedded
+    # NUL bytes, which would surface as an uncaught 500. Reject at the
+    # request boundary so the client gets a clean 422.
+    _strip_nul = field_validator(
+        "title", "description", "type", "defer", "due", "parent"
+    )(_reject_null_byte)
+
+
+class TicketUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=512)
+    description: Optional[str] = None
+    priority: Optional[int] = Field(default=None, ge=0, le=4)
+    assignee: Optional[str] = None
+    type: Optional[str] = None
+    status: Optional[str] = None
+    defer: Optional[str] = None
+    # ``due`` accepts the empty string to clear the field (matches
+    # ``bw update --due ""`` semantics). None means "don't touch".
+    due: Optional[str] = None
+    parent: Optional[str] = None
+
+    _strip_nul = field_validator(
+        "title", "description", "assignee", "type", "status",
+        "defer", "due", "parent",
+    )(_reject_null_byte)
+
+
+class TicketStart(BaseModel):
+    assignee: Optional[str] = None
+
+    _strip_nul = field_validator("assignee")(_reject_null_byte)
+
+
+class TicketClose(BaseModel):
+    reason: Optional[str] = None
+
+    _strip_nul = field_validator("reason")(_reject_null_byte)
+
+
+class CommentCreate(BaseModel):
+    text: str = Field(..., min_length=1)
+    author: Optional[str] = None
+
+    _strip_nul = field_validator("text", "author")(_reject_null_byte)
+
+
+class LabelAdd(BaseModel):
+    label: str = Field(..., min_length=1, max_length=128)
+
+    _strip_nul = field_validator("label")(_reject_null_byte)
+
+
+class DeferRequest(BaseModel):
+    # bw accepts free-form date expressions ("tomorrow at 2pm", "in 15
+    # minutes", "2 weeks", or YYYY-MM-DD / RFC3339). We pass through
+    # as a single string; bw does the parsing.
+    when: str = Field(..., min_length=1)
+
+    _strip_nul = field_validator("when")(_reject_null_byte)
+
+
+class DepAdd(BaseModel):
+    blocks: str = Field(
+        ...,
+        min_length=1,
+        description="The ticket ID that the current ticket blocks.",
+    )
+
+    _strip_nul = field_validator("blocks")(_reject_null_byte)
+
+
+# ── Router ─────────────────────────────────────────────────────────────────
+#
+# Prefix is /bw/projects/{slug}; the app mounts the existing /api router
+# at prefix="/api" (see app.py), so we follow the same convention.
+# Mounting wires the full path /api/bw/projects/{slug}/... — matches
+# the Phase 2 plan exactly.
+
+router = APIRouter(prefix="/bw/projects/{slug}", tags=["bw"])
+
+
+# ── Ticket-shaped endpoints ────────────────────────────────────────────────
+
+
+@router.post("/tickets", status_code=201)
+async def create_ticket(
+    slug: str = Path(...),
+    req: TicketCreate = Body(...),
+    principal: Principal = Depends(require_user),
+):
+    """Create an issue. Maps to ``bw create``."""
+    _validate_slug(slug)
+    args: list[str] = ["create", req.title, "--json"]
+    if req.priority is not None:
+        args += ["--priority", str(req.priority)]
+    if req.type is not None:
+        args += ["--type", req.type]
+    if req.description is not None:
+        args += ["--description", req.description]
+    if req.defer is not None:
+        args += ["--defer", req.defer]
+    if req.due is not None:
+        args += ["--due", req.due]
+    if req.parent is not None:
+        args += ["--parent", req.parent]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.get("/tickets")
+async def list_tickets(
+    slug: str = Path(...),
+    status: Optional[str] = Query(None, alias="status", pattern=_PATH_PARAM_NO_NUL),
+    assignee: Optional[str] = Query(None, pattern=_PATH_PARAM_NO_NUL),
+    priority: Optional[int] = Query(None, ge=0, le=4),
+    type: Optional[str] = Query(None, pattern=_PATH_PARAM_NO_NUL),
+    label: Optional[str] = Query(None, pattern=_PATH_PARAM_NO_NUL),
+    grep: Optional[str] = Query(None, pattern=_PATH_PARAM_NO_NUL),
+    parent: Optional[str] = Query(None, pattern=_PATH_PARAM_NO_NUL),
+    limit: Optional[int] = Query(None, ge=1, le=10000),
+    show_all: bool = Query(False, alias="all"),
+    deferred: bool = Query(False),
+    overdue: bool = Query(False),
+    principal: Principal = Depends(require_user),
+):
+    """List issues. Maps to ``bw list`` with --json.
+
+    Query params correspond 1:1 to ``bw list`` flags. ``all=true``
+    bypasses the default open/in-progress + limit filter (matches
+    ``bw list --all``). Note: ``status`` here is the filter; bw's
+    own ``--status`` flag.
+    """
+    _validate_slug(slug)
+    args: list[str] = ["list", "--json"]
+    if status is not None:
+        args += ["--status", status]
+    if assignee is not None:
+        args += ["--assignee", assignee]
+    if priority is not None:
+        args += ["--priority", str(priority)]
+    if type is not None:
+        args += ["--type", type]
+    if label is not None:
+        args += ["--label", label]
+    if grep is not None:
+        args += ["--grep", grep]
+    if parent is not None:
+        args += ["--parent", parent]
+    if limit is not None:
+        args += ["--limit", str(limit)]
+    if show_all:
+        args += ["--all"]
+    if deferred:
+        args += ["--deferred"]
+    if overdue:
+        args += ["--overdue"]
+    # No lock — list is read-only.
+    return await _run_bw(slug, *args, json_output=True)
+
+
+@router.get("/tickets/{ticket_id}")
+async def show_ticket(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    only: Optional[str] = Query(
+        None,
+        pattern=_PATH_PARAM_NO_NUL,
+        description=(
+            "Comma-separated section names: summary, description, "
+            "children, blockedby, unblocks, comments."
+        ),
+    ),
+    principal: Principal = Depends(require_user),
+):
+    """Show one issue. Maps to ``bw show <id> --json``."""
+    _validate_slug(slug)
+    args = ["show", ticket_id, "--json"]
+    if only:
+        args += ["--only", only]
+    return await _run_bw(slug, *args, json_output=True)
+
+
+@router.patch("/tickets/{ticket_id}")
+async def update_ticket(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    req: TicketUpdate = Body(...),
+    principal: Principal = Depends(require_user),
+):
+    """Patch fields on an issue. Maps to ``bw update``."""
+    _validate_slug(slug)
+    args: list[str] = ["update", ticket_id, "--json"]
+    if req.title is not None:
+        args += ["--title", req.title]
+    if req.description is not None:
+        args += ["--description", req.description]
+    if req.priority is not None:
+        args += ["--priority", str(req.priority)]
+    if req.assignee is not None:
+        args += ["--assignee", req.assignee]
+    if req.type is not None:
+        args += ["--type", req.type]
+    if req.status is not None:
+        args += ["--status", req.status]
+    if req.defer is not None:
+        args += ["--defer", req.defer]
+    if req.due is not None:
+        args += ["--due", req.due]
+    if req.parent is not None:
+        args += ["--parent", req.parent]
+
+    # If only --json is in the argv, the request body had no fields.
+    if len(args) == 3:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "no_fields_to_update",
+                "message": "PATCH body must include at least one field.",
+            },
+        )
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.delete("/tickets/{ticket_id}")
+async def delete_ticket(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    force: bool = Query(
+        False,
+        description=(
+            "If true, pass --force to bw delete (actually delete). "
+            "If false, bw shows a preview only."
+        ),
+    ),
+    principal: Principal = Depends(require_user),
+):
+    """Delete an issue. Maps to ``bw delete``.
+
+    Without ``?force=true`` this is a preview (matches bw's default
+    safety stance). The caller must pass ``?force=true`` to make the
+    deletion stick.
+    """
+    _validate_slug(slug)
+    args: list[str] = ["delete", ticket_id, "--json"]
+    if force:
+        args += ["--force"]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        if force:
+            _backup_push(slug)
+    return result
+
+
+@router.post("/tickets/{ticket_id}/start")
+async def start_ticket(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    req: TicketStart = Body(default_factory=TicketStart),
+    principal: Principal = Depends(require_user),
+):
+    """Move issue to in_progress + assign. Maps to ``bw start``."""
+    _validate_slug(slug)
+    args: list[str] = ["start", ticket_id, "--json"]
+    if req.assignee is not None:
+        args += ["--assignee", req.assignee]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.post("/tickets/{ticket_id}/close")
+async def close_ticket(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    req: TicketClose = Body(default_factory=TicketClose),
+    principal: Principal = Depends(require_user),
+):
+    """Close an issue. Maps to ``bw close``."""
+    _validate_slug(slug)
+    args: list[str] = ["close", ticket_id, "--json"]
+    if req.reason is not None:
+        args += ["--reason", req.reason]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.post("/tickets/{ticket_id}/reopen")
+async def reopen_ticket(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    principal: Principal = Depends(require_user),
+):
+    """Reopen a closed/in-progress issue. Maps to ``bw reopen``."""
+    _validate_slug(slug)
+    args = ["reopen", ticket_id, "--json"]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.post("/tickets/{ticket_id}/comments", status_code=201)
+async def add_comment(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    req: CommentCreate = Body(...),
+    principal: Principal = Depends(require_user),
+):
+    """Add a comment. Maps to ``bw comment``."""
+    _validate_slug(slug)
+    args: list[str] = ["comment", ticket_id, req.text, "--json"]
+    if req.author is not None:
+        args += ["--author", req.author]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.post("/tickets/{ticket_id}/labels", status_code=201)
+async def add_label(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    req: LabelAdd = Body(...),
+    principal: Principal = Depends(require_user),
+):
+    """Add a label. Maps to ``bw label <id> +<label>``.
+
+    bw's CLI uses a ``+`` prefix to add and ``-`` prefix to remove
+    labels on a single shared subcommand. We expose those as two
+    HTTP endpoints (POST to add, DELETE to remove) — the prefix is
+    composed server-side.
+    """
+    _validate_slug(slug)
+    # Reject any caller that prepends + or - themselves to keep the
+    # semantics single-purpose. The DELETE endpoint is how you remove.
+    if req.label.startswith("+") or req.label.startswith("-"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_label",
+                "message": (
+                    "Label must not start with + or -. Use the "
+                    "DELETE endpoint to remove a label."
+                ),
+            },
+        )
+    args = ["label", ticket_id, f"+{req.label}", "--json"]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.delete("/tickets/{ticket_id}/labels/{label}")
+async def remove_label(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    label: str = Path(
+        ..., min_length=1, max_length=128, pattern=_PATH_PARAM_NO_NUL
+    ),
+    principal: Principal = Depends(require_user),
+):
+    """Remove a label. Maps to ``bw label <id> -<label>``."""
+    _validate_slug(slug)
+    if label.startswith("+") or label.startswith("-"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_label",
+                "message": "Label path segment must not start with + or -.",
+            },
+        )
+    args = ["label", ticket_id, f"-{label}", "--json"]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.post("/tickets/{ticket_id}/defer")
+async def defer_ticket(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    req: DeferRequest = Body(...),
+    principal: Principal = Depends(require_user),
+):
+    """Defer an issue until a target date. Maps to ``bw defer``."""
+    _validate_slug(slug)
+    args = ["defer", ticket_id, req.when, "--json"]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.post("/tickets/{ticket_id}/undefer")
+async def undefer_ticket(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    principal: Principal = Depends(require_user),
+):
+    """Restore a deferred issue. Maps to ``bw undefer``."""
+    _validate_slug(slug)
+    args = ["undefer", ticket_id, "--json"]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.post("/tickets/{ticket_id}/deps", status_code=201)
+async def add_dep(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    req: DepAdd = Body(...),
+    principal: Principal = Depends(require_user),
+):
+    """Add a dependency: ``ticket_id`` blocks ``req.blocks``.
+
+    Maps to ``bw dep add <ticket_id> blocks <target>``. The literal
+    word ``blocks`` is bw's positional separator, not a flag — it is
+    part of the argv we construct here, not a value the caller
+    controls. The caller controls only the two ticket IDs.
+    """
+    _validate_slug(slug)
+    args = ["dep", "add", ticket_id, "blocks", req.blocks, "--json"]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.delete("/tickets/{ticket_id}/deps/{target}")
+async def remove_dep(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    target: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    principal: Principal = Depends(require_user),
+):
+    """Remove the ``ticket_id blocks target`` dependency.
+
+    Maps to ``bw dep remove <ticket_id> blocks <target>``.
+    """
+    _validate_slug(slug)
+    args = ["dep", "remove", ticket_id, "blocks", target, "--json"]
+
+    lock = await _lock_for(slug)
+    async with lock:
+        result = await _run_bw(slug, *args, json_output=True)
+        _backup_push(slug)
+    return result
+
+
+@router.get("/tickets/{ticket_id}/history")
+async def ticket_history(
+    slug: str = Path(...),
+    ticket_id: str = Path(..., pattern=_PATH_PARAM_NO_NUL),
+    limit: Optional[int] = Query(None, ge=1, le=10000),
+    principal: Principal = Depends(require_user),
+):
+    """Show git commit history for an issue. Maps to ``bw history``."""
+    _validate_slug(slug)
+    args = ["history", ticket_id, "--json"]
+    if limit is not None:
+        args += ["--limit", str(limit)]
+    return await _run_bw(slug, *args, json_output=True)
+
+
+# ── Repo-level endpoints ───────────────────────────────────────────────────
+
+
+@router.get("/ready")
+async def list_ready(
+    slug: str = Path(...),
+    principal: Principal = Depends(require_user),
+):
+    """List unblocked issues. Maps to ``bw ready``."""
+    _validate_slug(slug)
+    return await _run_bw(slug, "ready", "--json", json_output=True)
+
+
+@router.get("/blocked")
+async def list_blocked(
+    slug: str = Path(...),
+    principal: Principal = Depends(require_user),
+):
+    """List blocked issues. Maps to ``bw blocked``."""
+    _validate_slug(slug)
+    return await _run_bw(slug, "blocked", "--json", json_output=True)
+
+
+@router.post("/sync")
+async def sync_repo(
+    slug: str = Path(...),
+    principal: Principal = Depends(require_user),
+):
+    """Fetch + rebase + push the beadwork branch. Maps to ``bw sync``.
+
+    No ``--json`` support on this subcommand — stdout is captured
+    verbatim. Held under the per-slug lock because sync rewrites
+    history (rebase) and would race a concurrent write.
+    """
+    _validate_slug(slug)
+    lock = await _lock_for(slug)
+    async with lock:
+        return await _run_bw(slug, "sync", json_output=False)
+
+
+@router.get("/onboard")
+async def onboard(
+    slug: str = Path(...),
+    principal: Principal = Depends(require_user),
+):
+    """Return the agent onboarding snippet. Maps to ``bw onboard``."""
+    _validate_slug(slug)
+    return await _run_bw(slug, "onboard", json_output=False)
+
+
+@router.get("/prime")
+async def prime(
+    slug: str = Path(...),
+    principal: Principal = Depends(require_user),
+):
+    """Return the workflow-context snippet. Maps to ``bw prime``."""
+    _validate_slug(slug)
+    return await _run_bw(slug, "prime", json_output=False)
+
+
+@router.get("/export")
+async def export_jsonl(
+    slug: str = Path(...),
+    status: Optional[str] = Query(None, pattern=_PATH_PARAM_NO_NUL),
+    principal: Principal = Depends(require_user),
+):
+    """Export issues as JSONL. Maps to ``bw export``.
+
+    Output is JSONL (one JSON object per line), not JSON — bw does
+    not honor ``--json`` here. We return the raw stdout under
+    ``output`` for the caller to split on newlines as needed.
+    """
+    _validate_slug(slug)
+    args: list[str] = ["export"]
+    if status is not None:
+        args += ["--status", status]
+    return await _run_bw(slug, *args, json_output=False)
+
+
+# ── Deferred surface (out of v1 scope) ─────────────────────────────────────
+#
+# These subcommands exist in bw 0.12.3 but don't have a clear v1 HTTP
+# shape, so we explicitly do NOT scaffold them. Surfaced here so a
+# future ticket can pick them up.
+#
+#   • bw init        — repo bootstrap. v1 assumes BW_REPOS_ROOT is
+#                       pre-populated; provisioning lives in Phase 5.
+#   • bw upgrade     — admin / manual ops; not an agent-facing call.
+#   • bw config      — admin surface. Defer until a real ACL story
+#                       exists; until then config changes happen on
+#                       the host directly.
+#   • bw registry    — host-local registry; per-process state, not
+#                       per-repo. Not relevant to the slug-routed API.
+#   • bw attach      — needs multipart upload semantics (caller hands
+#                       the API a file blob, not a path on the server
+#                       filesystem). Defer until Phase 3 / Phase 4
+#                       since the answer shape interacts with the
+#                       broader "API accepts file content" question
+#                       that Phase 3 (inline ingest) settles.
+#   • bw import      — same as attach: needs file upload. Defer.
+#
+# TODO(ariadne--8fd.<future>): scaffold attach + import with multipart
+# handlers once Phase 3's inline-ingest upload surface lands.
+# TODO(ariadne--8fd.<future>): expose bw config GET (read-only) — the
+# mutation surface stays internal until the ACL story exists.

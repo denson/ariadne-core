@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from pipeline.api.bw_routes import router as bw_router
 from pipeline.api.confirmation import configure_confirmation
 from pipeline.api.discovery import router as discovery_router
 from pipeline.api.routes import router
@@ -173,6 +174,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(router, prefix="/api")
+# bw HTTP surface (ariadne--8fd.2 / Phase 2). bw_router already carries
+# its own ``/bw/projects/{slug}`` prefix, so mounting under ``/api`` gives
+# the full path ``/api/bw/projects/{slug}/...`` — matches the Phase 2
+# plan's locked path-prefix-per-project convention.
+app.include_router(bw_router, prefix="/api")
 # `/.well-known/ariadne-config` lives at the app root, not under /api.
 # Unauthenticated by construction — a client that can't auth yet must
 # be able to read how to auth.
