@@ -649,6 +649,13 @@ async def _ingest_bw_write(
         "document_id": result.get("document_id"),
         "source_type": source_type,
         "bw_commit_sha": sha,
+        # Propagated from _process_single_document so callers
+        # (notably the bulk-seed adapter — see SPEC §Bulk seed adapter)
+        # can distinguish "POSTed but Ariadne already had identical
+        # content" from "newly ingested". The enqueue-for-retry paths
+        # above leave this key absent (the ingest didn't actually run,
+        # so dedup semantics are undefined).
+        "was_dedup_skip": bool(result.get("was_dedup_skip", False)),
     }
 
 
