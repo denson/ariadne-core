@@ -39,6 +39,20 @@ COPY migrations/ migrations/
 # Default port (Railway sets PORT automatically)
 ENV PORT=8000
 
+# Phase 5 (ariadne--8fd.9): the bw HTTP surface persists per-slug
+# git repos under BW_REPOS_ROOT (default /data/bw-repos). Volume
+# binding is operator-configured per-platform:
+#   • Railway: dashboard → Service → Settings → Volumes → "Add
+#     volume", mount path /data/bw-repos. Railway's docs explicitly
+#     ban the Dockerfile VOLUME keyword, so we do NOT declare one
+#     here — see https://docs.railway.com/volumes.
+#   • Self-hosted Docker: bind-mount or named volume at runtime
+#     (-v <host-path>:/data/bw-repos).
+# App startup (src/pipeline/api/app.py) ``makedirs`` the path on
+# every boot, so a missing-but-creatable mount works on first run;
+# a missing-and-uncreatable mount degrades the bw routes only
+# (search / documents stay functional).
+
 EXPOSE 8000
 
 CMD ["ariadne-core", "serve"]

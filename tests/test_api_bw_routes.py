@@ -73,6 +73,12 @@ def app_with_bw_binary(monkeypatch):
     """
     monkeypatch.setattr(bw_routes, "BW_BINARY", "/usr/local/bin/bw")
     monkeypatch.setattr(bw_routes, "BW_REPOS_ROOT", "/tmp/test-bw-repos")
+    # Phase 5 (ariadne--8fd.9): tests mock subprocess.run and don't
+    # create a real .git tree on disk; disable the initialized-repo
+    # guard so existing argv-shape assertions still proceed to the
+    # subprocess seam. The guard itself is exercised by dedicated
+    # tests that flip this back on with a tmp_path fixture.
+    monkeypatch.setattr(bw_routes, "BW_REQUIRE_INITIALIZED_REPO", False)
     app = _build_app()
     return app
 
@@ -816,6 +822,7 @@ def test_bw_binary_missing_returns_500(monkeypatch):
     # Build a separate app where BW_BINARY is None.
     monkeypatch.setattr(bw_routes, "BW_BINARY", None)
     monkeypatch.setattr(bw_routes, "BW_REPOS_ROOT", "/tmp/test-bw-repos")
+    monkeypatch.setattr(bw_routes, "BW_REQUIRE_INITIALIZED_REPO", False)
     app = _build_app()
     c = TestClient(app)
     response = c.get("/api/bw/projects/myproj/tickets")
@@ -873,6 +880,7 @@ def test_missing_jwt_returns_401(monkeypatch, method, path):
     """
     monkeypatch.setattr(bw_routes, "BW_BINARY", "/usr/local/bin/bw")
     monkeypatch.setattr(bw_routes, "BW_REPOS_ROOT", "/tmp/test-bw-repos")
+    monkeypatch.setattr(bw_routes, "BW_REQUIRE_INITIALIZED_REPO", False)
     # Set the env vars require_user reads so it doesn't short-circuit
     # with a config error (we want the "no token" branch).
     monkeypatch.setenv("AUTH0_DOMAIN", "test.auth0.com")
@@ -995,12 +1003,19 @@ def test_different_slugs_do_not_block(app_with_bw_binary):
     )
 
 
-# ── Backup hook stub increments the counter ─────────────────────────────────
+# ── Backup hook (Phase 5: real git push, infallibility contract) ────────────
 
 
-def test_write_invokes_backup_stub(client, monkeypatch):
-    # Reset the counter for a clean assertion.
+def test_backup_push_no_env_var_is_noop(client, monkeypatch):
+    """If ``BW_BACKUP_REMOTE_{SLUG}`` is unset, ``_backup_push`` is a
+    silent no-op: no subprocess call, no counter bump, no log spam.
+
+    This is the steady-state path for any slug whose operator chose
+    not to configure a backup remote (legitimate for low-value or
+    ephemeral projects).
+    """
     monkeypatch.setattr(bw_routes, "_backup_skip_count", {})
+    monkeypatch.delenv("BW_BACKUP_REMOTE_MYPROJ", raising=False)
     with patch.object(subprocess, "run") as mock_run:
         mock_run.return_value = _fake_completed(stdout='{"id": "bw-a3f8"}')
         response = client.post(
@@ -1008,17 +1023,41 @@ def test_write_invokes_backup_stub(client, monkeypatch):
             json={"title": "Test"},
         )
         assert response.status_code == 201
-    # The backup stub bumps the per-slug counter once per write.
-    assert bw_routes._backup_skip_count.get("myproj") == 1
+    # No ``git push`` invocation. (Note: a ``git rev-parse`` may happen
+    # via the Phase-3 ingest's history-shape fallback when the mocked
+    # bw response lacks a ``hash`` field — that is a different code path
+    # and is not what we are asserting against here.)
+    push_calls = [
+        list(c[0][0]) for c in mock_run.call_args_list
+        if list(c[0][0])[0] == "git" and "push" in list(c[0][0])
+    ]
+    assert not push_calls, (
+        f"Expected no 'git push' when BW_BACKUP_REMOTE_MYPROJ is "
+        f"unset; saw push_calls={push_calls}"
+    )
+    # No counter bump when no remote is configured.
+    assert bw_routes._backup_skip_count.get("myproj") is None
 
 
-def test_read_does_not_invoke_backup_stub(client, monkeypatch):
+def test_read_does_not_invoke_backup_push(client, monkeypatch):
+    """Reads must never trigger the backup hook (no mutation, nothing
+    to push)."""
     monkeypatch.setattr(bw_routes, "_backup_skip_count", {})
+    monkeypatch.setenv(
+        "BW_BACKUP_REMOTE_MYPROJ", "https://example.invalid/repo.git",
+    )
     with patch.object(subprocess, "run") as mock_run:
         mock_run.return_value = _fake_completed(stdout='{"id": "bw-a3f8"}')
         response = client.get("/api/bw/projects/myproj/tickets/bw-a3f8")
         assert response.status_code == 200
-    # Reads must NOT trigger the backup hook.
+    # Read endpoints don't touch _backup_push, so no git push call
+    # even with the remote configured. (Read endpoints also don't
+    # touch the Phase-3 ingest path, so no rev-parse fallback either.)
+    push_calls = [
+        list(c[0][0]) for c in mock_run.call_args_list
+        if list(c[0][0])[0] == "git" and "push" in list(c[0][0])
+    ]
+    assert not push_calls
     assert bw_routes._backup_skip_count.get("myproj") is None
 
 
@@ -1037,6 +1076,9 @@ def test_backup_skipped_on_bw_failure(client, monkeypatch):
     invert the order.
     """
     monkeypatch.setattr(bw_routes, "_backup_skip_count", {})
+    monkeypatch.setenv(
+        "BW_BACKUP_REMOTE_MYPROJ", "https://example.invalid/repo.git",
+    )
     with patch.object(subprocess, "run") as mock_run:
         mock_run.return_value = _fake_completed(
             stdout="",
@@ -1049,8 +1091,273 @@ def test_backup_skipped_on_bw_failure(client, monkeypatch):
         )
     assert response.status_code == 400
     assert response.json()["detail"]["error"] == "bw_exit_nonzero"
-    # The bw write failed; backup must NOT have been called.
+    # No backup attempt — counter must still be untouched.
     assert bw_routes._backup_skip_count.get("myproj") is None
+    # And critically, no `git push` was attempted.
+    push_calls = [
+        list(c[0][0]) for c in mock_run.call_args_list
+        if list(c[0][0])[0] == "git" and "push" in list(c[0][0])
+    ]
+    assert not push_calls
+
+
+def test_backup_push_with_env_var_runs_git_push(client, monkeypatch):
+    """When ``BW_BACKUP_REMOTE_{SLUG}`` is set, a successful bw write
+    triggers a real ``git push`` with the documented argv shape.
+
+    Required argv shape:
+      git -C <repo_path> push <remote_url> beadwork:beadwork --force-with-lease
+    """
+    monkeypatch.setattr(bw_routes, "_backup_skip_count", {})
+    monkeypatch.setenv(
+        "BW_BACKUP_REMOTE_MYPROJ", "https://example.invalid/repo.git",
+    )
+    # All subprocess.run calls succeed (bw create, bw history,
+    # git push, git rev-parse). Same return value for all.
+    with patch.object(subprocess, "run") as mock_run:
+        mock_run.return_value = _fake_completed(stdout='{"id": "bw-a3f8"}')
+        response = client.post(
+            "/api/bw/projects/myproj/tickets",
+            json={"title": "Test"},
+        )
+        assert response.status_code == 201
+
+    # At least one call must be ``git push`` with the documented shape.
+    push_calls = [
+        list(c[0][0]) for c in mock_run.call_args_list
+        if len(c[0][0]) >= 4 and c[0][0][0] == "git" and "push" in c[0][0]
+    ]
+    assert push_calls, (
+        f"Expected a 'git push' subprocess call; "
+        f"saw argv0s={[list(c[0][0])[0] for c in mock_run.call_args_list]}"
+    )
+    push_argv = push_calls[0]
+    assert push_argv[0] == "git"
+    assert push_argv[1] == "-C"
+    expected_repo = os.path.join("/tmp/test-bw-repos", "myproj")
+    assert push_argv[2] == expected_repo
+    assert push_argv[3] == "push"
+    assert push_argv[4] == "https://example.invalid/repo.git"
+    assert "beadwork:beadwork" in push_argv
+    assert "--force-with-lease" in push_argv
+    # Success path: counter must NOT have bumped (no failures observed).
+    assert bw_routes._backup_skip_count.get("myproj") is None
+
+
+def test_backup_push_failure_increments_counter(client, monkeypatch):
+    """A non-zero exit from ``git push`` bumps the per-slug counter
+    and is swallowed (does NOT fail the original write).
+
+    Infallibility contract: the bw write already succeeded, so a
+    backup failure must not turn a 2xx into a 5xx.
+    """
+    monkeypatch.setattr(bw_routes, "_backup_skip_count", {})
+    monkeypatch.setenv(
+        "BW_BACKUP_REMOTE_MYPROJ", "https://example.invalid/repo.git",
+    )
+
+    def fake_run(cmd, **kwargs):
+        # bw calls succeed; git push fails.
+        if cmd[0] == "git" and "push" in cmd:
+            return _fake_completed(
+                stdout="",
+                stderr="fatal: unable to access 'https://...': "
+                       "Could not resolve host",
+                returncode=128,
+            )
+        return _fake_completed(stdout='{"id": "bw-a3f8"}')
+
+    with patch.object(subprocess, "run", side_effect=fake_run):
+        response = client.post(
+            "/api/bw/projects/myproj/tickets",
+            json={"title": "Test"},
+        )
+    # Write succeeded despite backup failure.
+    assert response.status_code == 201
+    # Counter bumped exactly once.
+    assert bw_routes._backup_skip_count.get("myproj") == 1
+
+
+def test_backup_push_timeout_increments_counter(client, monkeypatch):
+    """A subprocess timeout on ``git push`` bumps the counter and is
+    swallowed. Same infallibility contract as the non-zero-exit case."""
+    monkeypatch.setattr(bw_routes, "_backup_skip_count", {})
+    monkeypatch.setenv(
+        "BW_BACKUP_REMOTE_MYPROJ", "https://example.invalid/repo.git",
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git" and "push" in cmd:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=60.0)
+        return _fake_completed(stdout='{"id": "bw-a3f8"}')
+
+    with patch.object(subprocess, "run", side_effect=fake_run):
+        response = client.post(
+            "/api/bw/projects/myproj/tickets",
+            json={"title": "Test"},
+        )
+    assert response.status_code == 201
+    assert bw_routes._backup_skip_count.get("myproj") == 1
+
+
+def test_backup_push_env_key_maps_dashes_to_underscores(client, monkeypatch):
+    """Slug ``my-project`` resolves to ``BW_BACKUP_REMOTE_MY_PROJECT``
+    — dashes map to underscores (env-var names cannot contain dashes
+    on POSIX shells or systemd-style envs)."""
+    monkeypatch.setattr(bw_routes, "_backup_skip_count", {})
+    monkeypatch.delenv("BW_BACKUP_REMOTE_MY-PROJECT", raising=False)
+    monkeypatch.setenv(
+        "BW_BACKUP_REMOTE_MY_PROJECT", "https://example.invalid/repo.git",
+    )
+    with patch.object(subprocess, "run") as mock_run:
+        mock_run.return_value = _fake_completed(stdout='{"id": "bw-a3f8"}')
+        response = client.post(
+            "/api/bw/projects/my-project/tickets",
+            json={"title": "Test"},
+        )
+        assert response.status_code == 201
+    # A `git push` must have happened — proves the env-key lookup
+    # found the slug → MY_PROJECT mapping.
+    push_calls = [
+        c for c in mock_run.call_args_list
+        if list(c[0][0])[0] == "git" and "push" in list(c[0][0])
+    ]
+    assert len(push_calls) >= 1
+
+
+def test_backup_push_masks_token_in_log(monkeypatch, caplog):
+    """Token-bearing remote URLs get the pre-`@` credential portion
+    masked in log lines so a tail of operator logs doesn't leak the
+    token. The actual subprocess call still uses the unmasked URL."""
+    import logging
+    import asyncio
+
+    monkeypatch.setattr(bw_routes, "_backup_skip_count", {})
+    monkeypatch.setattr(bw_routes, "BW_REPOS_ROOT", "/tmp/test-bw-repos")
+    monkeypatch.setenv(
+        "BW_BACKUP_REMOTE_SECRETPROJ",
+        "https://x-access-token:ghp_SECRET_TOKEN_VALUE_123@github.com/o/r.git",
+    )
+
+    captured_argv: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        captured_argv.append(list(cmd))
+        if cmd[0] == "git" and "push" in cmd:
+            return _fake_completed(
+                stdout="", stderr="boom", returncode=128,
+            )
+        return _fake_completed(stdout="")
+
+    with caplog.at_level(logging.WARNING, logger="ariadne.bw"):
+        with patch.object(subprocess, "run", side_effect=fake_run):
+            asyncio.run(bw_routes._backup_push("secretproj"))
+
+    # The subprocess call argv must have the UNMASKED token (otherwise
+    # the push would fail auth).
+    push_argv = [a for a in captured_argv if a and a[0] == "git" and "push" in a]
+    assert push_argv, f"No git push happened; captured={captured_argv}"
+    assert "ghp_SECRET_TOKEN_VALUE_123" in " ".join(push_argv[0])
+    # The log line must have the masked URL — the raw token must NOT
+    # appear in any log record.
+    log_text = " ".join(r.getMessage() for r in caplog.records)
+    assert "ghp_SECRET_TOKEN_VALUE_123" not in log_text, (
+        f"Token leaked to log: {log_text!r}"
+    )
+    assert "***" in log_text
+
+
+# ── Project initialization guard (Phase 5) ──────────────────────────────────
+
+
+def test_uninitialized_project_returns_clear_404(monkeypatch, tmp_path):
+    """A slug whose ``<BW_REPOS_ROOT>/<slug>/.git`` doesn't exist must
+    return 404 with an operator-actionable message — NOT a 500 / cryptic
+    subprocess error."""
+    monkeypatch.setattr(bw_routes, "BW_BINARY", "/usr/local/bin/bw")
+    monkeypatch.setattr(bw_routes, "BW_REPOS_ROOT", str(tmp_path))
+    monkeypatch.setattr(bw_routes, "BW_REQUIRE_INITIALIZED_REPO", True)
+    app = _build_app()
+    c = TestClient(app)
+
+    # No slug subdir exists under tmp_path → must 404 with the new error.
+    response = c.get("/api/bw/projects/missingproj/tickets")
+    assert response.status_code == 404, (
+        f"Expected 404 bw_project_uninitialized; got "
+        f"{response.status_code}: {response.text}"
+    )
+    detail = response.json()["detail"]
+    assert detail["error"] == "bw_project_uninitialized"
+    assert detail["slug"] == "missingproj"
+    assert "bw init" in detail["message"]
+
+
+def test_initialized_project_passes_guard(monkeypatch, tmp_path):
+    """When ``<BW_REPOS_ROOT>/<slug>/.git`` exists, the guard passes
+    and the route reaches the (mocked) subprocess seam."""
+    monkeypatch.setattr(bw_routes, "BW_BINARY", "/usr/local/bin/bw")
+    monkeypatch.setattr(bw_routes, "BW_REPOS_ROOT", str(tmp_path))
+    monkeypatch.setattr(bw_routes, "BW_REQUIRE_INITIALIZED_REPO", True)
+    # Materialize <root>/<slug>/.git as a directory so the .isdir
+    # check passes.
+    (tmp_path / "okproj" / ".git").mkdir(parents=True)
+    app = _build_app()
+    c = TestClient(app)
+
+    with patch.object(subprocess, "run") as mock_run:
+        mock_run.return_value = _fake_completed(stdout='{"items": []}')
+        response = c.get("/api/bw/projects/okproj/tickets")
+    assert response.status_code == 200, response.text
+    mock_run.assert_called()
+
+
+# ── Startup hook (Phase 5: makedirs BW_REPOS_ROOT) ──────────────────────────
+
+
+def test_app_startup_creates_bw_repos_root_when_missing(monkeypatch, tmp_path):
+    """App startup ``makedirs(BW_REPOS_ROOT, exist_ok=True)`` so a
+    freshly-provisioned (empty) volume gets the expected directory
+    on first boot. Idempotent on re-boot (no error if it already
+    exists). Drives the actual ``_ensure_bw_repos_root`` helper from
+    ``app.py`` so a future regression that changes the helper without
+    also changing the lifespan caller is caught here."""
+    from pipeline.api.app import _ensure_bw_repos_root
+
+    target = tmp_path / "fresh-bw-repos"
+    assert not target.exists()
+
+    monkeypatch.setattr(bw_routes, "BW_REPOS_ROOT", str(target))
+    _ensure_bw_repos_root()
+    assert target.is_dir()
+
+    # Idempotency: a second call must not raise.
+    _ensure_bw_repos_root()
+    assert target.is_dir()
+
+
+def test_app_startup_warns_when_bw_repos_root_uncreatable(
+    monkeypatch, tmp_path, caplog,
+):
+    """If ``makedirs`` fails (e.g. permissions, read-only mount),
+    the startup hook logs a WARNING and returns normally — it must
+    NOT raise. The bw routes will then 404 per slug, but other
+    endpoints (search, documents) keep working."""
+    import logging
+    from pipeline.api.app import _ensure_bw_repos_root
+
+    # Point at a path whose makedirs is forced to raise.
+    monkeypatch.setattr(bw_routes, "BW_REPOS_ROOT", str(tmp_path / "x"))
+
+    def fake_makedirs(*args, **kwargs):
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr("pipeline.api.app.os.makedirs", fake_makedirs)
+    with caplog.at_level(logging.WARNING, logger="ariadne.app"):
+        # Must not raise.
+        _ensure_bw_repos_root()
+    assert any(
+        "not creatable" in r.getMessage() for r in caplog.records
+    ), f"Expected 'not creatable' WARNING; saw {[r.getMessage() for r in caplog.records]}"
 
 
 # ── List wrapping (bw --json returning bare array) ──────────────────────────
