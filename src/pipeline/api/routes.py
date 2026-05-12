@@ -1017,6 +1017,54 @@ async def restore_document(
 # ── Search endpoint ──────────────────────────────────────────────────────────
 
 
+def _validate_metadata_filters(filters: dict[str, Any]) -> None:
+    """Validate the ``metadata`` and ``metadata_exists`` filter keys.
+
+    These filters resolve against the latest ``document_interactions
+    .agent_metadata`` per document (matching the SPEC's "agent_metadata
+    is per-interaction" convention and the existing GET document and
+    list-documents read patterns). Malformed input raises 422 with a
+    structured detail dict so an agent can correct the call without
+    guessing what went wrong.
+
+    - ``metadata`` must be a ``dict`` (used for JSONB containment ``@>``).
+    - ``metadata_exists`` must be a ``list[str]`` (used for key-exists
+      ``?`` checks, AND-composed across listed keys).
+
+    No-op when neither key is present, so the existing filter surface
+    (``collection``, ``document_id``, ``source_file``, ``file_type``,
+    ``tags``) is unaffected.
+    """
+    if "metadata" in filters:
+        meta = filters["metadata"]
+        if not isinstance(meta, dict):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": (
+                        "filters.metadata must be a JSON object (dict) for "
+                        "JSONB containment matching."
+                    ),
+                    "got_type": type(meta).__name__,
+                    "see": "SPEC.md § Search › Filters",
+                },
+            )
+    if "metadata_exists" in filters:
+        keys = filters["metadata_exists"]
+        if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": (
+                        "filters.metadata_exists must be a list of strings "
+                        "(the keys to check for existence in agent_metadata)."
+                    ),
+                    "got_type": type(keys).__name__,
+                    "see": "SPEC.md § Search › Filters",
+                },
+            )
+
+
 @router.post("/search")
 async def search_documents(
     req: SearchRequest,
@@ -1028,6 +1076,11 @@ async def search_documents(
             status_code=503,
             detail="Search is not available: no embedding API key configured.",
         )
+
+    # Validate before embedding — a malformed filter shape should fail
+    # at 422 without burning an embedding-API call.
+    if req.filters:
+        _validate_metadata_filters(req.filters)
 
     try:
         query_embedding = _svc._embedding_client.embed_query(req.query)
