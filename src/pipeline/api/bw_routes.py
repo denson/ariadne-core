@@ -474,7 +474,15 @@ async def create_ticket(
     req: TicketCreate = Body(...),
     principal: Principal = Depends(require_user),
 ):
-    """Create an issue. Maps to ``bw create``."""
+    """Create an issue. Maps to ``bw create``.
+
+    Phase 3 (ariadne--8fd.5): inside the same per-slug lock and after
+    the backup hook, ingest the new body into Ariadne as a `body`-type
+    document. The ingest result is attached as ``ariadne_ingest`` on
+    the response; bw's own result remains the load-bearing payload.
+    """
+    from pipeline.api.bw_ingest import _ingest_bw_write
+
     _validate_slug(slug)
     args: list[str] = ["create", req.title, "--json"]
     if req.priority is not None:
@@ -494,6 +502,27 @@ async def create_ticket(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        ticket_id = result.get("id")
+        if ticket_id:
+            # Body = title + (description or empty). bw stores the
+            # description as the body; the title goes into a separate
+            # field. We include both in the Ariadne payload so search
+            # against the title text returns the body doc.
+            text = req.title
+            if req.description:
+                text = f"{req.title}\n\n{req.description}"
+            ingest = await _ingest_bw_write(
+                slug=slug,
+                source_type="body",
+                ticket_id=ticket_id,
+                bw_show_snapshot=result,
+                text=text,
+                comment_n=None,
+                principal=principal,
+            )
+            if isinstance(result, dict):
+                result = dict(result)
+                result["ariadne_ingest"] = ingest
     return result
 
 
@@ -577,7 +606,22 @@ async def update_ticket(
     req: TicketUpdate = Body(...),
     principal: Principal = Depends(require_user),
 ):
-    """Patch fields on an issue. Maps to ``bw update``."""
+    """Patch fields on an issue. Maps to ``bw update``.
+
+    Phase 3: per design §D4.1, branch on whether the body changed:
+
+      • Fields-only PATCH (no ``title`` and no ``description``) →
+        ``_patch_bw_body_metadata`` re-emits the full agent_metadata
+        surface against the body doc.
+      • Body-changing PATCH (``title`` or ``description`` non-None) →
+        soft-delete the prior body doc(s), then ingest a new body doc.
+    """
+    from pipeline.api.bw_ingest import (
+        _ingest_bw_write,
+        _patch_bw_body_metadata,
+        _soft_delete_body_docs,
+    )
+
     _validate_slug(slug)
     args: list[str] = ["update", ticket_id, "--json"]
     if req.title is not None:
@@ -609,10 +653,45 @@ async def update_ticket(
             },
         )
 
+    body_changed = req.title is not None or req.description is not None
+
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        if body_changed:
+            deleted = await _soft_delete_body_docs(
+                slug=slug, ticket_id=ticket_id,
+            )
+            # New body text = (post-update) title + (post-update or
+            # prior) description. Both come from the bw result, which
+            # reflects the post-update ticket state.
+            title = result.get("title") or ""
+            description = result.get("description") or ""
+            text = title if not description else f"{title}\n\n{description}"
+            ingest = await _ingest_bw_write(
+                slug=slug,
+                source_type="body",
+                ticket_id=ticket_id,
+                bw_show_snapshot=result,
+                text=text,
+                comment_n=None,
+                principal=principal,
+            )
+            if isinstance(result, dict):
+                result = dict(result)
+                result["ariadne_ingest"] = ingest
+                result["ariadne_soft_deleted_body_ids"] = deleted
+        else:
+            patch = await _patch_bw_body_metadata(
+                slug=slug,
+                ticket_id=ticket_id,
+                bw_show_snapshot=result,
+                principal=principal,
+            )
+            if isinstance(result, dict):
+                result = dict(result)
+                result["ariadne_ingest"] = patch
     return result
 
 
@@ -635,6 +714,8 @@ async def delete_ticket(
     safety stance). The caller must pass ``?force=true`` to make the
     deletion stick.
     """
+    from pipeline.api.bw_ingest import _soft_delete_ticket_docs
+
     _validate_slug(slug)
     args: list[str] = ["delete", ticket_id, "--json"]
     if force:
@@ -645,6 +726,12 @@ async def delete_ticket(
         result = await _run_bw(slug, *args, json_output=True)
         if force:
             _backup_push(slug)
+            ingest = await _soft_delete_ticket_docs(
+                slug=slug, ticket_id=ticket_id,
+            )
+            if isinstance(result, dict):
+                result = dict(result)
+                result["ariadne_ingest"] = ingest
     return result
 
 
@@ -656,6 +743,8 @@ async def start_ticket(
     principal: Principal = Depends(require_user),
 ):
     """Move issue to in_progress + assign. Maps to ``bw start``."""
+    from pipeline.api.bw_ingest import _patch_bw_body_metadata
+
     _validate_slug(slug)
     args: list[str] = ["start", ticket_id, "--json"]
     if req.assignee is not None:
@@ -665,6 +754,13 @@ async def start_ticket(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        patch = await _patch_bw_body_metadata(
+            slug=slug, ticket_id=ticket_id,
+            bw_show_snapshot=result, principal=principal,
+        )
+        if isinstance(result, dict):
+            result = dict(result)
+            result["ariadne_ingest"] = patch
     return result
 
 
@@ -675,7 +771,15 @@ async def close_ticket(
     req: TicketClose = Body(default_factory=TicketClose),
     principal: Principal = Depends(require_user),
 ):
-    """Close an issue. Maps to ``bw close``."""
+    """Close an issue. Maps to ``bw close``.
+
+    Phase 3 per design §D3 matrix row for close-with-reason: when
+    ``reason`` is non-None, the bw call records BOTH a status change
+    AND a comment whose body is the reason. Both side-effects land in
+    Ariadne — PATCH-meta on the body doc, plus a new comment doc.
+    """
+    from pipeline.api.bw_ingest import _ingest_bw_write, _patch_bw_body_metadata
+
     _validate_slug(slug)
     args: list[str] = ["close", ticket_id, "--json"]
     if req.reason is not None:
@@ -685,6 +789,31 @@ async def close_ticket(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        patch = await _patch_bw_body_metadata(
+            slug=slug, ticket_id=ticket_id,
+            bw_show_snapshot=result, principal=principal,
+        )
+        comment_ingest = None
+        if req.reason is not None:
+            # The close-reason becomes a real bw comment — its
+            # ``comment_n`` is the length of the resulting comments
+            # array (same shape rule as the comment-add path uses).
+            comments = result.get("comments") if isinstance(result, dict) else None
+            comment_n = len(comments) if comments else None
+            comment_ingest = await _ingest_bw_write(
+                slug=slug,
+                source_type="comment",
+                ticket_id=ticket_id,
+                bw_show_snapshot=result,
+                text=req.reason,
+                comment_n=comment_n,
+                principal=principal,
+            )
+        if isinstance(result, dict):
+            result = dict(result)
+            result["ariadne_ingest"] = patch
+            if comment_ingest is not None:
+                result["ariadne_comment_ingest"] = comment_ingest
     return result
 
 
@@ -695,6 +824,8 @@ async def reopen_ticket(
     principal: Principal = Depends(require_user),
 ):
     """Reopen a closed/in-progress issue. Maps to ``bw reopen``."""
+    from pipeline.api.bw_ingest import _patch_bw_body_metadata
+
     _validate_slug(slug)
     args = ["reopen", ticket_id, "--json"]
 
@@ -702,6 +833,13 @@ async def reopen_ticket(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        patch = await _patch_bw_body_metadata(
+            slug=slug, ticket_id=ticket_id,
+            bw_show_snapshot=result, principal=principal,
+        )
+        if isinstance(result, dict):
+            result = dict(result)
+            result["ariadne_ingest"] = patch
     return result
 
 
@@ -712,7 +850,15 @@ async def add_comment(
     req: CommentCreate = Body(...),
     principal: Principal = Depends(require_user),
 ):
-    """Add a comment. Maps to ``bw comment``."""
+    """Add a comment. Maps to ``bw comment``.
+
+    Phase 3: ingest the new comment as a ``comment``-type document.
+    ``comment_n`` is the 1-indexed length of the comments array in the
+    bw response (verified shape — bw comment --json returns the full
+    ticket view including the just-added comment).
+    """
+    from pipeline.api.bw_ingest import _ingest_bw_write
+
     _validate_slug(slug)
     args: list[str] = ["comment", ticket_id, req.text, "--json"]
     if req.author is not None:
@@ -722,6 +868,20 @@ async def add_comment(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        comments = result.get("comments") if isinstance(result, dict) else None
+        comment_n = len(comments) if comments else None
+        ingest = await _ingest_bw_write(
+            slug=slug,
+            source_type="comment",
+            ticket_id=ticket_id,
+            bw_show_snapshot=result,
+            text=req.text,
+            comment_n=comment_n,
+            principal=principal,
+        )
+        if isinstance(result, dict):
+            result = dict(result)
+            result["ariadne_ingest"] = ingest
     return result
 
 
@@ -755,10 +915,19 @@ async def add_label(
         )
     args = ["label", ticket_id, f"+{req.label}", "--json"]
 
+    from pipeline.api.bw_ingest import _patch_bw_body_metadata
+
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        patch = await _patch_bw_body_metadata(
+            slug=slug, ticket_id=ticket_id,
+            bw_show_snapshot=result, principal=principal,
+        )
+        if isinstance(result, dict):
+            result = dict(result)
+            result["ariadne_ingest"] = patch
     return result
 
 
@@ -783,10 +952,19 @@ async def remove_label(
         )
     args = ["label", ticket_id, f"-{label}", "--json"]
 
+    from pipeline.api.bw_ingest import _patch_bw_body_metadata
+
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        patch = await _patch_bw_body_metadata(
+            slug=slug, ticket_id=ticket_id,
+            bw_show_snapshot=result, principal=principal,
+        )
+        if isinstance(result, dict):
+            result = dict(result)
+            result["ariadne_ingest"] = patch
     return result
 
 
@@ -798,6 +976,8 @@ async def defer_ticket(
     principal: Principal = Depends(require_user),
 ):
     """Defer an issue until a target date. Maps to ``bw defer``."""
+    from pipeline.api.bw_ingest import _patch_bw_body_metadata
+
     _validate_slug(slug)
     args = ["defer", ticket_id, req.when, "--json"]
 
@@ -805,6 +985,13 @@ async def defer_ticket(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        patch = await _patch_bw_body_metadata(
+            slug=slug, ticket_id=ticket_id,
+            bw_show_snapshot=result, principal=principal,
+        )
+        if isinstance(result, dict):
+            result = dict(result)
+            result["ariadne_ingest"] = patch
     return result
 
 
@@ -815,6 +1002,8 @@ async def undefer_ticket(
     principal: Principal = Depends(require_user),
 ):
     """Restore a deferred issue. Maps to ``bw undefer``."""
+    from pipeline.api.bw_ingest import _patch_bw_body_metadata
+
     _validate_slug(slug)
     args = ["undefer", ticket_id, "--json"]
 
@@ -822,6 +1011,13 @@ async def undefer_ticket(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         _backup_push(slug)
+        patch = await _patch_bw_body_metadata(
+            slug=slug, ticket_id=ticket_id,
+            bw_show_snapshot=result, principal=principal,
+        )
+        if isinstance(result, dict):
+            result = dict(result)
+            result["ariadne_ingest"] = patch
     return result
 
 
@@ -943,6 +1139,27 @@ async def prime(
     """Return the workflow-context snippet. Maps to ``bw prime``."""
     _validate_slug(slug)
     return await _run_bw(slug, "prime", json_output=False)
+
+
+@router.get("/health")
+async def bw_health(
+    slug: str = Path(...),
+    principal: Principal = Depends(require_user),
+):
+    """Phase 3 observability: ingest-retry depth + file-fallback metrics.
+
+    The slug is required by the path but not used for the metrics body —
+    the queue depth is global by design (one Postgres table for all
+    slugs; per-slug breakdown returned as a dict). Returning under
+    ``/api/bw/projects/{slug}/health`` keeps the URL convention
+    consistent; an operator hitting any slug's health endpoint gets the
+    same view, with the per-slug breakdown surfacing how the depth is
+    distributed.
+    """
+    from pipeline.api.bw_ingest import get_retry_metrics
+
+    _validate_slug(slug)
+    return get_retry_metrics()
 
 
 @router.get("/export")

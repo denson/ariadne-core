@@ -225,8 +225,16 @@ def test_valid_slug_accepted(client):
 
 
 def _argv_from_call(mock_run) -> list[str]:
-    """Extract the argv from the mocked subprocess.run call."""
-    args, _kwargs = mock_run.call_args
+    """Extract the argv from the FIRST mocked subprocess.run call.
+
+    Phase 3 (ariadne--8fd.5): mutating bw endpoints now make a SECOND
+    subprocess call to ``bw history --json --limit 1`` after the
+    primary write, to capture the commit SHA + author for Ariadne
+    ingest. Phase 2's tests assert the primary write's argv shape, so
+    we read the FIRST call's args rather than ``mock_run.call_args``
+    (which is the most recent call). Read endpoints are unchanged.
+    """
+    args, _kwargs = mock_run.call_args_list[0]
     return list(args[0])
 
 
@@ -245,7 +253,11 @@ def test_create_ticket_argv(client):
             },
         )
         assert response.status_code == 201
-        assert response.json() == {"id": "bw-a3f8", "title": "Test"}
+        # Phase 3: response now also carries an ``ariadne_ingest`` key
+        # alongside bw's own payload. Subset-check the bw shape.
+        body = response.json()
+        assert body["id"] == "bw-a3f8"
+        assert body["title"] == "Test"
 
     argv = _argv_from_call(mock_run)
     assert argv[0] == "/usr/local/bin/bw"

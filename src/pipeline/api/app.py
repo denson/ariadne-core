@@ -5,12 +5,14 @@ Creates the FastAPI app with CORS, lifespan, and route mounting.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from pipeline.api.bw_ingest import _bw_retry_worker
 from pipeline.api.bw_routes import router as bw_router
 from pipeline.api.confirmation import configure_confirmation
 from pipeline.api.discovery import router as discovery_router
@@ -132,8 +134,21 @@ async def lifespan(app: FastAPI):
     # hits that path.
     logger.info("OAuth Bearer JWT authentication is REQUIRED (Auth0)")
 
+    # Phase 3 (ariadne--8fd.5): start the bw → Ariadne ingest retry
+    # worker. Drains the bw_ingest_retry_queue + JSONL file fallback
+    # on a poll interval so failed ingests are recovered without a
+    # restart. The task is canceled on shutdown so it doesn't keep
+    # the process alive past the lifespan.
+    bw_retry_task = asyncio.create_task(_bw_retry_worker())
+    logger.info("bw_retry_worker started (Phase 3 / ariadne--8fd.5)")
+
     yield
-    # Shutdown: close connections
+    # Shutdown: cancel the retry worker, then close connections.
+    bw_retry_task.cancel()
+    try:
+        await bw_retry_task
+    except asyncio.CancelledError:
+        pass
     close_pool()
 
 

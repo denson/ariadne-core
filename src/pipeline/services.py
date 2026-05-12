@@ -537,10 +537,23 @@ def _process_single_document(
     ingest_config: Optional[dict] = None,
     action: str = "ingest",
     confirmation_token: Optional[str] = None,
+    inline_content: Optional[bytes] = None,
 ) -> dict[str, Any]:
     """Shared pipeline logic for convert_document and ingest.
 
     Returns a response dict (not JSON string).
+
+    ``inline_content`` (internal / bw bridge — Phase 3, ariadne--8fd.5):
+    when supplied, the URI-driven read path is short-circuited and the
+    given bytes are used as the source content directly. The fingerprint
+    is computed over ``inline_content`` (same SHA-256 as the URI path
+    would have produced), and the URI parameter remains required as the
+    informational ``source_file`` displayed in observability surfaces —
+    it is never parsed for I/O. This path bypasses confirmation-token
+    validation, size probing, and the soft/hard size caps because the
+    caller (``bw_ingest._ingest_bw_write``) is internal: the payload is
+    frontmatter + bw description-or-comment text whose size bw itself
+    has already vetted. External callers MUST NOT use this kwarg.
     """
     # Resolve per-request ingest overrides against the YAML/module default
     # (Batch G / ariadne--16a §F2). Mirrors the Batch F chunking_config
@@ -602,6 +615,20 @@ def _process_single_document(
                 "source_file": _source_file_from_uri(uri),
             }
 
+    # Inline-content short-circuit (Phase 3 / ariadne--8fd.5 — bw bridge).
+    # When ``inline_content`` is supplied, the caller is internal and has
+    # already constructed the full payload bytes (frontmatter + bw text);
+    # we skip confirmation-token validation, size probing, and the
+    # soft/hard size caps entirely, then fall through to the existing
+    # post-read pipeline (fingerprint / dedup / extract / chunk / embed /
+    # store / record_interaction). The ``inline_content is None`` guard
+    # gates the URI-driven blocks below so they only run for external
+    # callers; the variable ``raw_bytes`` is the single hand-off the URI
+    # path produces, and the inline branch sets it directly.
+    raw_bytes: bytes | None = None
+    if inline_content is not None:
+        raw_bytes = inline_content
+
     # m5e size-check flow:
     #
     #   1. If a confirmation_token is present, validate it. On VALID, skip
@@ -617,135 +644,142 @@ def _process_single_document(
     #      downstream and read at effective_soft so the chunked-read
     #      accumulator triggers the confirmation flow at the soft cap
     #      boundary (caller branches on bytes_seen vs effective_hard).
-    read_cap = effective_soft  # default; overridden below
-    size_precise_for_token = True
+    # URI-driven source read (skipped entirely when ``inline_content`` is
+    # supplied — the inline branch above already set ``raw_bytes``).
+    if inline_content is None:
+        read_cap = effective_soft  # default; overridden below
+        size_precise_for_token = True
 
-    if confirmation_token:
-        validation = validate_token(confirmation_token, source_uri=uri)
-        if validation == ValidationResult.VALID:
-            logger.info(
-                "confirmation-token: validated",
-                extra={"source_file": _source_file_from_uri(uri)},
-            )
-            read_cap = effective_hard
-        else:
-            # Tampered / expired / URI-mismatch all fall through to the
-            # probe path; the probe's outcome will re-issue a fresh token
-            # via the 413 path. Operator-side log records the result tag
-            # so forensics can distinguish the cases.
-            logger.warning(
-                "confirmation-token: %s (re-issuing via probe path)",
-                validation.value,
-                extra={"source_file": _source_file_from_uri(uri)},
-            )
-            confirmation_token = None  # treat as absent for the probe path
-
-    if not confirmation_token:
-        probe = _probe_size(uri)
-        if probe.size is not None:
-            # Hard-cap breach takes priority — refuse outright, no token.
-            if probe.size >= effective_hard:
-                return _hard_limit_error_dict(
-                    uri, probe.size, effective_hard
+        if confirmation_token:
+            validation = validate_token(confirmation_token, source_uri=uri)
+            if validation == ValidationResult.VALID:
+                logger.info(
+                    "confirmation-token: validated",
+                    extra={"source_file": _source_file_from_uri(uri)},
                 )
-            # Strict mode: soft cap acts as a strict cap, no token.
-            if (
-                probe.size >= effective_soft
-                and not effective_require_confirm
-            ):
+                read_cap = effective_hard
+            else:
+                # Tampered / expired / URI-mismatch all fall through to the
+                # probe path; the probe's outcome will re-issue a fresh token
+                # via the 413 path. Operator-side log records the result tag
+                # so forensics can distinguish the cases.
+                logger.warning(
+                    "confirmation-token: %s (re-issuing via probe path)",
+                    validation.value,
+                    extra={"source_file": _source_file_from_uri(uri)},
+                )
+                confirmation_token = None  # treat as absent for the probe path
+
+        if not confirmation_token:
+            probe = _probe_size(uri)
+            if probe.size is not None:
+                # Hard-cap breach takes priority — refuse outright, no token.
+                if probe.size >= effective_hard:
+                    return _hard_limit_error_dict(
+                        uri, probe.size, effective_hard
+                    )
+                # Strict mode: soft cap acts as a strict cap, no token.
+                if (
+                    probe.size >= effective_soft
+                    and not effective_require_confirm
+                ):
+                    return _soft_strict_error_dict(
+                        uri, probe.size, effective_soft, effective_hard
+                    )
+                # Soft-cap breach + confirmation enabled: issue token.
+                if (
+                    probe.size >= effective_soft
+                    and effective_require_confirm
+                ):
+                    # NOTE: source_uri is the request-time URI, not any
+                    # post-redirect URI surfaced inside _probe_size's HEAD
+                    # response. See _probe_size docstring for the invariant.
+                    token, _ = issue_token(
+                        source_uri=uri,
+                        reported_size=probe.size,
+                        size_precise=True,
+                        ttl_seconds=effective_ttl,
+                    )
+                    return _confirmation_required_error_dict(
+                        uri=uri,
+                        reported_size=probe.size,
+                        soft_cap=effective_soft,
+                        hard_cap=effective_hard,
+                        content_type=probe.content_type,
+                        last_modified=probe.last_modified,
+                        confirmation_token=token,
+                        ttl_seconds=effective_ttl,
+                    )
+                # Below soft cap: proceed with read at soft cap (existing flow).
+                read_cap = effective_soft
+            else:
+                # Probe failed; gate the read at soft cap so the accumulator
+                # can trigger the confirmation flow at that boundary. Tokens
+                # issued downstream from the bytes-seen overrun get
+                # size_precise=False.
+                read_cap = effective_soft
+                size_precise_for_token = False
+
+        # Read source bytes for fingerprinting BEFORE extraction. The same
+        # buffer is reused by extract_from_bytes below — one fetch, one read,
+        # one buffer (Batch G / ariadne--16a §6). Cap-enforced via
+        # _read_source_bytes (URL: Content-Length first, then chunked
+        # accumulator; local file: stat-based pre-flight).
+        try:
+            raw_bytes = _read_source_bytes(uri, cap=read_cap)
+        except SourceTooLargeError as e:
+            # m5e: classify soft-vs-hard via bytes_seen against effective_hard.
+            # If the read was capped at effective_hard (token-validated path),
+            # any breach is necessarily a hard-cap breach. If the read was
+            # capped at effective_soft (no token / probe failed) and bytes_seen
+            # < effective_hard, it's a soft-cap breach → confirmation flow.
+            bytes_seen = getattr(e, "bytes_seen", read_cap + 1)
+            if bytes_seen >= effective_hard:
+                return _hard_limit_error_dict(uri, bytes_seen, effective_hard)
+            # bytes_seen between soft and hard.
+            if not effective_require_confirm:
                 return _soft_strict_error_dict(
-                    uri, probe.size, effective_soft, effective_hard
+                    uri, bytes_seen, effective_soft, effective_hard
                 )
-            # Soft-cap breach + confirmation enabled: issue token.
-            if (
-                probe.size >= effective_soft
-                and effective_require_confirm
-            ):
-                # NOTE: source_uri is the request-time URI, not any
-                # post-redirect URI surfaced inside _probe_size's HEAD
-                # response. See _probe_size docstring for the invariant.
-                token, _ = issue_token(
-                    source_uri=uri,
-                    reported_size=probe.size,
-                    size_precise=True,
-                    ttl_seconds=effective_ttl,
-                )
-                return _confirmation_required_error_dict(
-                    uri=uri,
-                    reported_size=probe.size,
-                    soft_cap=effective_soft,
-                    hard_cap=effective_hard,
-                    content_type=probe.content_type,
-                    last_modified=probe.last_modified,
-                    confirmation_token=token,
-                    ttl_seconds=effective_ttl,
-                )
-            # Below soft cap: proceed with read at soft cap (existing flow).
-            read_cap = effective_soft
-        else:
-            # Probe failed; gate the read at soft cap so the accumulator
-            # can trigger the confirmation flow at that boundary. Tokens
-            # issued downstream from the bytes-seen overrun get
-            # size_precise=False.
-            read_cap = effective_soft
-            size_precise_for_token = False
-
-    # Read source bytes for fingerprinting BEFORE extraction. The same
-    # buffer is reused by extract_from_bytes below — one fetch, one read,
-    # one buffer (Batch G / ariadne--16a §6). Cap-enforced via
-    # _read_source_bytes (URL: Content-Length first, then chunked
-    # accumulator; local file: stat-based pre-flight).
-    try:
-        raw_bytes = _read_source_bytes(uri, cap=read_cap)
-    except SourceTooLargeError as e:
-        # m5e: classify soft-vs-hard via bytes_seen against effective_hard.
-        # If the read was capped at effective_hard (token-validated path),
-        # any breach is necessarily a hard-cap breach. If the read was
-        # capped at effective_soft (no token / probe failed) and bytes_seen
-        # < effective_hard, it's a soft-cap breach → confirmation flow.
-        bytes_seen = getattr(e, "bytes_seen", read_cap + 1)
-        if bytes_seen >= effective_hard:
-            return _hard_limit_error_dict(uri, bytes_seen, effective_hard)
-        # bytes_seen between soft and hard.
-        if not effective_require_confirm:
-            return _soft_strict_error_dict(
-                uri, bytes_seen, effective_soft, effective_hard
+            token, _ = issue_token(
+                source_uri=uri,
+                reported_size=bytes_seen,
+                size_precise=size_precise_for_token,
+                ttl_seconds=effective_ttl,
             )
-        token, _ = issue_token(
-            source_uri=uri,
-            reported_size=bytes_seen,
-            size_precise=size_precise_for_token,
-            ttl_seconds=effective_ttl,
-        )
-        # Probe might have surfaced metadata even when size was None
-        # (e.g., HEAD returned 200 without Content-Length but with
-        # Content-Type / Last-Modified). For now we only carry probe
-        # metadata when probe.size was set; the fall-through path leaves
-        # content_type / last_modified as None to avoid an extra HEAD on
-        # a path that already failed once.
-        return _confirmation_required_error_dict(
-            uri=uri,
-            reported_size=bytes_seen,
-            soft_cap=effective_soft,
-            hard_cap=effective_hard,
-            content_type=None,
-            last_modified=None,
-            confirmation_token=token,
-            ttl_seconds=effective_ttl,
-            size_precise=size_precise_for_token,
-        )
-    except Exception as e:
-        # Legacy non-cap source-read failure path: preserves the pre-m5e
-        # error-dict shape (no `code` key) so the dispatch table at
-        # routes.py for unknown codes falls through to the default 422
-        # branch. See §3.3 closing constraint + §4 probe (l).
-        return {
-            "error": True,
-            "message": f"Source read failed: {e}",
-            "document_id": None,
-            "source_file": _source_file_from_uri(uri),
-        }
+            # Probe might have surfaced metadata even when size was None
+            # (e.g., HEAD returned 200 without Content-Length but with
+            # Content-Type / Last-Modified). For now we only carry probe
+            # metadata when probe.size was set; the fall-through path leaves
+            # content_type / last_modified as None to avoid an extra HEAD on
+            # a path that already failed once.
+            return _confirmation_required_error_dict(
+                uri=uri,
+                reported_size=bytes_seen,
+                soft_cap=effective_soft,
+                hard_cap=effective_hard,
+                content_type=None,
+                last_modified=None,
+                confirmation_token=token,
+                ttl_seconds=effective_ttl,
+                size_precise=size_precise_for_token,
+            )
+        except Exception as e:
+            # Legacy non-cap source-read failure path: preserves the pre-m5e
+            # error-dict shape (no `code` key) so the dispatch table at
+            # routes.py for unknown codes falls through to the default 422
+            # branch. See §3.3 closing constraint + §4 probe (l).
+            return {
+                "error": True,
+                "message": f"Source read failed: {e}",
+                "document_id": None,
+                "source_file": _source_file_from_uri(uri),
+            }
 
+    # ``raw_bytes`` was set either by the inline branch above or by the
+    # ``_read_source_bytes`` call inside the ``inline_content is None``
+    # block. Both paths converge here.
+    assert raw_bytes is not None, "raw_bytes must be set by inline or URI path"
     fingerprint = compute_fingerprint(raw_bytes)
 
     if not force:
