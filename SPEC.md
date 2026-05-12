@@ -436,6 +436,7 @@ Convert a document to clean Markdown. By default, also chunks, embeds, and store
 | `chunking_config` | dict | `null` | Override chunking. Keys: `strategy` (`"by_title"`, `"by_page"`, `"fixed_size"`), `max_characters`, `overlap` |
 | `ingest_config` | dict | `null` | Per-request override for ingest knobs (`max_source_bytes`, `max_source_bytes_hard`, `require_confirmation_above_soft`). Unknown keys — and server-policy keys that cannot be overridden per-request, namely `confirmation_token_ttl_seconds` — raise 422. See "Per-request size caps" below. |
 | `confirmation_token` | string | `null` | Opaque token (HMAC-signed; treat as a string, do not parse) returned by a prior 413 `confirmation_required` response. Re-submit with this token to bypass the soft-cap check. The hard cap is still enforced via the chunked-read accumulator. See "Source-size confirmation flow" below. |
+| `inline_content` | bytes | `null` | _(internal / bw bridge — Phase 3, ariadne--8fd.5)_ Caller-supplied document bytes. When set, the server skips the URI source-read (no HTTP fetch, no `file://` open, no `Path.stat()` probe) and fingerprints / ingests the inline bytes directly; the `uri` becomes a synthetic identifier displayed as `source_file`. Used by the bw HTTP bridge to ingest the freshly-rendered frontmatter+body payload without a round-trip through the filesystem. Because no URI read occurs, **the `max_source_bytes` soft cap and `max_source_bytes_hard` hard cap are not enforced on this path** — the cap exists to protect against unbounded URI reads, not against bytes already committed to RAM by a trusted internal caller. Not part of the public surface; reserved for first-party bridges. See design §D2.6 for the inline-ingest contract. |
 | `agent_id` | string | `null` | Caller identity |
 | `agent_type` | string | `null` | Client type (e.g. `"claude-code"`, `"script"`) |
 | `model` | string | `null` | LLM model the caller is running |
@@ -1035,6 +1036,82 @@ A caller that hits `/api/bw/projects/{slug}/<deferred>` simply gets a 404 (no ro
 | `BW_SUBPROCESS_TIMEOUT_SECONDS` | `30.0` | Max wall-clock per bw call. Set at module load; not per-request. |
 | (resolved) `BW_BINARY` | `shutil.which("bw")` at app import | Path to the `bw` binary. If `None`, every endpoint 500s with `bw_binary_missing`. |
 | (Phase 5) `BW_BACKUP_REMOTE_{SLUG}` | `null` | Git remote URL for `_backup_push`; not read in Phase 2. |
+| `BW_RETRY_POLL_SECONDS` | `30.0` | Phase 3: polling interval for the bw ingest-retry worker. |
+| `BW_RETRY_BATCH_SIZE` | `10` | Phase 3: max rows drained per retry poll. |
+| `BW_RETRY_BASE_BACKOFF_SECONDS` | `30.0` | Phase 3: exponential backoff base for retry attempts. |
+| `BW_RETRY_MAX_BACKOFF_SECONDS` | `3600.0` | Phase 3: ceiling on backoff between retry attempts. |
+| `BW_RETRY_MAX_ATTEMPTS` | `24` | Phase 3: after this many failures a row moves to the dead-letter table. |
+
+#### Ingest coupling (Phase 3 / ariadne--8fd.5)
+
+Every successful bw write triggers an inline Ariadne ingest inside the same per-slug lock, so search reflects the new bw content within the response cycle — no separate `POST /api/ingest` round-trip required. The write endpoint returns bw's own JSON shape with an additional `ariadne_ingest` key carrying the ingest result; the bw shape itself is unchanged from Phase 2.
+
+**Per-endpoint behavior (the 22-endpoint matrix from design §D3):**
+
+| Endpoint | bw effect | Ariadne effect |
+|---|---|---|
+| `POST /tickets` | new ticket + body | New `body`-type doc; `agent_metadata` carries the frontmatter schema below |
+| `POST /tickets/{id}/comments` | new comment | New `comment`-type doc with `comment_n = len(bw_response.comments)` |
+| `PATCH /tickets/{id}` (title or description changed) | mutate body | Soft-delete prior body doc(s); ingest new body doc with the post-update content |
+| `PATCH /tickets/{id}` (fields-only) | mutate fields | PATCH-meta on body doc — re-emit full `agent_metadata` surface (latest-interaction semantics; full surface mandatory per design §D3.1) |
+| `DELETE /tickets/{id}?force=true` | delete ticket | Soft-delete body doc + every comment doc for the ticket |
+| `DELETE /tickets/{id}` (preview, no force) | no mutation | No-op |
+| `POST /tickets/{id}/start` | status → in_progress + assignee | PATCH-meta |
+| `POST /tickets/{id}/close` (no reason) | status → closed | PATCH-meta |
+| `POST /tickets/{id}/close` (with reason) | status → closed + reason comment | PATCH-meta on body AND new comment doc for the reason |
+| `POST /tickets/{id}/reopen` | status → open | PATCH-meta |
+| `POST /tickets/{id}/defer` | status → deferred | PATCH-meta |
+| `POST /tickets/{id}/undefer` | status → open | PATCH-meta |
+| `POST /tickets/{id}/labels` | add label | PATCH-meta (re-emits FULL `labels` dict + `labels_flat` + every other key) |
+| `DELETE /tickets/{id}/labels/{label}` | remove label | PATCH-meta |
+| `POST /tickets/{id}/deps` | add dep | No-op (v1) |
+| `DELETE /tickets/{id}/deps/{target}` | remove dep | No-op (v1) |
+| `POST /sync` | git fetch+rebase+push | No-op (v1 single-writer only) |
+
+The read-only endpoints (`GET /tickets`, `GET /tickets/{id}`, `GET /ready`, `GET /blocked`, `GET /tickets/{id}/history`, `GET /onboard`, `GET /prime`, `GET /export`) do not trigger ingest.
+
+**Frontmatter / `agent_metadata` schema** — the ingest payload is YAML frontmatter (alphabetically-sorted keys for fingerprint stability) followed by the bw body or comment text. The same dict is sent as `agent_metadata` on every ingest interaction and re-emitted in full on every PATCH-meta. Keys:
+
+| Key | Type | Notes |
+|---|---|---|
+| `ticket_id` | str | Canonical bw ticket id (the `id` field of `bw show`) |
+| `project` | str | Project slug; equals the Ariadne collection name |
+| `source_type` | `"body"` \| `"comment"` | Only two values in v1 |
+| `comment_n` | int \| null | 1-indexed within the ticket's comments array; null for body docs |
+| `author` | str \| null | bw author of the body / comment (the `--author` flag value, or git user.name) |
+| `timestamp` | str | RFC3339 UTC; captured at the API request boundary inside the lock |
+| `bw_commit_sha` | str | 40-hex commit SHA of the bw mutation, from `bw history --json --limit 1` |
+| `bw_status` | str | `open` / `in_progress` / `closed` / `deferred` — snapshot at write time |
+| `parent_ticket_id` | str \| null | bw `parent` field, pass-through |
+| `assignee` | str \| null | bw `assignee` field, pass-through |
+| `labels` | dict[str,str] | Structured `kind:value` labels parsed on the first `:`; bare labels skipped |
+| `labels_flat` | list[str] | Every label verbatim — kinded AND bare. Use `metadata_exists=["labels_flat"]` to find any labeled doc; nested containment (`metadata={"labels":{"kind":"person"}}`) for typed filters. |
+
+`priority`, `due`, `defer_until`, `type`, and bw-internal timestamps are deliberately NOT in v1 frontmatter — bw-internal scheduling fields, not load-bearing for search.
+
+**Body-author preservation across PATCH:** label-add, status-change, defer/undefer, start, close, and fields-only PATCH all preserve the `agent_metadata.author` field of the original body author across the mutation. The PATCH actor's identity is recorded on the `document_interactions` row (`agent_id`), but `agent_metadata.author` continues to point at the bw `create`-row author. This is mandatory because Phase 1's metadata filter resolves against the latest interaction's `agent_metadata` — a naive "use the just-completed mutation's author" rule would silently overwrite alice's name with bob's the first time bob adds a label to alice's body.
+
+**Eventual-consistency contract.** A bw write returns HTTP 201/200 once the bw repo is committed and the Ariadne ingest has either succeeded OR enqueued for retry. The response carries `ariadne_ingest.ingest_status` — `"ok"` (search reflects the write immediately) or `"enqueued_for_retry"` (search reflects the write within ~`BW_RETRY_POLL_SECONDS` after the upstream issue resolves). The bw repo is canonical (locked decision); a successful bw write is never lost, even when Ariadne ingest fails repeatedly.
+
+**Failure-mode escalation:**
+
+1. **Ingest exception** → enqueue into the Postgres `bw_ingest_retry_queue` table.
+2. **Postgres-enqueue exception** (`OperationalError`, etc.) → fall back to the on-disk JSONL file `${BW_REPOS_ROOT}/{slug}/.bw_ingest_dead_letter.jsonl`. Append-only, fsync per line. The retry worker drains this file via atomic-rename-then-read on every poll.
+3. **Retry budget exhausted** (`attempt_count >= BW_RETRY_MAX_ATTEMPTS`) OR **stale-by-design** (a later body PATCH already advanced the ticket past the queued SHA) OR **orphan SHA** (the queued SHA is no longer in `bw history`) → move the row to `bw_ingest_retry_dead_letter`. The operator (POLYBIUS) can inspect / replay manually; no automatic re-replay from the dead-letter table.
+
+**Observability** — `GET /api/bw/projects/{slug}/health` returns:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `bw_ingest_retry_queue_depth` | int | Current row count in `bw_ingest_retry_queue` |
+| `bw_ingest_retry_dead_letter_count` | int | Cumulative row count in `bw_ingest_retry_dead_letter` |
+| `bw_ingest_retry_by_slug` | dict[str,int] | Per-slug retry-queue depth |
+| `bw_ingest_file_fallback_drain_count` | int | Cumulative file-fallback lines drained since process start |
+| `bw_ingest_file_fallback_pending_lines` | int | Sum of pending lines across every slug's `.bw_ingest_dead_letter.jsonl` |
+
+A non-zero `bw_ingest_file_fallback_pending_lines` means Postgres is currently unreachable or the drain itself is failing — both worth alerting on.
+
+**Searchable surface.** The set of `agent_metadata` keys above is the filter surface; combine with the `metadata` / `metadata_exists` filters documented in the §Search › Filters table to query bw-derived documents. The collection name equals the slug, so `POST /api/search` with `{"collection": "<slug>", "filters": {"metadata": {"ticket_id": "<id>"}}}` returns the body + every comment for that ticket.
 
 ---
 

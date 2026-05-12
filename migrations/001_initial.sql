@@ -206,3 +206,52 @@ CREATE TABLE api_keys (
     created_at TIMESTAMPTZ DEFAULT now(),
     revoked_at TIMESTAMPTZ
 );
+
+-- ============================================================================
+-- bw → Ariadne ingest retry queue + dead-letter table (Phase 3 / ariadne--8fd.5)
+--
+-- Every successful bw write triggers an inline Ariadne ingest under the
+-- same per-slug lock; if that ingest fails, the failed payload is enqueued
+-- here so a background worker can replay it deterministically. Folded
+-- forward from migration 003 so fresh deploys get both tables in the
+-- initial pass. ``IF NOT EXISTS`` keeps the legacy backfill path safe
+-- (where 003 may already have run separately against an existing deploy).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS bw_ingest_retry_queue (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug              TEXT NOT NULL,
+    source_type       TEXT NOT NULL,
+    ticket_id         TEXT NOT NULL,
+    comment_n         INTEGER,
+    bw_commit_sha     TEXT NOT NULL,
+    payload           JSONB NOT NULL,
+    enqueued_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_attempt_at   TIMESTAMPTZ,
+    attempt_count     INTEGER NOT NULL DEFAULT 0,
+    last_error        TEXT,
+    next_attempt_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bw_ingest_retry_next
+    ON bw_ingest_retry_queue (next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_bw_ingest_retry_slug
+    ON bw_ingest_retry_queue (slug);
+
+CREATE TABLE IF NOT EXISTS bw_ingest_retry_dead_letter (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug              TEXT NOT NULL,
+    source_type       TEXT NOT NULL,
+    ticket_id         TEXT NOT NULL,
+    comment_n         INTEGER,
+    bw_commit_sha     TEXT NOT NULL,
+    payload           JSONB NOT NULL,
+    enqueued_at       TIMESTAMPTZ NOT NULL,
+    last_attempt_at   TIMESTAMPTZ,
+    attempt_count     INTEGER NOT NULL,
+    last_error        TEXT,
+    gave_up_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    gave_up_reason    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_bw_ingest_dead_letter_slug
+    ON bw_ingest_retry_dead_letter (slug);
