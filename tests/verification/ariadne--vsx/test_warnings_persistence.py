@@ -107,7 +107,7 @@ class SnapshotingDedupStore(InMemoryDedupStore):
     exercise the real persistence path when Postgres is available.
     """
 
-    def store_document(self, doc: StoredDocument) -> bool:
+    def store_document(self, doc: StoredDocument, **kwargs) -> bool:
         import copy
         # Snapshot warnings at call time, exactly like Pg.
         snapshot_warnings = list(doc.warnings or [])
@@ -115,7 +115,10 @@ class SnapshotingDedupStore(InMemoryDedupStore):
         # doc.warnings post-call cannot reach our stored object.
         snap = copy.copy(doc)
         snap.warnings = snapshot_warnings
-        return super().store_document(snap)
+        # Forward kwargs (e.g. ariadne--5f2's ``agent_metadata=``) so the
+        # snapshot double stays transparent to signature additions on the
+        # parent's store_document.
+        return super().store_document(snap, **kwargs)
 
 
 def _install_snapshot_stores(monkeypatch):
