@@ -187,7 +187,7 @@ async def _lock_for(slug: str) -> asyncio.Lock:
 _backup_skip_count: dict[str, int] = {}
 
 
-def _backup_push(slug: str) -> None:
+async def _backup_push(slug: str) -> None:
     """Stub: log TODO and bump the skip-counter for ``slug``.
 
     Phase 5 will replace this with a real ``git push`` to the remote
@@ -195,6 +195,23 @@ def _backup_push(slug: str) -> None:
     Phase 5 must log a warning and bump a backup-lag counter — and
     MUST NOT fail the original write (the write already succeeded;
     the backup is a separate durability layer).
+
+    Why ``async def`` for a body that does no I/O today: Phase 5 will
+    wrap a real ``git push`` subprocess in ``await asyncio.to_thread(...)``
+    (or ``asyncio.create_subprocess_exec`` — see the outer-timeout
+    note at ``_run_bw``). Locking in the async surface now means
+    Phase 5 cannot accidentally regress to a sync ``def`` body whose
+    blocking syscall would pause the entire event loop while held
+    inside ``async with lock:`` at the 13 call sites. The cost of
+    the async surface for a no-op body is the ``await`` keyword at
+    each call site; the value is that Phase 5 has to actively REGRESS
+    to break it, not just forget to convert.
+
+    Outer-timeout cancellation note: Phase 5's real git-push body
+    inherits the same to_thread cancellation asymmetry documented on
+    ``_run_bw`` — if any caller ever wraps a write endpoint in
+    ``asyncio.wait_for``, see ``_run_bw``'s outer-timeout guardrail
+    for the two safe mitigations.
     """
     _backup_skip_count[slug] = _backup_skip_count.get(slug, 0) + 1
     logger.info(
@@ -224,6 +241,30 @@ async def _run_bw(
     duration. ``asyncio.to_thread`` offloads the blocking call to
     the default thread-pool executor and ``await``s the result, so
     the event loop stays responsive while the bw subprocess runs.
+
+    Outer-timeout guardrail (Phase 5+ implementers — READ THIS):
+    ``asyncio.to_thread`` does NOT propagate cancellation into the
+    wrapped sync function. If any future caller wraps a bw call (or
+    ``_backup_push``, which Phase 5 will also subprocess-out) in
+    ``asyncio.wait_for(coro, timeout=...)``, the outer timeout will
+    cancel the awaiting coroutine but the underlying
+    ``subprocess.run`` continues running in the executor thread —
+    the subprocess orphans, the thread stays busy, and the caller
+    sees a ``TimeoutError`` while the child process is still alive.
+    Two safe fixes for future code that wants real cancellation:
+      (a) Switch the offending call to
+          ``asyncio.create_subprocess_exec`` + ``await proc.communicate()``;
+          this is native asyncio, and cancellation kills the child
+          process via the OS as part of unwinding.
+      (b) Wrap the to_thread call in ``try/except asyncio.CancelledError``
+          that explicitly ``process.kill()``s the subprocess before
+          re-raising. Harder to get right because the ``Popen`` handle
+          is internal to ``subprocess.run`` — typically requires
+          dropping to ``subprocess.Popen`` directly so the kill handle
+          is reachable.
+    The Phase 2/3/4 call chain does NOT wrap bw calls in
+    ``asyncio.wait_for``, so this is not a live defect — it is a
+    well-marked tripwire for the next implementer.
 
     The return shape is always a ``dict``. For ``--json`` subcommands
     the dict is bw's parsed JSON (which is itself either a dict or a
@@ -501,7 +542,7 @@ async def create_ticket(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         ticket_id = result.get("id")
         if ticket_id:
             # Body = title + (description or empty). bw stores the
@@ -658,7 +699,7 @@ async def update_ticket(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         if body_changed:
             deleted = await _soft_delete_body_docs(
                 slug=slug, ticket_id=ticket_id,
@@ -725,7 +766,7 @@ async def delete_ticket(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         if force:
-            _backup_push(slug)
+            await _backup_push(slug)
             ingest = await _soft_delete_ticket_docs(
                 slug=slug, ticket_id=ticket_id,
             )
@@ -753,7 +794,7 @@ async def start_ticket(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         patch = await _patch_bw_body_metadata(
             slug=slug, ticket_id=ticket_id,
             bw_show_snapshot=result, principal=principal,
@@ -788,7 +829,7 @@ async def close_ticket(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         patch = await _patch_bw_body_metadata(
             slug=slug, ticket_id=ticket_id,
             bw_show_snapshot=result, principal=principal,
@@ -832,7 +873,7 @@ async def reopen_ticket(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         patch = await _patch_bw_body_metadata(
             slug=slug, ticket_id=ticket_id,
             bw_show_snapshot=result, principal=principal,
@@ -867,7 +908,7 @@ async def add_comment(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         comments = result.get("comments") if isinstance(result, dict) else None
         comment_n = len(comments) if comments else None
         ingest = await _ingest_bw_write(
@@ -920,7 +961,7 @@ async def add_label(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         patch = await _patch_bw_body_metadata(
             slug=slug, ticket_id=ticket_id,
             bw_show_snapshot=result, principal=principal,
@@ -957,7 +998,7 @@ async def remove_label(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         patch = await _patch_bw_body_metadata(
             slug=slug, ticket_id=ticket_id,
             bw_show_snapshot=result, principal=principal,
@@ -984,7 +1025,7 @@ async def defer_ticket(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         patch = await _patch_bw_body_metadata(
             slug=slug, ticket_id=ticket_id,
             bw_show_snapshot=result, principal=principal,
@@ -1010,7 +1051,7 @@ async def undefer_ticket(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
         patch = await _patch_bw_body_metadata(
             slug=slug, ticket_id=ticket_id,
             bw_show_snapshot=result, principal=principal,
@@ -1041,7 +1082,7 @@ async def add_dep(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
     return result
 
 
@@ -1062,7 +1103,7 @@ async def remove_dep(
     lock = await _lock_for(slug)
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
-        _backup_push(slug)
+        await _backup_push(slug)
     return result
 
 
