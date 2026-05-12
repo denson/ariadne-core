@@ -361,6 +361,7 @@ All endpoints except `/api/health` and `/.well-known/ariadne-config` require an 
 | `DELETE` | `/api/collections/{name}` | Soft-delete all documents in a collection |
 | `POST` | `/api/collections/{name}/restore` | Restore a soft-deleted collection |
 | `GET` | `/api/stats` | System statistics |
+| — | `/api/bw/projects/{slug}/...` | Beadwork ticket store HTTP surface (22 endpoints — see [bw HTTP surface](#bw-http-surface)) |
 
 ---
 
@@ -913,6 +914,127 @@ System statistics.
 `total_collections` always equals the size of the `collections` map. The map is the union of doc-bearing collections (any `collection_id` with at least one stored document) and registered-but-empty collections (created via `POST /api/collections` with no documents yet); registered-but-empty collections appear with `0` doc count. This invariant matches `GET /api/collections`, which returns the same union.
 
 **Client method:** `client.stats()`
+
+---
+
+### bw HTTP surface
+
+`/api/bw/projects/{slug}/...` is a thin HTTP shim over the `bw` (beadwork) CLI (https://github.com/jallum/beadwork). It lets an agent (or a human via the REST API) drive a beadwork repository that lives on the server's volume — without holding a shell on the host. Phase 2 of the bw integration (ariadne--8fd.2). All endpoints require `Authorization: Bearer <jwt>` (same `require_user` dependency as the rest of `/api/*`).
+
+**URL convention — path-prefix-per-project:** every endpoint hangs off `/api/bw/projects/{slug}/...`. The slug identifies a beadwork repo on disk; the server resolves it to `{BW_REPOS_ROOT}/{slug}` (default `BW_REPOS_ROOT=/data/bw-repos`) and invokes `bw -C <repo>` against it. Slug allow-list is anchored at `^[a-z0-9_-]{1,64}$` — lowercase letters, digits, dash, underscore, max 64 chars. Anything else returns **422** `invalid_slug` before any subprocess call happens. The slug space is intentionally distinct from bw's ticket-ID space (`bw-{4-char-hex}`), so a ticket ID can never be passed where a project slug is expected.
+
+**Method convention — action-endpoint pattern:** each mutating bw subcommand maps to a POST against a sub-path named for the action (`POST .../close`, `POST .../defer`, `POST .../labels`). Read-only subcommands map to GET. Removing an enumerable child (a label, a dep) maps to DELETE.
+
+**Concurrency — per-slug in-process lock:** mutating endpoints acquire an `asyncio.Lock` keyed on `slug` for the duration of the bw call; reads skip the lock (git reads are concurrent-safe). v1 is single-instance — distributed locking for multi-replica deploys is deferred to Phase 5 (ariadne--8fd.5).
+
+**Endpoint summary — ticket-shaped (16):**
+
+| Method | Endpoint | bw subcommand |
+|--------|----------|---------------|
+| `POST` | `/api/bw/projects/{slug}/tickets` | `bw create` (returns **201**) |
+| `GET` | `/api/bw/projects/{slug}/tickets` | `bw list` |
+| `GET` | `/api/bw/projects/{slug}/tickets/{ticket_id}` | `bw show` |
+| `PATCH` | `/api/bw/projects/{slug}/tickets/{ticket_id}` | `bw update` |
+| `DELETE` | `/api/bw/projects/{slug}/tickets/{ticket_id}` | `bw delete` (preview by default; `?force=true` to commit) |
+| `POST` | `/api/bw/projects/{slug}/tickets/{ticket_id}/start` | `bw start` |
+| `POST` | `/api/bw/projects/{slug}/tickets/{ticket_id}/close` | `bw close` |
+| `POST` | `/api/bw/projects/{slug}/tickets/{ticket_id}/reopen` | `bw reopen` |
+| `POST` | `/api/bw/projects/{slug}/tickets/{ticket_id}/comments` | `bw comment` (returns **201**) |
+| `POST` | `/api/bw/projects/{slug}/tickets/{ticket_id}/labels` | `bw label <id> +<label>` (returns **201**) |
+| `DELETE` | `/api/bw/projects/{slug}/tickets/{ticket_id}/labels/{label}` | `bw label <id> -<label>` |
+| `POST` | `/api/bw/projects/{slug}/tickets/{ticket_id}/defer` | `bw defer` |
+| `POST` | `/api/bw/projects/{slug}/tickets/{ticket_id}/undefer` | `bw undefer` |
+| `POST` | `/api/bw/projects/{slug}/tickets/{ticket_id}/deps` | `bw dep add <id> blocks <target>` (returns **201**) |
+| `DELETE` | `/api/bw/projects/{slug}/tickets/{ticket_id}/deps/{target}` | `bw dep remove <id> blocks <target>` |
+| `GET` | `/api/bw/projects/{slug}/tickets/{ticket_id}/history` | `bw history` |
+
+**Endpoint summary — repo-level (6):**
+
+| Method | Endpoint | bw subcommand |
+|--------|----------|---------------|
+| `GET` | `/api/bw/projects/{slug}/ready` | `bw ready` |
+| `GET` | `/api/bw/projects/{slug}/blocked` | `bw blocked` |
+| `POST` | `/api/bw/projects/{slug}/sync` | `bw sync` (no `--json`; output verbatim) |
+| `GET` | `/api/bw/projects/{slug}/onboard` | `bw onboard` (no `--json`; output verbatim) |
+| `GET` | `/api/bw/projects/{slug}/prime` | `bw prime` (no `--json`; output verbatim) |
+| `GET` | `/api/bw/projects/{slug}/export` | `bw export` (JSONL output; verbatim) |
+
+**Label prefix composition:** bw's CLI uses a `+` prefix to add and `-` prefix to remove labels on a single shared `bw label` subcommand. The HTTP surface splits these into two endpoints (POST to add, DELETE to remove) and composes the prefix **server-side**. A caller that prepends `+` or `-` to the label value gets a **422** `invalid_label` — use the DELETE endpoint to remove.
+
+**Label format:** labels (request body or path segment) are constrained to `1..128` chars and must not start with `+` or `-`. No other character restriction at the surface — bw itself rejects characters it does not support.
+
+**JSON shape — array wrapping:** when a `--json` bw subcommand returns a top-level JSON array (e.g. `bw list --json`), the HTTP response wraps it as `{"items": [...]}` so every endpoint returns a JSON object at the top level. This matches the `/api/*` convention and keeps OpenAPI declarations honest.
+
+**Empty stdout from `--json`:** an empty stdout from a `--json` subcommand resolves to an empty `{}` response (not a 500). Some bw versions legitimately print nothing on success for certain subcommands (e.g. `dep add`).
+
+**bw exit-code mapping:**
+
+| Condition | HTTP status | `detail` shape |
+|-----------|-------------|----------------|
+| bw exits non-zero (caller error: bad id, invalid date, missing arg, etc.) | **400** | `{"error": "bw_exit_nonzero", "exit_code": <int>, "stderr": <str>, "stdout": <str>}` |
+| bw binary not on PATH at import (or disappears) | **500** | `{"error": "bw_binary_missing", "message": <str>}` |
+| Subprocess exceeded `BW_SUBPROCESS_TIMEOUT_SECONDS` (default 30s) | **500** | `{"error": "bw_timeout", "message": <str>}` |
+| `--json` subcommand returned non-JSON stdout | **500** | `{"error": "bw_json_parse", "message": <str>, "stdout": <first 2000 chars>}` |
+| Slug failed the `^[a-z0-9_-]{1,64}$` allow-list | **422** | `{"error": "invalid_slug", "message": <str>}` |
+| Label payload starts with `+` or `-` | **422** | `{"error": "invalid_label", "message": <str>}` |
+| `PATCH /tickets/{id}` with empty body (no fields) | **400** | `{"error": "no_fields_to_update", "message": <str>}` |
+| Null byte (`\x00`) in a user-text field (title, description, comment text, reason, defer expression) | **422** | Pydantic field-validator error |
+
+400 vs 500 split: **400 = caller can fix it** (re-submit with valid args). **500 = deploy / bw bug** (operator must fix; caller cannot retry into success).
+
+**stderr / stdout in 400 responses:** bw's stderr and stdout are surfaced verbatim under `detail` on a non-zero exit. This is intentional — bw's CLI errors are the actionable debugging signal, and a server-side mask would force callers to read host logs to debug a malformed request. The slug allow-list and the argv-list-no-shell invocation ensure stderr cannot leak unintended state.
+
+**Backup hook (Phase 2 stub, Phase 5 wires the real push):** every successful mutating call invokes a `_backup_push(slug)` hook that currently logs `TODO` and bumps a per-slug skip-counter. Phase 5 swaps in `git push <BW_BACKUP_REMOTE_{SLUG}> beadwork` so the on-disk state is not the only copy. The hook is NOT invoked when the bw write itself fails (exit != 0); pushing a failed write would push nothing useful and could mask a real error. The Phase 5 wiring must log + meter backup failures but MUST NOT fail the original write (the write already succeeded; backup is a separate durability layer).
+
+**Deferred surface — explicitly NOT in v1:**
+
+| bw subcommand | Reason for deferral |
+|---------------|---------------------|
+| `bw init` | Repo bootstrap. v1 assumes `BW_REPOS_ROOT` is pre-populated; provisioning lives in Phase 5. |
+| `bw upgrade` | Admin / manual ops; not an agent-facing call. |
+| `bw config` | Admin surface. Defer until an ACL story exists; until then config changes happen on the host directly. |
+| `bw registry` | Host-local registry; per-process state, not per-repo. Not relevant to the slug-routed API. |
+| `bw attach` | Needs multipart upload semantics. Deferred to Phase 3 / Phase 4 (settled alongside the inline-ingest upload surface). |
+| `bw import` | Same multipart surface as `attach`. |
+
+A caller that hits `/api/bw/projects/{slug}/<deferred>` simply gets a 404 (no route registered); the deferred-subcommand list is documentation, not a runtime check.
+
+**Request bodies:**
+
+`POST /api/bw/projects/{slug}/tickets` — `TicketCreate`:
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `title` | string | yes | 1..512 chars; null bytes rejected (422) |
+| `description` | string | no | null bytes rejected (422) |
+| `priority` | int | no | 0..4 |
+| `type` | string | no | |
+| `defer` | string | no | bw-parseable date expression |
+| `due` | string | no | |
+| `parent` | string | no | parent ticket ID |
+
+`PATCH /api/bw/projects/{slug}/tickets/{id}` — `TicketUpdate`: same field set as `TicketCreate` plus `assignee`, `status`. **All fields optional**; empty body returns **400** `no_fields_to_update`. `due: ""` (empty string) is the documented "clear the field" shape (matches `bw update --due ""`). `null` means "don't touch".
+
+`POST .../start` — `TicketStart`: optional `assignee` (bw uses git `user.name` default if absent).
+
+`POST .../close` — `TicketClose`: optional `reason` (null bytes rejected).
+
+`POST .../comments` — `CommentCreate`: required `text` (≥1 char; null bytes rejected), optional `author`.
+
+`POST .../labels` — `LabelAdd`: required `label` (1..128 chars, must not start with `+` or `-`).
+
+`POST .../defer` — `DeferRequest`: required `when` (bw-parseable date expression, null bytes rejected).
+
+`POST .../deps` — `DepAdd`: required `blocks` (target ticket ID; semantics: `{ticket_id}` blocks `{blocks}`).
+
+**Configuration:**
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `BW_REPOS_ROOT` | `/data/bw-repos` | Base directory for per-slug bw repos (`{BW_REPOS_ROOT}/{slug}/`). |
+| `BW_SUBPROCESS_TIMEOUT_SECONDS` | `30.0` | Max wall-clock per bw call. Set at module load; not per-request. |
+| (resolved) `BW_BINARY` | `shutil.which("bw")` at app import | Path to the `bw` binary. If `None`, every endpoint 500s with `bw_binary_missing`. |
+| (Phase 5) `BW_BACKUP_REMOTE_{SLUG}` | `null` | Git remote URL for `_backup_push`; not read in Phase 2. |
 
 ---
 
