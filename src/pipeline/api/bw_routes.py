@@ -43,12 +43,16 @@ Design notes (locked by the Phase 2 plan; do NOT re-litigate here):
     (binary missing, JSON parse fail on a --json subcommand,
     subprocess timeout) → HTTP 500.
 
-  • Backup hook: stub for v1. ``_backup_push(slug)`` logs ``TODO``
-    and increments a per-slug counter on the module. Real
-    ``git push`` to a configured remote is wired in Phase 5
-    alongside the volume provisioning and remote-config envs.
-    Stubbing here keeps the call-site stable for Phase 5 to
-    swap in the real push.
+  • Backup hook: real ``git push`` as of Phase 5 (ariadne--8fd.9).
+    ``_backup_push(slug)`` looks up
+    ``BW_BACKUP_REMOTE_{slug.upper().replace('-', '_')}`` — if unset,
+    silent no-op (no remote configured); if set, runs
+    ``git push <remote> beadwork:beadwork --force-with-lease`` and
+    logs / increments a per-slug failure counter on any error.
+    The hook MUST NOT raise on failure: the original bw write
+    already succeeded, and the backup is a separate (eventually-
+    consistent) durability layer. Phase 5's sub-task is replacing
+    the per-slug counter with a Prometheus gauge.
 """
 
 from __future__ import annotations
@@ -93,6 +97,28 @@ BW_BINARY: Optional[str] = shutil.which("bw")
 # making timeouts a common failure mode under load.
 BW_SUBPROCESS_TIMEOUT_SECONDS: float = 30.0
 
+# Backup-push subprocess timeout. ``_backup_push`` shells out to
+# ``git push`` against a remote; network I/O can legitimately take
+# tens of seconds (TLS handshake, pack negotiation, slow link) so the
+# bw-call timeout (30s) is too tight. Default 60s; overridable via
+# env. The push happens inside the per-slug lock, so an aggressive
+# value would serialize writers behind a hung push — but the
+# infallibility contract (push failure never raises) means a timeout
+# is logged + counted, not surfaced to the caller.
+BW_BACKUP_TIMEOUT_SECONDS: float = float(
+    os.environ.get("BW_BACKUP_TIMEOUT_SECONDS", "60")
+)
+
+# Phase 5 (ariadne--8fd.9): toggle for the "is this slug initialized
+# on disk" guard inside ``_resolve_repo_path``. Production wants
+# this on (so the bw HTTP surface returns a clean 404 with operator
+# guidance instead of a 400 carrying ``fatal: not a git repository``).
+# Route-level tests that mock ``subprocess.run`` typically do NOT
+# create a real ``.git`` directory under the temp repos root, so
+# they monkey-patch this to False to skip the check. The default is
+# True; tests opt out explicitly.
+BW_REQUIRE_INITIALIZED_REPO: bool = True
+
 # Slug allow-list. Matches the lowercase-letters/digits/dash/underscore
 # convention used throughout the ariadne workspace and rejects anything
 # that could path-traverse (``..``), shell-escape (``;``, ``|``, ``$``),
@@ -136,9 +162,34 @@ def _resolve_repo_path(slug: str) -> str:
     Re-validates the slug (defence in depth — the only callers are
     bw routes, which validate at the entry point, but the cost of a
     second check is one regex match).
+
+    Phase 5 (ariadne--8fd.9): enforces "project initialized on this
+    Ariadne instance" — if ``<BW_REPOS_ROOT>/<slug>/.git`` is missing,
+    raises HTTPException(404) with an operator-actionable message
+    pointing at ``bw init``. This catches the "deployed but operator
+    forgot to run bw init for this slug" case with a clean error
+    instead of letting ``bw -C <missing-dir>`` produce a cryptic
+    fatal: not a git repository`` from the subprocess.
     """
     _validate_slug(slug)
-    return os.path.join(BW_REPOS_ROOT, slug)
+    repo_path = os.path.join(BW_REPOS_ROOT, slug)
+    if BW_REQUIRE_INITIALIZED_REPO and not os.path.isdir(
+        os.path.join(repo_path, ".git")
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "bw_project_uninitialized",
+                "slug": slug,
+                "message": (
+                    f"Project {slug!r} is not initialized on this "
+                    f"Ariadne instance. Operator action: "
+                    f"`mkdir -p {repo_path} && git init {repo_path}"
+                    f" && cd {repo_path} && bw init --prefix {slug}`."
+                ),
+            },
+        )
+    return repo_path
 
 
 # ── Per-slug write lock ─────────────────────────────────────────────────────
@@ -170,55 +221,170 @@ async def _lock_for(slug: str) -> asyncio.Lock:
         return lock
 
 
-# ── Backup hook (stub for v1; Phase 5 swaps in real push) ───────────────────
+# ── Backup hook (Phase 5: real git push with infallibility contract) ────────
 #
-# After a successful write, we want to push the orphan branch to a
-# remote so the on-disk state isn't the only copy. The real push
-# (``git push <BW_BACKUP_REMOTE_{slug}> beadwork``) lands in Phase 5
-# with the env-var wiring and Railway volume provisioning. Stub it
-# here so the call-site is stable and the deferred work is visible.
-
-# Per-slug counter of skipped backup pushes. Unbounded by design for v1
-# — the slug allow-list caps cardinality at the regex (lowercase alnum +
-# dash/underscore, <=64 chars), and only operator-known slugs ever get
-# entries because slugs must already exist on disk. Phase 5 replaces
-# this counter with a proper metric (Prometheus gauge) when the real
-# git-push backup is wired.
+# After a successful bw write, push the orphan branch to a remote so
+# the on-disk state isn't the only copy. Configured per slug via
+# ``BW_BACKUP_REMOTE_{SLUG}`` (slug uppercased, dashes mapped to
+# underscores). No env var → silent no-op (slug has no configured
+# backup, which is a legitimate operator choice for low-value repos).
+#
+# Infallibility contract: ``_backup_push`` MUST NOT raise. The original
+# bw write already succeeded; backup is eventually-consistent durability,
+# not a transaction member. Every failure path here logs + meters and
+# returns normally so the request handler still completes 2xx.
+#
+# Per-slug counter of backup pushes that failed or were skipped due to
+# error. Unbounded by design — the slug allow-list caps cardinality at
+# the regex. Phase 5's sub-task swaps this for a Prometheus gauge; the
+# counter stays as a fallback the operator can read via ``/health``.
 _backup_skip_count: dict[str, int] = {}
 
 
-async def _backup_push(slug: str) -> None:
-    """Stub: log TODO and bump the skip-counter for ``slug``.
+def _backup_remote_env_key(slug: str) -> str:
+    """Map a slug to the env-var name carrying its backup remote URL.
 
-    Phase 5 will replace this with a real ``git push`` to the remote
-    configured via ``BW_BACKUP_REMOTE_{slug.upper()}``. On failure,
-    Phase 5 must log a warning and bump a backup-lag counter — and
-    MUST NOT fail the original write (the write already succeeded;
-    the backup is a separate durability layer).
-
-    Why ``async def`` for a body that does no I/O today: Phase 5 will
-    wrap a real ``git push`` subprocess in ``await asyncio.to_thread(...)``
-    (or ``asyncio.create_subprocess_exec`` — see the outer-timeout
-    note at ``_run_bw``). Locking in the async surface now means
-    Phase 5 cannot accidentally regress to a sync ``def`` body whose
-    blocking syscall would pause the entire event loop while held
-    inside ``async with lock:`` at the 13 call sites. The cost of
-    the async surface for a no-op body is the ``await`` keyword at
-    each call site; the value is that Phase 5 has to actively REGRESS
-    to break it, not just forget to convert.
-
-    Outer-timeout cancellation note: Phase 5's real git-push body
-    inherits the same to_thread cancellation asymmetry documented on
-    ``_run_bw`` — if any caller ever wraps a write endpoint in
-    ``asyncio.wait_for``, see ``_run_bw``'s outer-timeout guardrail
-    for the two safe mitigations.
+    ``my-project`` and ``my_project`` both map to ``BW_BACKUP_REMOTE_MY_PROJECT``
+    because environment-variable names cannot contain dashes on most
+    shells / systemd-style envs. The slug allow-list (``[a-z0-9_-]``)
+    means upper + dash→underscore is unambiguous: two distinct slugs
+    that collide in the env-key space (e.g. ``my-proj`` and ``my_proj``)
+    would already be a deployment-time conflict the operator must
+    resolve. We do not attempt to disambiguate at runtime.
     """
-    _backup_skip_count[slug] = _backup_skip_count.get(slug, 0) + 1
+    return f"BW_BACKUP_REMOTE_{slug.upper().replace('-', '_')}"
+
+
+def _mask_remote_url(remote_url: str) -> str:
+    """Return ``remote_url`` with credentials masked if it looks
+    token-bearing.
+
+    Common shapes: ``https://x-access-token:<TOKEN>@host/path``,
+    ``https://<TOKEN>@host/path``. A ``user:pass`` or ``token`` is
+    everything between ``://`` and the next ``@``. We replace the
+    pre-@ portion with ``***``. URLs without an ``@`` (SSH, plain
+    https://host/path) pass through unchanged.
+    """
+    if "://" not in remote_url or "@" not in remote_url:
+        return remote_url
+    scheme_sep = remote_url.index("://") + 3
+    at_pos = remote_url.index("@", scheme_sep)
+    return remote_url[:scheme_sep] + "***" + remote_url[at_pos:]
+
+
+async def _backup_push(slug: str) -> None:
+    """Push the orphan beadwork branch to the configured backup remote.
+
+    Resolution: env-var ``BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}``.
+    If unset, the slug has no configured backup — silent no-op.
+
+    Wire: ``git -C <repo> push <remote> beadwork:beadwork --force-with-lease``.
+    The ``--force-with-lease`` flag is safer than ``--force``: bw is
+    a single-writer-per-repo system (per-slug lock + single-instance
+    deploy in v1), so the local beadwork ref is always ahead-of-or-equal
+    to the remote — but ``--force-with-lease`` will refuse the push
+    if the remote moved unexpectedly, catching the case where two
+    operators accidentally point at the same backup remote (or where
+    a future multi-instance deploy raced two writers).
+
+    Infallibility contract: any failure (non-zero exit, timeout,
+    unexpected exception) is logged + counted and swallowed. The
+    bw write already succeeded; surfacing a backup failure would
+    invert the durability hierarchy.
+
+    Outer-timeout cancellation note: ``asyncio.to_thread`` does NOT
+    propagate cancellation into the wrapped sync function (see the
+    ``_run_bw`` outer-timeout guardrail for full context). If any
+    future code wraps a write endpoint — including a call site that
+    awaits ``_backup_push`` — in ``asyncio.wait_for``, the underlying
+    ``subprocess.run`` will keep running after cancellation. The
+    Phase 5 wiring deliberately does not introduce ``asyncio.wait_for``
+    around the backup; the per-subprocess timeout
+    (``BW_BACKUP_TIMEOUT_SECONDS``) is the cancellation seam.
+    """
+    env_key = _backup_remote_env_key(slug)
+    remote_url = os.environ.get(env_key)
+    if not remote_url:
+        # Operator chose not to configure backup for this slug; the
+        # bw write succeeded and that is the durability story for v1
+        # on this slug. No bump — this is steady-state, not failure.
+        return
+
+    # Direct path construction (not ``_resolve_repo_path``): the bw
+    # write that just completed proved the repo is initialized; the
+    # initialized-repo guard would re-check and could raise
+    # HTTPException, which would violate the infallibility contract.
+    # Slug validation already happened at the route entry.
+    repo_path = os.path.join(BW_REPOS_ROOT, slug)
+    masked = _mask_remote_url(remote_url)
+    push_cmd = [
+        "git", "-C", repo_path, "push", remote_url,
+        "beadwork:beadwork", "--force-with-lease",
+    ]
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            push_cmd,
+            capture_output=True,
+            text=True,
+            timeout=BW_BACKUP_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _backup_skip_count[slug] = _backup_skip_count.get(slug, 0) + 1
+        logger.warning(
+            "bw backup push timed out: slug=%s remote=%s timeout=%.1fs "
+            "skip_count=%d",
+            slug, masked, BW_BACKUP_TIMEOUT_SECONDS, _backup_skip_count[slug],
+        )
+        return
+    except Exception:
+        # Unexpected (FileNotFoundError if git is missing from PATH,
+        # OSError on a permissions issue, etc.). Log with traceback,
+        # bump the counter, do NOT raise.
+        _backup_skip_count[slug] = _backup_skip_count.get(slug, 0) + 1
+        logger.exception(
+            "bw backup push raised unexpectedly: slug=%s remote=%s "
+            "skip_count=%d",
+            slug, masked, _backup_skip_count[slug],
+        )
+        return
+
+    if proc.returncode != 0:
+        _backup_skip_count[slug] = _backup_skip_count.get(slug, 0) + 1
+        stderr_snippet = (proc.stderr or "").strip()[:512]
+        logger.warning(
+            "bw backup push failed: slug=%s remote=%s exit=%d "
+            "stderr=%r skip_count=%d",
+            slug, masked, proc.returncode, stderr_snippet,
+            _backup_skip_count[slug],
+        )
+        return
+
+    # Success path. Counter is cumulative (lifetime) by design — Phase 5's
+    # follow-up Prometheus gauge will replace this with a time-windowed
+    # metric; until then the cumulative count is the operator-readable
+    # signal that backup health is degraded. Logging includes the
+    # remote-tip SHA (best-effort; if the rev-parse itself fails, the
+    # push still succeeded — log the success without the SHA).
+    tip_sha = ""
+    try:
+        tip_proc = await asyncio.to_thread(
+            subprocess.run,
+            ["git", "-C", repo_path, "rev-parse", "refs/heads/beadwork"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+        if tip_proc.returncode == 0:
+            tip_sha = tip_proc.stdout.strip()[:12]
+    except Exception:
+        # Tip-resolution failure is irrelevant to backup success.
+        tip_sha = ""
     logger.info(
-        "bw backup push skipped (TODO ariadne--8fd.5 / Phase 5): "
-        "slug=%s skip_count=%d",
-        slug,
-        _backup_skip_count[slug],
+        "bw backup push ok: slug=%s remote=%s tip=%s",
+        slug, masked, tip_sha or "(unresolved)",
     )
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -29,6 +30,40 @@ from pipeline.services import (
 from pipeline.stores import create_stores, close_pool
 
 logger = logging.getLogger("ariadne.app")
+
+
+def _ensure_bw_repos_root() -> None:
+    """Phase 5 (ariadne--8fd.9): ``makedirs`` BW_REPOS_ROOT on startup.
+
+    On Railway, the persistent volume is mounted before the container
+    process starts — but a freshly-provisioned volume is empty, and a
+    local-dev / docker-compose run typically does not pre-create the
+    path. ``makedirs(exist_ok=True)`` is idempotent and cheap; if the
+    directory exists (mount provisioned, prior run created it), this
+    is a no-op. If creation fails (permissions / mount unavailable),
+    log a WARNING and continue — the bw HTTP surface will return clear
+    404 ``bw_project_uninitialized`` errors per slug, and other Ariadne
+    functionality (search, documents) keeps working independent of bw.
+
+    Reads ``BW_REPOS_ROOT`` from the ``bw_routes`` module live (not
+    via ``os.environ`` directly) so tests that monkey-patch the module
+    constant see the override take effect here too.
+    """
+    from pipeline.api import bw_routes as _bw_routes
+    bw_root = _bw_routes.BW_REPOS_ROOT
+    try:
+        os.makedirs(bw_root, exist_ok=True)
+        logger.info(
+            "bw repos root ready: path=%s (BW_REPOS_ROOT)",
+            bw_root,
+        )
+    except OSError as e:
+        logger.warning(
+            "bw repos root not creatable: path=%s error=%s "
+            "(bw HTTP surface will return 404 per slug; other "
+            "endpoints unaffected)",
+            bw_root, e,
+        )
 
 
 class UTF8JSONResponse(JSONResponse):
@@ -133,6 +168,12 @@ async def lifespan(app: FastAPI):
     # 500 with detail="auth_misconfigured" on the first request that
     # hits that path.
     logger.info("OAuth Bearer JWT authentication is REQUIRED (Auth0)")
+
+    # Phase 5 (ariadne--8fd.9): ensure BW_REPOS_ROOT exists on startup.
+    # See ``_ensure_bw_repos_root`` for the rationale; extracted as a
+    # module-level helper so tests can drive it without spinning up
+    # the full lifespan (DB / embedding / etc.).
+    _ensure_bw_repos_root()
 
     # Phase 3 (ariadne--8fd.5): start the bw → Ariadne ingest retry
     # worker. Drains the bw_ingest_retry_queue + JSONL file fallback

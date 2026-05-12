@@ -977,6 +977,7 @@ System statistics.
 | Subprocess exceeded `BW_SUBPROCESS_TIMEOUT_SECONDS` (default 30s) | **500** | `{"error": "bw_timeout", "message": <str>}` |
 | `--json` subcommand returned non-JSON stdout | **500** | `{"error": "bw_json_parse", "message": <str>, "stdout": <first 2000 chars>}` |
 | Slug failed the `^[a-z0-9_-]{1,64}$` allow-list | **422** | `{"error": "invalid_slug", "message": <str>}` |
+| Slug is valid but `{BW_REPOS_ROOT}/{slug}/.git` is missing on disk (Phase 5) | **404** | `{"error": "bw_project_uninitialized", "slug": <str>, "message": <operator-action str>}` |
 | Label payload starts with `+` or `-` | **422** | `{"error": "invalid_label", "message": <str>}` |
 | `PATCH /tickets/{id}` with empty body (no fields) | **400** | `{"error": "no_fields_to_update", "message": <str>}` |
 | Null byte (`\x00`) in a user-text field (title, description, comment text, reason, defer expression) | **422** | Pydantic field-validator error |
@@ -985,7 +986,9 @@ System statistics.
 
 **stderr / stdout in 400 responses:** bw's stderr and stdout are surfaced verbatim under `detail` on a non-zero exit. This is intentional — bw's CLI errors are the actionable debugging signal, and a server-side mask would force callers to read host logs to debug a malformed request. The slug allow-list and the argv-list-no-shell invocation ensure stderr cannot leak unintended state.
 
-**Backup hook (Phase 2 stub, Phase 5 wires the real push):** every successful mutating call invokes a `_backup_push(slug)` hook that currently logs `TODO` and bumps a per-slug skip-counter. Phase 5 swaps in `git push <BW_BACKUP_REMOTE_{SLUG}> beadwork` so the on-disk state is not the only copy. The hook is NOT invoked when the bw write itself fails (exit != 0); pushing a failed write would push nothing useful and could mask a real error. The Phase 5 wiring must log + meter backup failures but MUST NOT fail the original write (the write already succeeded; backup is a separate durability layer).
+**Backup hook (Phase 5, ariadne--8fd.9):** every successful mutating call invokes `_backup_push(slug)`. The hook resolves `BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}` (the slug uppercased with dashes mapped to underscores — env-var names cannot contain dashes); if the env var is **unset**, the hook is a silent no-op (slug has no configured backup, which is a legitimate operator choice for low-value repos). If set, the hook runs `git -C {repo_path} push {remote} beadwork:beadwork --force-with-lease` with a separate `BW_BACKUP_TIMEOUT_SECONDS` (default 60s, longer than the per-bw-call timeout because the push does network I/O). The hook is NOT invoked when the bw write itself fails (exit != 0); pushing a failed write would push nothing useful and could mask a real error. **Infallibility contract:** the hook MUST NOT raise. Any failure (non-zero exit, timeout, unexpected exception) logs a WARNING, increments the per-slug `_backup_skip_count`, and returns normally so the request still completes 2xx. The `_backup_skip_count` is cumulative-lifetime (Phase 5 sub-task: replace with a time-windowed Prometheus gauge). Token-bearing remote URLs (`https://x-access-token:<TOKEN>@host/...`) are masked in log lines (the pre-`@` portion becomes `***`). `--force-with-lease` is used rather than `--force` because bw is single-writer per repo in v1 (per-slug lock + single-instance deploy), so the local ref is always ahead-of-or-equal to the remote — but `--force-with-lease` refuses the push if the remote moved unexpectedly, catching the case where two operators accidentally point at the same backup remote (or where a future multi-instance deploy raced two writers).
+
+**Project initialization guard:** every bw route resolves the repo path via `_resolve_repo_path(slug)`, which verifies that `{BW_REPOS_ROOT}/{slug}/.git` exists. If missing, the route returns **404** `bw_project_uninitialized` with an operator-actionable message pointing at `bw init`. The check is intentionally NOT an auto-init (provisioning a beadwork repo is an explicit operator action, not a side effect of the first 404). The check can be disabled at module level (`BW_REQUIRE_INITIALIZED_REPO = False`) for route-level tests that mock `subprocess.run` and don't materialize a real `.git` tree.
 
 **Deferred surface — explicitly NOT in v1:**
 
@@ -1028,19 +1031,36 @@ A caller that hits `/api/bw/projects/{slug}/<deferred>` simply gets a 404 (no ro
 
 `POST .../deps` — `DepAdd`: required `blocks` (target ticket ID; semantics: `{ticket_id}` blocks `{blocks}`).
 
-**Configuration:**
+#### Deployment configuration
 
-| Env var | Default | Description |
-|---------|---------|-------------|
-| `BW_REPOS_ROOT` | `/data/bw-repos` | Base directory for per-slug bw repos (`{BW_REPOS_ROOT}/{slug}/`). |
-| `BW_SUBPROCESS_TIMEOUT_SECONDS` | `30.0` | Max wall-clock per bw call. Set at module load; not per-request. |
-| (resolved) `BW_BINARY` | `shutil.which("bw")` at app import | Path to the `bw` binary. If `None`, every endpoint 500s with `bw_binary_missing`. |
-| (Phase 5) `BW_BACKUP_REMOTE_{SLUG}` | `null` | Git remote URL for `_backup_push`; not read in Phase 2. |
-| `BW_RETRY_POLL_SECONDS` | `30.0` | Phase 3: polling interval for the bw ingest-retry worker. |
-| `BW_RETRY_BATCH_SIZE` | `10` | Phase 3: max rows drained per retry poll. |
-| `BW_RETRY_BASE_BACKOFF_SECONDS` | `30.0` | Phase 3: exponential backoff base for retry attempts. |
-| `BW_RETRY_MAX_BACKOFF_SECONDS` | `3600.0` | Phase 3: ceiling on backoff between retry attempts. |
-| `BW_RETRY_MAX_ATTEMPTS` | `24` | Phase 3: after this many failures a row moves to the dead-letter table. |
+Every bw-related environment variable, in one place. Phase 5 (ariadne--8fd.9) is the source of truth.
+
+| Env var | Default | Required | Semantics |
+|---------|---------|----------|-----------|
+| `BW_BINARY` | `shutil.which("bw")` at app import | No | Path to the `bw` binary. Resolved once at module import. If `None`, every endpoint returns **500** `bw_binary_missing`. The Dockerfile installs bw at `/usr/local/bin/bw`. |
+| `BW_REPOS_ROOT` | `/data/bw-repos` | Yes (production) | Root directory for per-slug bw repos. Layout: `{BW_REPOS_ROOT}/{slug}/.git`. App startup `makedirs(..., exist_ok=True)` the root; per-slug subdirs are operator-provisioned via `bw init`. |
+| `BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}` | unset | No | Per-project git remote URL for `_backup_push`. Slug `my-project` maps to `BW_BACKUP_REMOTE_MY_PROJECT` (uppercased, dashes → underscores). If unset for a slug, that slug's writes do NOT push to a backup remote (silent no-op). Set to a private git URL (HTTPS-with-token or SSH) to enable. |
+| `BW_SUBPROCESS_TIMEOUT_SECONDS` | `30.0` | No | Per-bw-call subprocess timeout. Set at module load. |
+| `BW_BACKUP_TIMEOUT_SECONDS` | `60.0` | No | Per-backup-push subprocess timeout. Separate from `BW_SUBPROCESS_TIMEOUT_SECONDS` because git push does network I/O. |
+| `BW_REQUIRE_INITIALIZED_REPO` | `True` (module-level constant) | No | Whether `_resolve_repo_path` enforces the `.git`-exists check. Production-true. Route-level tests monkey-patch to `False`. Not an env-var read (no operator should need to flip this in production); it lives as a module constant so tests can toggle. |
+| `BW_RETRY_POLL_SECONDS` | `30.0` | No | Phase 3: polling interval for the bw ingest-retry worker. |
+| `BW_RETRY_BATCH_SIZE` | `10` | No | Phase 3: max rows drained per retry poll. |
+| `BW_RETRY_BASE_BACKOFF_SECONDS` | `30.0` | No | Phase 3: exponential backoff base for retry attempts. |
+| `BW_RETRY_MAX_BACKOFF_SECONDS` | `3600.0` | No | Phase 3: ceiling on backoff between retry attempts. |
+| `BW_RETRY_MAX_ATTEMPTS` | `24` | No | Phase 3: after this many failures a row moves to the dead-letter table. |
+
+**Operator setup checklist (per Ariadne deployment):**
+
+1. **Provision a persistent volume** mounted at `/data/bw-repos`. On Railway: dashboard → Service → Settings → Volumes → "Add volume", mount path `/data/bw-repos` (Railway's docs explicitly ban the Dockerfile `VOLUME` keyword, so the layer hint is intentionally omitted). On a self-hosted Docker host: bind-mount or named volume at runtime (`-v <host-path>:/data/bw-repos`). Override via `BW_REPOS_ROOT` if the deployment target requires a different writable path.
+2. **Initialize the per-project bw repo.** `bw 0.12.3 init` runs in CWD and requires the CWD to already be a git repo (it does NOT accept a path argument). For each slug that needs an HTTP-driven bw repo, the operator runs (via a one-shot exec, init container, or Railway "Run command"):
+   ```
+   mkdir -p {BW_REPOS_ROOT}/{slug}
+   git init {BW_REPOS_ROOT}/{slug}
+   cd {BW_REPOS_ROOT}/{slug} && bw init --prefix {slug}
+   ```
+   This creates the slug subdir, initializes a git repo, and creates the orphan beadwork branch with the slug as the ticket-ID prefix. No auto-init — the explicit step prevents a typo'd slug from materializing an empty repo on first 404.
+3. **Configure per-project backup** (optional). For each project that needs a backup remote, set `BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}` to a private git URL. The URL may carry an access token (`https://x-access-token:<TOKEN>@host/...`); the bw HTTP surface masks the credential portion in log lines. With no env var set, the slug's writes complete locally and skip the backup (no failures, no counter bumps). **First-push note:** the backup remote should be empty / freshly created. If it already carries unrelated content (e.g., the operator pointed at the wrong remote), `--force-with-lease` correctly rejects with `stale info` rather than clobbering — recoverable by either repointing the env var or running a one-time manual seed (`git fetch && git push --force` to align the remote intentionally).
+4. **Verify** via `GET /api/bw/projects/{slug}/health` (any initialized slug) — returns the ingest-retry depth and is also a smoke test that `BW_REPOS_ROOT` and the slug subdir are wired correctly.
 
 #### Ingest coupling (Phase 3 / ariadne--8fd.5)
 

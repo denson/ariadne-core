@@ -118,6 +118,11 @@ def _reset_module_state(monkeypatch):
     monkeypatch.setattr(bw_routes, "BW_BINARY", "/usr/local/bin/bw")
     tmp_root = tempfile.mkdtemp(prefix="bw-test-repos-")
     monkeypatch.setattr(bw_routes, "BW_REPOS_ROOT", tmp_root)
+    # Phase 5 (ariadne--8fd.9): bw_ingest tests mock subprocess.run
+    # and don't materialize a .git tree under the tmp root. Disable
+    # the initialized-repo guard here so existing argv-shape and
+    # ingest-flow assertions still reach the subprocess seam.
+    monkeypatch.setattr(bw_routes, "BW_REQUIRE_INITIALIZED_REPO", False)
     monkeypatch.setattr(bw_routes, "_backup_skip_count", {})
     monkeypatch.setattr(bw_routes, "_slug_locks", {})
 
