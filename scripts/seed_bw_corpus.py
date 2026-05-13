@@ -495,7 +495,10 @@ class _SeedHttp:
 # ── Per-ticket POST shape ──────────────────────────────────────────────────
 
 
-def _ticket_create_body(source: dict[str, Any]) -> dict[str, Any]:
+def _ticket_create_body(
+    source: dict[str, Any],
+    parent_override: Optional[str] = None,
+) -> dict[str, Any]:
     """Translate an on-disk bw ticket into a ``TicketCreate`` request body.
 
     ``TicketCreate`` (from ``src/pipeline/api/bw_routes.py``) accepts:
@@ -516,21 +519,33 @@ def _ticket_create_body(source: dict[str, Any]) -> dict[str, Any]:
     ticket) or wait on a follow-up enhancement (filed as follow-up).
     Documented as a Phase 4 limitation.
 
-    Note: ``parent`` references a SOURCE ticket id and would not
-    resolve against the TARGET corpus unless that parent was seeded
-    first. Sorted-asc enumeration handles the common ``<epic>`` →
-    ``<epic>.<n>`` shape used by workspace's beadwork branch (and the
-    same pattern used by other bw corpora) — parents land before
-    children. For arbitrary corpora whose ID layout does not give
-    parents a sort-lower-than-children ordering, the seed order is
-    NOT guaranteed to land parents first. If the parent doesn't
-    resolve, bw returns 400 and the entire ticket POST is counted as
-    an error and skipped (its comments are not seeded either —
-    they're keyed off the target_id we never got). To avoid this,
-    seed parents before children (sorted-asc handles the common
-    case); arbitrary corpora may need ``--start-after`` to manually
-    order seeding, or wait on a two-pass enumeration enhancement
-    (filed as follow-up).
+    Parent remap (ariadne--8fd.13)
+    ------------------------------
+
+    Source-side parent IDs do not survive into the destination corpus:
+    bw allocates fresh 3-char suffixes per-repo, so source ``parent``
+    references must be translated to the destination-side IDs the
+    state file already records for previously-seeded tickets.
+
+    ``parent_override`` carries that translation:
+
+      * ``None`` (default) — top-level ticket. Source ``parent`` is
+        ignored even if present; we never POST the source-side ID
+        to the destination (it would 400 with "no issue found
+        matching").
+      * non-empty string — destination-side parent ID (the
+        ``target_id`` recorded in the state file for the parent's
+        source ID). Emitted as ``body["parent"]`` so the server
+        creates the parent edge.
+
+    The caller (``run`` /``_post_ticket_and_comments``) is responsible
+    for resolving the source ``parent`` via the state map BEFORE
+    calling this function. If the parent is not yet in the state map
+    (would mean parents are out-of-dependency-order in the source
+    enumeration), the caller skips the ticket entirely rather than
+    falling back to the source-side ID — the 400 from bw is silent
+    cascade-failure for every descendant, so we surface the gap
+    early as a single ``errors`` count instead.
     """
     body: dict[str, Any] = {"title": source.get("title") or "(untitled)"}
     desc = source.get("description")
@@ -542,9 +557,8 @@ def _ticket_create_body(source: dict[str, Any]) -> dict[str, Any]:
     ttype = source.get("type")
     if ttype:
         body["type"] = ttype
-    parent = source.get("parent")
-    if parent:
-        body["parent"] = parent
+    if parent_override:
+        body["parent"] = parent_override
     return body
 
 
@@ -562,6 +576,53 @@ def _comment_create_body(comment: dict[str, Any]) -> Optional[dict[str, Any]]:
     if author:
         body["author"] = author
     return body
+
+
+# ── Parent remap (ariadne--8fd.13) ─────────────────────────────────────────
+
+
+def _resolve_parent_override(
+    source: dict[str, Any],
+    state: dict[str, dict[str, Any]],
+) -> tuple[Optional[str], Optional[str]]:
+    """Translate a source ticket's ``parent`` field to a destination-side ID.
+
+    Returns ``(destination_parent_id, gap_reason)``:
+
+      * ``("tg-...", None)`` — source has a parent and the parent has
+        already been seeded; emit ``parent=tg-...`` on the POST.
+      * ``(None, None)`` — top-level ticket (source ``parent`` is empty);
+        emit no ``parent`` field.
+      * ``(None, "<reason>")`` — source has a parent BUT the parent is
+        not in the state map (or has no ``target_id`` recorded yet).
+        Caller should treat this as a hard error and skip the ticket
+        rather than fall back to the source-side ID — the cost of the
+        skip is one logged error per orphaned subtree; the cost of
+        falling back is a silent cascade where every descendant 400s
+        on the source-side parent ID (the very bug this remap fixes).
+
+    The state schema here matches ``_load_state``:
+    ``{source_id: {"target_id": str, "target_comments": int, "seeded_at": str}}``.
+    """
+    source_parent = source.get("parent")
+    if not source_parent:
+        return None, None
+
+    entry = state.get(source_parent)
+    if entry is None:
+        return None, (
+            f"parent {source_parent!r} not yet in state map "
+            f"(out-of-dependency-order enumeration?)"
+        )
+
+    target_id = entry.get("target_id")
+    if not target_id:
+        return None, (
+            f"parent {source_parent!r} is in state map but has no "
+            f"target_id recorded (partial-write or corrupted state)"
+        )
+
+    return target_id, None
 
 
 # ── Counters ────────────────────────────────────────────────────────────────
@@ -600,6 +661,7 @@ def _post_ticket_and_comments(
     counters: _Counters,
     rate_limit_sleep: float,
     log: callable,
+    parent_override: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """POST a single ticket + its comments. Returns the updated state entry.
 
@@ -608,6 +670,10 @@ def _post_ticket_and_comments(
     comments beyond ``target_comments``. Otherwise POSTs the ticket
     fresh and then every comment.
 
+    ``parent_override`` (ariadne--8fd.13) is the destination-side
+    parent ticket ID, already resolved by the caller via the state
+    map. ``None`` means top-level — source ``parent`` is ignored.
+
     Returns ``None`` on a hard failure (ticket POST failed after
     retry); caller skips the ticket and increments ``counters.errors``.
     """
@@ -615,7 +681,7 @@ def _post_ticket_and_comments(
 
     # ── Ticket POST (skipped if state entry exists)
     if state_entry is None:
-        body = _ticket_create_body(source)
+        body = _ticket_create_body(source, parent_override=parent_override)
         path = f"/api/bw/projects/{project}/tickets"
         try:
             resp = http.post(path, body)
@@ -753,12 +819,35 @@ def run(args: argparse.Namespace, http_factory=None, log=None) -> int:
 
     if args.dry_run:
         log("seed_bw_corpus: --dry-run; enumerating without POSTing")
+        # Simulate the state map so cascading parents resolve to
+        # hypothetical destination IDs (ariadne--8fd.13). Real seeds
+        # build this map as POSTs return; dry-run synthesizes one with
+        # ``dry-<source-id>`` stand-ins so the output shows what the
+        # destination ``parent`` field WOULD be on a live run.
+        simulated_state: dict[str, dict[str, Any]] = dict(state)
         for tid in source_ids[: args.limit] if args.limit else source_ids:
             ticket = _read_source_ticket(bw_repo, tid)
             n_comments = len(ticket.get("comments") or [])
             state_entry = state.get(tid)
             marker = "skip(state)" if state_entry else "post"
-            log(f"  - {tid} ({n_comments} comments) [{marker}]")
+            destination_parent, gap = _resolve_parent_override(
+                ticket, simulated_state,
+            )
+            if gap:
+                parent_note = f" [parent gap: {gap}]"
+            elif destination_parent:
+                parent_note = f" [parent: {destination_parent}]"
+            else:
+                parent_note = ""
+            log(f"  - {tid} ({n_comments} comments) [{marker}]{parent_note}")
+            # Add a simulated target_id so the next child can resolve.
+            if state_entry is not None:
+                continue
+            simulated_state[tid] = {
+                "target_id": f"dry-{tid}",
+                "target_comments": 0,
+                "seeded_at": "dry-run",
+            }
         return 0
 
     # Resolve auth once. http_factory may not actually need it (tests),
@@ -794,15 +883,31 @@ def run(args: argparse.Namespace, http_factory=None, log=None) -> int:
                 if source_n_comments <= already:
                     counters.tickets_skipped_state += 1
                     continue
+                # Resume path: ticket already exists destination-side,
+                # so parent_override is unused for the ticket POST (the
+                # POST is skipped) — we still pass None for clarity.
                 updated = _post_ticket_and_comments(
                     http, args.project, source, existing, counters,
-                    args.rate_limit_sleep, log,
+                    args.rate_limit_sleep, log, parent_override=None,
                 )
             else:
                 source = _read_source_ticket(bw_repo, source_id)
+                # Translate source-side parent → destination-side parent
+                # via the state map (ariadne--8fd.13). On a gap (parent
+                # not yet seeded, or partial state entry), log + skip;
+                # do NOT fall back to the source-side ID — that's the
+                # bug this remap fixes.
+                destination_parent, gap = _resolve_parent_override(
+                    source, state,
+                )
+                if gap is not None:
+                    log(f"  ! {source_id}: {gap}; skipping")
+                    counters.errors += 1
+                    continue
                 updated = _post_ticket_and_comments(
                     http, args.project, source, None, counters,
                     args.rate_limit_sleep, log,
+                    parent_override=destination_parent,
                 )
 
             if updated is not None:

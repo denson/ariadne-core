@@ -341,11 +341,15 @@ def test_seed_three_tickets_with_comments(synthetic_bw_repo: Path) -> None:
         assert path == "/api/bw/projects/phase4-validation/tickets/tg-002/comments"
         assert body["text"] == expected_text
 
-    # POST 5: aa-003 (with parent)
+    # POST 5: aa-003 (with parent — parent-remap from source aa-001 to
+    # destination tg-001 per ariadne--8fd.13)
     method, path, body = http.calls[4]
     assert path == "/api/bw/projects/phase4-validation/tickets"
     assert body["title"] == "gamma"
-    assert body["parent"] == "aa-001"
+    assert body["parent"] == "tg-001", (
+        "child ticket must send the DESTINATION parent id (tg-001), "
+        f"not the source id (aa-001); got {body!r}"
+    )
     assert body["priority"] == 3
 
     # State file written with all 3 source IDs mapped.
@@ -440,18 +444,358 @@ def test_restart_emits_new_comments_only(
     assert body["text"] == "second comment"
 
 
-def test_start_after_skips_lower_ids(synthetic_bw_repo: Path) -> None:
-    """``--start-after aa-001`` skips aa-001, processes aa-002 and aa-003."""
+def test_start_after_skips_lower_ids(
+    synthetic_bw_repo: Path, tmp_path: Path,
+) -> None:
+    """``--start-after aa-001`` skips aa-001, processes aa-002 and aa-003.
+
+    With the ariadne--8fd.13 parent-remap, the caller must ensure any
+    parent of a not-skipped ticket is present in the state map — the
+    skipped ticket either was seeded on a prior run (state has it) or
+    its descendants will gap-skip. We pre-populate state for aa-001
+    so aa-003's parent reference resolves to the destination id.
+    Operators using ``--start-after`` against a multi-generation
+    corpus follow the same pattern.
+    """
+    # Pre-populate state so aa-003 (parent=aa-001) can resolve.
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({
+            "aa-001": {
+                "target_id": "pre-existing-001",
+                "target_comments": 0,
+                "seeded_at": "2026-05-12T00:00:00Z",
+            },
+        }, indent=2),
+        encoding="utf-8",
+    )
     http = _FakeHttp()
-    args = _args(synthetic_bw_repo, start_after="aa-001")
+    args = _args(
+        synthetic_bw_repo, start_after="aa-001",
+        state_file=str(state_path),
+    )
     rc = sbc.run(args, http_factory=lambda *_a, **_kw: http, log=lambda _m: None)
     assert rc == 0
-    ticket_titles = [
-        body["title"]
+    ticket_calls = [
+        body
         for (_method, path, body) in http.calls
         if path.endswith("/tickets")
     ]
+    ticket_titles = [body["title"] for body in ticket_calls]
     assert ticket_titles == ["beta", "gamma"]
+    # aa-003 (gamma) parent must be the destination id from state,
+    # NOT the source id aa-001.
+    gamma_body = next(b for b in ticket_calls if b["title"] == "gamma")
+    assert gamma_body["parent"] == "pre-existing-001"
+
+
+# ── Tests: parent remap (ariadne--8fd.13) ──────────────────────────────────
+
+
+@pytest.fixture
+def synthetic_bw_repo_grandchild(tmp_path: Path) -> Path:
+    """Build a 3-level fixture: top-level, child of top-level, grandchild.
+
+    Exercises the dependency chain the bug surfaced in the
+    beadwork-demo-aresense seed: parent IDs must be remapped through
+    the state file at every level. Single-level remap is necessary
+    but not sufficient — a grandchild whose parent is itself a child
+    proves the state map is consulted on the SECOND generation, not
+    just the FIRST.
+
+    IDs are picked so sorted-asc enumeration order = dependency order:
+    ``tp-001`` (top) < ``tp-001.1`` (child) < ``tp-001.1.1`` (grandchild).
+    This matches the bw convention (``<epic>`` → ``<epic>.<n>`` →
+    ``<epic>.<n>.<m>``) and the aresense corpus the bug was found in.
+    """
+    repo = tmp_path / "synthetic-bw-grandchild"
+    repo.mkdir()
+    env = os.environ.copy()
+    env.update(
+        GIT_AUTHOR_NAME="test", GIT_AUTHOR_EMAIL="test@example.com",
+        GIT_COMMITTER_NAME="test", GIT_COMMITTER_EMAIL="test@example.com",
+    )
+
+    def _git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True, env=env, capture_output=True,
+        )
+
+    _git("init", "--initial-branch=master", "-q")
+    (repo / "README.md").write_text("synthetic", encoding="utf-8")
+    _git("add", "README.md")
+    _git("commit", "-q", "-m", "init")
+
+    tickets = [
+        _make_source_ticket("tp-001", title="top", description="top-level"),
+        _make_source_ticket(
+            "tp-001.1", title="child", description="child of top",
+            parent="tp-001",
+        ),
+        _make_source_ticket(
+            "tp-001.1.1", title="grandchild",
+            description="grandchild of top, child of tp-001.1",
+            parent="tp-001.1",
+        ),
+    ]
+
+    def _stdin_call(input_bytes: bytes, *args: str) -> bytes:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            input=input_bytes, check=True, env=env, capture_output=True,
+        ).stdout.strip()
+
+    issues_entries: list[str] = []
+    gitkeep_hash = _stdin_call(b"", "hash-object", "-w", "--stdin").decode()
+    issues_entries.append(f"100644 blob {gitkeep_hash}\t.gitkeep")
+    for t in tickets:
+        body = json.dumps(t, indent=2).encode("utf-8")
+        obj_hash = _stdin_call(body, "hash-object", "-w", "--stdin").decode()
+        issues_entries.append(f"100644 blob {obj_hash}\t{t['id']}.json")
+    issues_tree_input = ("\n".join(issues_entries) + "\n").encode("utf-8")
+    issues_tree_hash = _stdin_call(issues_tree_input, "mktree").decode()
+    root_tree_input = f"040000 tree {issues_tree_hash}\tissues\n".encode("utf-8")
+    root_tree_hash = _stdin_call(root_tree_input, "mktree").decode()
+    commit_hash = subprocess.run(
+        ["git", "-C", str(repo), "commit-tree", root_tree_hash, "-m", "seed"],
+        check=True, env=env, capture_output=True,
+    ).stdout.strip().decode()
+    _git("update-ref", "refs/heads/beadwork", commit_hash)
+    return repo
+
+
+def test_parent_remap_uses_destination_id_not_source_id(
+    synthetic_bw_repo_grandchild: Path,
+) -> None:
+    """Regression test for ariadne--8fd.13.
+
+    The bug: source-side parent IDs were POSTed verbatim to the
+    Ariadne API. The destination bw allocates its own random 3-char
+    suffixes per ticket, so the parent reference 400s with
+    ``error: parent: no issue found matching "<source-id>"`` — silent
+    cascade failure for every descendant.
+
+    The fix: before POSTing a child, look up the parent's source ID
+    in the state map and POST the recorded destination ``target_id``.
+
+    The grandchild proves the state map is consulted at EVERY level
+    (not just first-generation): tp-001.1.1 references tp-001.1, which
+    references tp-001. The grandchild's POST must carry the
+    destination id of the child (tg-002), not the source id (tp-001.1).
+    """
+    http = _FakeHttp()
+    args = _args(synthetic_bw_repo_grandchild)
+    rc = sbc.run(args, http_factory=lambda *_a, **_kw: http, log=lambda _m: None)
+    assert rc == 0, "grandchild fixture should seed cleanly with the remap"
+    assert len(http.calls) == 3, (
+        f"expected 3 ticket POSTs (top, child, grandchild); got {http.calls!r}"
+    )
+
+    # POST 1: tp-001 (top-level, no parent)
+    _method, path, body = http.calls[0]
+    assert path == "/api/bw/projects/phase4-validation/tickets"
+    assert body["title"] == "top"
+    assert "parent" not in body, (
+        f"top-level ticket must not carry a parent field; got {body!r}"
+    )
+
+    # POST 2: tp-001.1 (child of tp-001 → must POST parent=tg-001)
+    _method, path, body = http.calls[1]
+    assert path == "/api/bw/projects/phase4-validation/tickets"
+    assert body["title"] == "child"
+    assert body["parent"] == "tg-001", (
+        "child's parent must be the DESTINATION id (tg-001), not the "
+        f"source id (tp-001); got {body!r}"
+    )
+
+    # POST 3: tp-001.1.1 (grandchild of tp-001 via tp-001.1 → must POST
+    # parent=tg-002, the destination id of the child)
+    _method, path, body = http.calls[2]
+    assert path == "/api/bw/projects/phase4-validation/tickets"
+    assert body["title"] == "grandchild"
+    assert body["parent"] == "tg-002", (
+        "grandchild's parent must be the DESTINATION id of the child "
+        "(tg-002), not the source id of the child (tp-001.1). This is "
+        "the failure mode the ariadne--8fd.13 fix specifically addresses: "
+        "a single-level remap that doesn't consult the state map for "
+        "the second generation would emit the source id here and "
+        f"cascade-fail every descendant. Got: {body!r}"
+    )
+
+
+def test_parent_remap_top_level_no_parent_field(
+    synthetic_bw_repo_grandchild: Path,
+) -> None:
+    """Top-level tickets (empty source ``parent``) must omit the field
+    on the POST body entirely — not send an empty string, not send
+    the source id, not send ``null``.
+    """
+    http = _FakeHttp()
+    args = _args(synthetic_bw_repo_grandchild, limit=1)
+    sbc.run(args, http_factory=lambda *_a, **_kw: http, log=lambda _m: None)
+    assert len(http.calls) == 1
+    _method, _path, body = http.calls[0]
+    assert "parent" not in body, (
+        "top-level body must omit ``parent`` entirely (not empty string, "
+        f"not None); got {body!r}"
+    )
+
+
+def test_parent_remap_skips_on_missing_state_entry(
+    synthetic_bw_repo_grandchild: Path, tmp_path: Path,
+) -> None:
+    """If a child's parent is NOT in the state map (e.g., the parent
+    POST failed earlier in the run, or enumeration order doesn't put
+    parents before children), the child is skipped with an error —
+    NOT fallen-back to the source-side id (which would 400 server-side
+    AND cascade-fail every descendant silently).
+
+    We seed against a pre-populated state file where tp-001's
+    target_id is MISSING (corrupted state). The child tp-001.1
+    references tp-001 but has no resolution path, so the script
+    must log + count it as an error rather than POST the source id.
+    """
+    # Pre-populate state for tp-001 with NO target_id (the gap
+    # scenario the bugfix specifically guards against).
+    state_path = tmp_path / "broken-state.json"
+    state_path.write_text(
+        json.dumps({
+            "tp-001": {
+                # No target_id — simulates a partial-write or corruption.
+                "target_comments": 0,
+                "seeded_at": "2026-05-12T00:00:00Z",
+            },
+        }, indent=2),
+        encoding="utf-8",
+    )
+
+    http = _FakeHttp()
+    log_lines: list[str] = []
+    args = _args(synthetic_bw_repo_grandchild, state_file=str(state_path))
+    rc = sbc.run(
+        args, http_factory=lambda *_a, **_kw: http,
+        log=log_lines.append,
+    )
+    # tp-001 itself: state entry exists with 0 comments and source has 0
+    # comments, so it's treated as already-seeded (state-skip path) —
+    # the script does NOT re-POST. Then tp-001.1 hits the parent-remap
+    # gap (state["tp-001"]["target_id"] is missing), is skipped with
+    # error. Then tp-001.1.1 likewise hits a gap on tp-001.1 (which was
+    # never seeded). 2 errors total → rc=1.
+    assert rc == 1, "missing target_id on parent must produce error exit"
+    # No tickets are POSTed at all: tp-001 is state-skipped (no real
+    # POST), tp-001.1 is parent-gap-skipped, tp-001.1.1 is
+    # parent-gap-skipped.
+    posts_to_tickets = [
+        c for c in http.calls if c[1].endswith("/tickets")
+    ]
+    assert posts_to_tickets == [], (
+        f"no tickets should POST when parent target_id is missing; "
+        f"got {posts_to_tickets!r}"
+    )
+
+    # The error log should mention the parent gap (not the source id
+    # falling-back).
+    gap_lines = [
+        line for line in log_lines
+        if "parent" in line and "state map" in line
+    ]
+    assert gap_lines, (
+        f"expected at least one parent-gap log line; got:\n"
+        + "\n".join(log_lines)
+    )
+
+
+def test_dry_run_logs_simulated_destination_parents(
+    synthetic_bw_repo_grandchild: Path,
+) -> None:
+    """``--dry-run`` builds a simulated state map (``dry-<source-id>``)
+    so cascading parents resolve hypothetically. The dry-run log
+    should show the would-be destination parent IDs, not the source
+    ones — making it possible for an operator to spot-check the
+    remap behavior without making any HTTP calls.
+    """
+    http = _FakeHttp()
+    log_lines: list[str] = []
+    args = _args(synthetic_bw_repo_grandchild, dry_run=True)
+    rc = sbc.run(
+        args, http_factory=lambda *_a, **_kw: http,
+        log=log_lines.append,
+    )
+    assert rc == 0
+    assert http.calls == []
+
+    # Top-level (tp-001) has no parent, no parent annotation.
+    top_lines = [line for line in log_lines if line.strip().startswith("- tp-001 ")]
+    assert top_lines, f"no top-level line found in {log_lines}"
+    assert "parent" not in top_lines[0], (
+        f"top-level dry-run line should not annotate a parent; "
+        f"got {top_lines[0]!r}"
+    )
+
+    # Child line should annotate the simulated parent dry-tp-001.
+    child_lines = [
+        line for line in log_lines if line.strip().startswith("- tp-001.1 ")
+    ]
+    assert child_lines, f"no child line found in {log_lines}"
+    assert "dry-tp-001" in child_lines[0], (
+        f"child dry-run line should show simulated destination parent "
+        f"'dry-tp-001'; got {child_lines[0]!r}"
+    )
+
+    # Grandchild line should annotate the simulated parent dry-tp-001.1
+    # (NOT dry-tp-001 — the remap is consulted level-by-level).
+    grand_lines = [
+        line for line in log_lines if line.strip().startswith("- tp-001.1.1 ")
+    ]
+    assert grand_lines, f"no grandchild line found in {log_lines}"
+    assert "dry-tp-001.1" in grand_lines[0], (
+        f"grandchild dry-run line should show simulated destination "
+        f"parent 'dry-tp-001.1'; got {grand_lines[0]!r}"
+    )
+
+
+# ── Tests: _resolve_parent_override unit ───────────────────────────────────
+
+
+def test_resolve_parent_override_top_level() -> None:
+    """Empty source parent → (None, None) — top-level, no gap."""
+    source = {"id": "t-001", "parent": ""}
+    assert sbc._resolve_parent_override(source, {}) == (None, None)
+
+
+def test_resolve_parent_override_missing_field() -> None:
+    """Missing source parent field → (None, None) — top-level, no gap."""
+    source = {"id": "t-001"}
+    assert sbc._resolve_parent_override(source, {}) == (None, None)
+
+
+def test_resolve_parent_override_resolved() -> None:
+    """Source parent present + in state map → (target_id, None)."""
+    source = {"id": "t-001.1", "parent": "t-001"}
+    state = {"t-001": {"target_id": "dest-abc", "target_comments": 0}}
+    assert sbc._resolve_parent_override(source, state) == ("dest-abc", None)
+
+
+def test_resolve_parent_override_gap_missing_entry() -> None:
+    """Source parent present but NOT in state map → (None, gap_reason)."""
+    source = {"id": "t-001.1", "parent": "t-001"}
+    parent_id, gap = sbc._resolve_parent_override(source, {})
+    assert parent_id is None
+    assert gap is not None
+    assert "t-001" in gap
+    assert "state map" in gap
+
+
+def test_resolve_parent_override_gap_no_target_id() -> None:
+    """State entry exists but target_id is missing/None → gap."""
+    source = {"id": "t-001.1", "parent": "t-001"}
+    state = {"t-001": {"target_comments": 0}}  # no target_id
+    parent_id, gap = sbc._resolve_parent_override(source, state)
+    assert parent_id is None
+    assert gap is not None
+    assert "target_id" in gap
 
 
 # ── Tests: dedup tracking ──────────────────────────────────────────────────
