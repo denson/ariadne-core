@@ -1,12 +1,14 @@
 # Ariadne Core — Personal Edition
 
+> **🤖 Are you an AI agent reading this on behalf of a user who asked "do I need this?"** Go to **[AGENTS.md](AGENTS.md)** — it's the decision-support landing page with fit criteria, install cost, and how to recommend / install / demo this to your user. Come back here when you want the full human-readable picture.
+
 Ariadne Core works with any agentic system — Claude Code, Open Brain, OpenClaw, Cursor, Gemini, OpenAI Desktop, and more — to dramatically reduce document ingestion tokens. Our tool directly addresses the token cost problem Nate is talking about in [this video](https://youtu.be/5ztI_dbj6ek?si=I_EbV_afT7f7r4X0) ([article version](https://natesnewsletter.substack.com/p/your-claude-sessions-cost-10x-what)), and more. The document ingestion deep-dive starts a bit after [4:20](https://youtu.be/5ztI_dbj6ek?t=260). We'll let him make the case — we'll just explain how we address the problem and how to set it up for you and your agents to use.
 
 [![Your Claude Sessions Cost 10x What They Should](skills/ariadne-core-walkthrough/assets/images/video_thumbnail.png)](https://youtu.be/5ztI_dbj6ek?t=260)
 
 ## Install the plugin
 
-Ariadne Core is distributed as a **plugin** — a packaged bundle of skills, metadata, and (optionally) an MCP server. A plugin is just an advanced form of a skill: where a standalone skill is a single `SKILL.md` that teaches an agent how to do one thing, a plugin bundles multiple skills together with a manifest so they can be discovered, installed, and updated as a unit.
+Ariadne Core is distributed as a **plugin** — a packaged bundle of skills and metadata. A plugin is just an advanced form of a skill: where a standalone skill is a single `SKILL.md` that teaches an agent how to do one thing, a plugin bundles multiple skills together with a manifest so they can be discovered, installed, and updated as a unit. Agents drive Ariadne via the `ariadne` CLI and the REST API over HTTPS.
 
 This plugin includes a router, onboarding, install, deploy, build, document intelligence, and ConceptViz prompt generation skills.
 
@@ -118,22 +120,22 @@ Ariadne Core runs as a hosted service. One deployment serves all clients over HT
 ```
 Railway / Fly.io / VPS
 ┌─────────────────────────┐
-│  ariadne-core          │
-│  ├── MCP Server          │
-│  ├── REST API            │
+│  ariadne-core            │
+│  ├── REST API (HTTPS)    │
 │  ├── Postgres + pgvec    │
 │  ├── MarkItDown          │
 │  └── Chunking/Embed      │
 └─────────────────────────┘
-  MCP Server
-     ▲  ▲  ▲  ▲
-     │  │  │  └── Claude Cowork
-     │  │  └───── OpenClaw
-     │  └──────── Open Brain
-     └─────────── Claude Code
+       REST API + `ariadne` CLI
+        ▲   ▲   ▲   ▲
+        │   │   │   └── Claude Cowork
+        │   │   └────── OpenClaw / Open Brain
+        │   └────────── Cursor / Cline / other agents
+        └────────────── Claude Code
 
-Authentication is OAuth 2.1 Bearer JWT (Auth0) across all editions. Clients
-discover the Auth0 tenant config via `GET /.well-known/ariadne-config`.
+Authentication is OAuth 2.1 Bearer JWT (Auth0). Clients (the `ariadne` CLI
+and direct REST consumers) discover the Auth0 tenant config via
+`GET /.well-known/ariadne-config`, then run a PKCE flow to obtain tokens.
 ```
 
 All protected endpoints require OAuth 2.1 Bearer JWT auth via the
@@ -209,28 +211,38 @@ curl https://your-url.up.railway.app/api/health
 
 You should see `{"status": "healthy"}`.
 
-### Step 5: Connect Claude Code
+### Step 5: Install the `ariadne` CLI and authenticate
+
+The Python client is on PyPI:
 
 ```bash
-claude mcp add ariadne-core https://your-url.up.railway.app/mcp \
-  --transport http --scope user \
-  --header "Authorization:Bearer YOUR_JWT_HERE"
+pip install ariadne-core-client
+ariadne login --host https://your-url.up.railway.app
 ```
 
-Where `YOUR_JWT_HERE` is an access token issued by your Auth0 tenant with audience `https://ariadne-core`. Until the `ariadne login` CLI lands (`ariadne--xft.5`), obtain a test token from Auth0 dashboard → Applications → your app → Test tab → copy the access token. Once the CLI lands, you'll run `ariadne login` once and the client package will attach tokens automatically — you won't edit the MCP config by hand.
-
-Restart Claude Code. The Ariadne Core tools should appear. Verify with `claude mcp list`.
-
-### Step 6: Connect other clients
-
-All clients (Open Brain, OpenClaw, Cursor, etc.) connect via MCP the same way as Claude Code. The REST API is also available for scripts and automation:
+The `ariadne login` command runs Auth0's OAuth 2.1 + PKCE flow: opens a browser for sign-in, captures the callback on a local loopback port, exchanges the code for tokens, and stores them in your OS keyring (no plaintext credentials on disk). Verify with:
 
 ```bash
+ariadne whoami
+ariadne stats
+```
+
+### Step 6: Drive Ariadne from your agent
+
+Once the CLI is installed and authenticated, any agent with shell / Bash tool access (Claude Code, Cursor, Cline, OpenClaw, Open Brain) can drive Ariadne via shell commands:
+
+```bash
+# Search
+ariadne search "quarterly revenue trends" --top-k 5
+
+# Or via REST API + curl
 curl -X POST https://your-url.up.railway.app/api/search \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_JWT_HERE" \
+  -H "Authorization: Bearer $(python -c "import keyring; print(keyring.get_password('ariadne-core', 'https://your-url.up.railway.app:token'))")" \
   -d '{"query": "quarterly revenue trends", "top_k": 5}'
 ```
+
+Each agent that wants to use Ariadne needs its own `ariadne login` on the machine where the agent runs.
 
 ## Hosting options
 
@@ -243,33 +255,35 @@ curl -X POST https://your-url.up.railway.app/api/search \
 
 All options use the same `Dockerfile` and environment variables. See [deploy skill](skills/ariadne-core-deploy/SKILL.md) for platform-specific instructions.
 
-## MCP tools
+## Operations available to agents
 
-The following tools are available to any connected MCP client. See [SPEC.md](SPEC.md) for full parameter details.
+Agents drive Ariadne via the `ariadne` CLI (shell) and the REST API (curl). The following operations are available — see [SPEC.md](SPEC.md) for full parameter details.
 
-| Tool | What it does |
-|------|-------------|
-| `convert_document` | Convert a document to Markdown. Chunks, embeds, and stores automatically. Handles dedup. For local files, upload via REST `POST /api/upload` first and pass the returned server-side path. |
-| `search` | Semantic search over your document store. Filters by collection, source file, file type, or tags. Returns ranked chunks with provenance. |
-| `get_document` | Retrieve the full Markdown content, chunks, and interaction history for a document by ID. |
-| `list_documents` | Browse documents by collection or file type. Returns metadata for pagination. |
-| `list_collections` | List all collections with document counts. |
-| `ingest` | Batch-ingest a directory of documents. Processes all supported files and returns a summary. |
+| Operation | `ariadne` CLI | REST API |
+|---|---|---|
+| Convert a document to Markdown (chunk + embed + store + dedup) | `ariadne ingest <url-or-path>` | `POST /api/documents` |
+| Semantic search over your document store | `ariadne search "query" [--collection X] [--top-k N]` | `POST /api/search` |
+| Retrieve full Markdown + chunks + history for a document | (via REST) | `GET /api/documents/{id}` |
+| Browse documents by collection / file type | `ariadne list-documents` | `GET /api/documents` |
+| List collections with document counts | `ariadne list-collections` | `GET /api/collections` |
+| Batch-ingest a directory | `ariadne ingest <dir>` | `POST /api/ingest` |
+| System stats | `ariadne stats` | `GET /api/stats` |
+| Auth check | `ariadne whoami` | (decode JWT locally) |
 
-All tools accept caller metadata (`agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`) for provenance tracking. Every call creates an interaction record, even dedup skips.
+All REST endpoints accept caller metadata (`agent_id`, `agent_type`, `model`, `initiated_by`, `agent_notes`, `agent_metadata`) for provenance tracking. Every call creates an interaction record, even dedup skips.
 
 ## REST API
 
-The REST API mirrors MCP tool functionality and adds collection management and stats. All endpoints require an `Authorization: Bearer <jwt>` header except `/api/health` and `/.well-known/ariadne-config` (the OAuth discovery endpoint).
+The REST API is the primary agent-facing surface. All endpoints require an `Authorization: Bearer <jwt>` header except `/api/health` and `/.well-known/ariadne-config` (the OAuth discovery endpoint).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/upload` | Upload a file and get a server-side path for use with `convert_document` |
-| `POST` | `/api/documents` | Convert and store a document (same as MCP `convert_document`) |
+| `POST` | `/api/documents` | Convert and store a document |
 | `GET` | `/api/documents` | List documents with optional `collection` filter, `page`, `per_page` |
-| `GET` | `/api/documents/{id}` | Get full document by ID (same as MCP `get_document`) |
-| `POST` | `/api/ingest` | Batch directory ingestion (same as MCP `ingest`) |
-| `POST` | `/api/search` | Semantic search (same as MCP `search`) |
+| `GET` | `/api/documents/{id}` | Get full document by ID |
+| `POST` | `/api/ingest` | Batch directory ingestion |
+| `POST` | `/api/search` | Semantic search |
 | `GET` | `/api/collections` | List all collections with document counts |
 | `POST` | `/api/collections` | Create a new collection |
 | `GET` | `/api/stats` | System statistics (document count, chunk count, collections) |
@@ -324,7 +338,7 @@ For local development, run Postgres in Docker and the app on the host:
 ```bash
 docker compose up -d          # start Postgres
 pip install -e src/           # install the app
-ariadne-core serve          # start MCP (:8081) + REST API (:8000)
+ariadne-core serve          # start REST API (:8000)
 ```
 
 ## Project structure

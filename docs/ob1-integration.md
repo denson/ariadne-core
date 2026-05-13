@@ -1,70 +1,44 @@
 # Open Brain (OB1) Integration Guide
 
-Ariadne Core works alongside Open Brain as a document extraction and retrieval layer. OB1 agents use Ariadne Core's MCP tools to ingest documents, then query the resulting vector store for context during capture sessions.
+Ariadne Core works alongside Open Brain as a document extraction and retrieval layer. OB1 agents use Ariadne Core's REST API to ingest documents, then query the resulting vector store for context during capture sessions.
 
 **Ariadne Core has no OB1 dependency.** This guide covers how to connect the two systems, not how to modify either one.
 
 ## Architecture
 
 ```
-OB1 Agent  ──MCP──>  Ariadne Core  ──>  pgvector
+OB1 Agent  ──HTTPS──>  Ariadne Core  ──>  pgvector
    │                                          │
-   └──────── reads search results ────────────┘
+   └────────  reads search results  ──────────┘
 ```
 
-OB1 agents call Ariadne Core's `convert_document` and `search` MCP tools. Documents are extracted, chunked, embedded, and stored in pgvector. OB1 queries the same vector store for context during daily capture and research workflows.
+OB1 agents call Ariadne Core's `/api/documents` (ingest) and `/api/search` REST endpoints. Documents are extracted, chunked, embedded, and stored in pgvector. OB1 queries the same vector store for context during daily capture and research workflows.
 
 ## Setup
 
-Ariadne Core runs as a hosted service. OB1 agents connect to it over the network via MCP — they don't need direct database access. REST API is also available for scripts and automation. See [installation.md](installation.md) to get the stack running.
+Ariadne Core runs as a hosted service. OB1 agents connect to it over HTTPS — they don't need direct database access. See [installation.md](installation.md) to get the stack running, or the [`ariadne-core-deploy`](../skills/ariadne-core-deploy/SKILL.md) skill for platform-specific instructions.
 
 ## Connecting OB1 Agents to Ariadne Core
 
-### MCP Configuration (Recommended)
+The OB1 agent calls the Ariadne Core REST API directly with HTTP requests. All endpoints (except `/api/health` and `/.well-known/ariadne-config`) require an `Authorization: Bearer <jwt>` header.
 
-Add Ariadne Core as an MCP server in your OB1 agent configuration. For local use:
+### Authentication
 
-```json
-{
-  "mcpServers": {
-    "ariadne-core": {
-      "command": "docker",
-      "args": ["exec", "-i", "ariadne-core-api-1", "python", "-m", "pipeline", "mcp"]
-    }
-  }
-}
+Ariadne Core uses Auth0 OAuth 2.1 Bearer JWT. The `ariadne login` CLI runs the PKCE flow on a developer machine and stores tokens in the OS keyring; for machine-to-machine OB1 agents in production, use Auth0's client-credentials flow with a service account configured for the same Auth0 API audience.
+
+Clients can discover the Auth0 config via:
+
+```bash
+curl https://your-server.example.com/.well-known/ariadne-config
 ```
 
-For remote deployments, use Streamable HTTP transport:
+…which returns the `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, and `AUTH0_AUDIENCE` values the server expects. OB1 agents should obtain a token against that configuration and attach it as `Authorization: Bearer <jwt>` on every request.
 
-```json
-{
-  "mcpServers": {
-    "ariadne-core": {
-      "url": "https://your-server.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer your-jwt-here"
-      }
-    }
-  }
-}
-```
-
-Ariadne Core uses Auth0 OAuth 2.1 Bearer JWT as of the `ariadne--xft.2` merge.
-The `ariadne login` CLI that runs the Auth0 PKCE flow automatically is landing
-in ticket `ariadne--xft.5`. Until then, obtain a test JWT from Auth0 dashboard
-→ Applications → your app → Test tab → copy the access token, and paste it in
-place of `your-jwt-here`. Machine-to-machine OB1 agents should use Auth0's
-client-credentials flow once Pass 3 lands. Clients can discover the Auth0
-config via `curl https://your-server.example.com/.well-known/ariadne-config`.
-
-### REST API
-
-OB1 agents can also use the REST API directly:
+### REST API examples
 
 ```bash
 # Ingest a document
-curl -X POST http://localhost:8000/api/documents \
+curl -X POST https://your-server.example.com/api/documents \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ARIADNE_ACCESS_TOKEN" \
   -d '{
@@ -75,7 +49,7 @@ curl -X POST http://localhost:8000/api/documents \
   }'
 
 # Search for context
-curl -X POST http://localhost:8000/api/search \
+curl -X POST https://your-server.example.com/api/search \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ARIADNE_ACCESS_TOKEN" \
   -d '{
@@ -84,6 +58,8 @@ curl -X POST http://localhost:8000/api/search \
     "top_k": 5
   }'
 ```
+
+For local files, upload via `POST /api/upload` first to get a server-side path, then pass that path to `POST /api/documents`. Never base64-encode file content in the JSON body.
 
 ## Collection Strategy
 
@@ -123,19 +99,42 @@ Key practices to adopt in OB1 workflows:
 ```python
 # OB1 agent pseudo-code for daily document capture
 
+import requests
+
+ARIADNE_HOST = "https://your-server.example.com"
+TOKEN = get_bearer_token()  # from client-credentials flow or developer keyring
+
+def call_ariadne(method, path, **kwargs):
+    return requests.request(
+        method,
+        f"{ARIADNE_HOST}{path}",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        **kwargs,
+    ).json()
+
 # 1. Discover new documents
 new_files = scan_incoming_directory("/data/incoming")
 
 # 2. Ingest each through Ariadne Core
 for file_path in new_files:
-    result = mcp.call("ariadne-core", "convert_document", {
-        "uri": file_path,
-        "collection": "ob1-daily",
-        "agent_id": "ob1-agent-daily",
-        "agent_type": "ob1",
-        "model": "claude-sonnet-4-6",
-        "initiated_by": "system:cron",
-    })
+    # If local file, upload first to get a server-side path
+    with open(file_path, "rb") as f:
+        upload = requests.post(
+            f"{ARIADNE_HOST}/api/upload",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            files={"file": f},
+        ).json()
+    result = call_ariadne(
+        "POST", "/api/documents",
+        json={
+            "uri": upload["server_path"],
+            "collection": "ob1-daily",
+            "agent_id": "ob1-agent-daily",
+            "agent_type": "ob1",
+            "model": "claude-sonnet-4-6",
+            "initiated_by": "system:cron",
+        },
+    )
 
     if result.get("was_dedup_skip"):
         log.info(f"Already processed: {file_path}")
@@ -143,9 +142,12 @@ for file_path in new_files:
         log.info(f"Ingested: {result['document_id']}, {result['chunks_count']} chunks")
 
 # 3. Search for today's context
-context = mcp.call("ariadne-core", "search", {
-    "query": "action items from today's documents",
-    "collection": "ob1-daily",
-    "top_k": 10,
-})
+context = call_ariadne(
+    "POST", "/api/search",
+    json={
+        "query": "action items from today's documents",
+        "collection": "ob1-daily",
+        "top_k": 10,
+    },
+)
 ```
