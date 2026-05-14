@@ -1105,8 +1105,20 @@ async def search_documents(
 
     # Post-filter for source_file, file_type, tags when using in-memory store
     from pipeline.storage.base import InMemoryVectorStore
-    if isinstance(_svc._vector_store, InMemoryVectorStore) and search_filters:
+    is_in_memory = isinstance(_svc._vector_store, InMemoryVectorStore)
+    if is_in_memory and search_filters:
         results = _svc._post_filter_results(results, search_filters)
+
+    # `document_metadata` population is asymmetric by backend (uuo-3 / W-4):
+    # PgVectorStore fills it in-SQL from `documents.metadata`; the in-memory
+    # store can't reach the dedup store during search, so we fill it here
+    # from `_doc_metadata` — mirroring how `interactions` are already fetched
+    # per-result in this loop.
+    if is_in_memory:
+        for r in results:
+            r.document_metadata = (
+                _svc._dedup_store._doc_metadata.get(r.document_id) or {}
+            )
 
     response_results = []
     for r in results:
@@ -1122,6 +1134,7 @@ async def search_documents(
                 "token_count": r.chunk.token_count,
                 "relevance_score": round(r.score, 4),
                 "embedding_model": r.chunk.embedding_model,
+                "metadata": r.document_metadata or {},
                 "interactions": [
                     {
                         "agent_id": i.agent_id,

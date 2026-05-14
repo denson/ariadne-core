@@ -792,7 +792,7 @@ Unknown filter keys are silently ignored.
 
 See § Search › Filters for composition semantics and indexing details.
 
-**Response:** JSON with `query`, `top_k`, `collection`, `results_count`, `results` array. Each result: `chunk_id`, `document_id`, `collection`, `text`, `section`, `page`, `token_count`, `relevance_score`, `embedding_model`, `interactions` array.
+**Response:** JSON with `query`, `top_k`, `collection`, `results_count`, `results` array. Each result: `chunk_id`, `document_id`, `collection`, `text`, `section`, `page`, `token_count`, `relevance_score`, `embedding_model`, `metadata` object, `interactions` array. The `metadata` object is the owning document's full `documents.metadata` (the structured metadata folded in at ingest via `agent_metadata` — e.g. `ticket_id`, `bw_status`, `source_type` for bw-ingested documents); it is `{}` for documents ingested without structured metadata.
 
 **Requires embedding:** Search only works when an embedding API key is configured. Returns 503 if not.
 
