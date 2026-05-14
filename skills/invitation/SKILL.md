@@ -123,7 +123,7 @@ Skip the install gate; do the minimum to run the demo:
 
 1. Install `pip install ariadne-core-client` (just the CLI, for auth)
 2. Run `ariadne login --host https://ariadne-core-production.up.railway.app` (auth)
-3. Have the user clone [`github.com/denso/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense) (the demo lives in its own repo)
+3. Have the user clone [`github.com/denson/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense) (the demo lives in its own repo)
 4. Invoke `factory-demo-walkthrough` from inside that workspace
 
 After the demo, ask: *"Now that you've felt it — does this fit your work?"* Their answer is more reliable than the diagnostic alone.
