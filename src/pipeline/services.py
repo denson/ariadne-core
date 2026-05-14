@@ -538,6 +538,8 @@ def _process_single_document(
     action: str = "ingest",
     confirmation_token: Optional[str] = None,
     inline_content: Optional[bytes] = None,
+    inline_embed_content: Optional[bytes] = None,
+    existing_document_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Shared pipeline logic for convert_document and ingest.
 
@@ -554,6 +556,27 @@ def _process_single_document(
     caller (``bw_ingest._ingest_bw_write``) is internal: the payload is
     frontmatter + bw description-or-comment text whose size bw itself
     has already vetted. External callers MUST NOT use this kwarg.
+
+    ``inline_embed_content`` (internal / bw bridge — ariadne--uuo.1):
+    decouples the dedup-fingerprint input from the extract/chunk/embed
+    input. When supplied, ``fingerprint`` is still computed over
+    ``inline_content`` (the salt — frontmatter + body, D1.4 dedup
+    property preserved), but ``inline_embed_content`` drives extraction,
+    chunking, and embedding instead. When ``None`` (the default, and
+    every external file/URL caller), behaviour is byte-identical to
+    today: the fingerprint input IS the extract input. Requires
+    ``inline_content`` to also be set — it is a bw-bridge-only kwarg.
+
+    ``existing_document_id`` (internal / bw bridge — ariadne--uuo.1):
+    the in-place re-embed path. When supplied, the resolved id
+    (``existing_document_id``) is used for the ``documents`` row, the
+    chunks built by ``chunk_document``, and the ``force``-branch
+    ``delete_by_document`` — all three — instead of the extractor's
+    fresh UUID. The documents-row write is routed through
+    ``update_document_content`` (UPDATE-by-id) instead of
+    ``store_document`` (INSERT-or-fingerprint-UPSERT). When ``None``,
+    the live-write path is unchanged. External callers MUST NOT use
+    this kwarg.
     """
     # Resolve per-request ingest overrides against the YAML/module default
     # (Batch G / ariadne--16a §F2). Mirrors the Batch F chunking_config
@@ -626,8 +649,31 @@ def _process_single_document(
     # callers; the variable ``raw_bytes`` is the single hand-off the URI
     # path produces, and the inline branch sets it directly.
     raw_bytes: bytes | None = None
+    # ariadne--uuo.2 (CATO uuo-1 review, concern c2): make the
+    # ``inline_embed_content`` contract load-bearing. ``inline_embed_content``
+    # is a bw-bridge-only kwarg that decouples the embed input from the
+    # dedup-salt input — it is meaningless without ``inline_content`` (the
+    # salt) also being set, because ``raw_bytes`` (the fingerprint input)
+    # would otherwise come from the URI read path and silently diverge from
+    # the caller's intent. This is an internal-caller programming error, not
+    # operator input, so it raises rather than returning an ``{"error": ...}``
+    # dict.
+    if inline_embed_content is not None and inline_content is None:
+        raise ValueError(
+            "inline_embed_content requires inline_content to also be set "
+            "(bw-bridge-only contract — ariadne--uuo)"
+        )
     if inline_content is not None:
         raw_bytes = inline_content
+
+    # ariadne--uuo.1: decouple the fingerprint input from the extract input.
+    # ``raw_bytes`` is ALWAYS the fingerprint input (the dedup salt). When
+    # ``inline_embed_content`` is supplied (bw bridge re-embed / clean-text
+    # path), it — not ``raw_bytes`` — is what gets extracted/chunked/embedded.
+    # When it is None (every external file/URL caller, the default), the
+    # extract input IS the fingerprint input, byte-identical to pre-uuo
+    # behaviour. ``extract_bytes`` is resolved after the URI read path below
+    # populates ``raw_bytes`` for external callers.
 
     # m5e size-check flow:
     #
@@ -782,6 +828,13 @@ def _process_single_document(
     assert raw_bytes is not None, "raw_bytes must be set by inline or URI path"
     fingerprint = compute_fingerprint(raw_bytes)
 
+    # ariadne--uuo.1: the bytes that drive extraction/chunking/embedding.
+    # Distinct from ``raw_bytes`` (the fingerprint salt) only when the bw
+    # bridge supplies ``inline_embed_content``; otherwise identical.
+    extract_bytes = (
+        inline_embed_content if inline_embed_content is not None else raw_bytes
+    )
+
     if not force:
         existing = _dedup_store.find_by_fingerprint(collection, fingerprint)
         if existing is not None:
@@ -855,10 +908,13 @@ def _process_single_document(
             }
 
     # Cache miss (or force=True): now do the expensive extraction. Reuse
-    # the bytes already in `raw_bytes` instead of re-fetching from the URI
-    # (Batch G / ariadne--16a §5). Same buffer, no network or disk hit.
+    # the bytes already in `extract_bytes` instead of re-fetching from the
+    # URI (Batch G / ariadne--16a §5). Same buffer, no network or disk hit.
+    # ariadne--uuo.1: `extract_bytes` is `raw_bytes` for every external
+    # caller and the bw-bridge clean-content bytes when `inline_embed_content`
+    # was supplied — the fingerprint above is always over `raw_bytes`.
     result = _extractor.extract_from_bytes(
-        raw_bytes, source_file=_source_file_from_uri(uri)
+        extract_bytes, source_file=_source_file_from_uri(uri)
     )
 
     if result.errors:
@@ -884,8 +940,13 @@ def _process_single_document(
             # normalized file://, http(s)://, and bare paths to bytes.
             vision_start = time.perf_counter()
             try:
+                # ariadne--uuo.1: the vision call operates on the extract
+                # input, not the fingerprint salt. For every external
+                # caller `extract_bytes is raw_bytes`; the bw bridge only
+                # ever supplies text as `inline_embed_content`, so this
+                # standalone-image branch never diverges in practice.
                 description = _image_enricher.describe_image_from_bytes(
-                    raw_bytes, source_file=result.source_file
+                    extract_bytes, source_file=result.source_file
                 )
             except Exception as e:
                 return {
@@ -946,8 +1007,20 @@ def _process_single_document(
     if hasattr(result, 'suggested_tags') and result.suggested_tags:
         tags = list(tags or []) + result.suggested_tags
 
+    # ariadne--uuo.1: resolve the effective document id ONCE, early, before
+    # StoredDocument is built — and use it for ALL THREE downstream consumers
+    # (the documents row, the chunks built by chunk_document, and the
+    # force-branch delete_by_document). On the in-place re-embed path the
+    # caller supplies `existing_document_id` (resolved via
+    # _resolve_all_ticket_doc_ids); on every other path it falls through to
+    # the extractor's fresh UUID, byte-identical to pre-uuo behaviour. If
+    # the chunks were built under `result.document_id` while only the
+    # documents row used the override, the new chunks would land orphaned
+    # under a UUID with no documents row (design §6.5.1).
+    effective_document_id = existing_document_id or result.document_id
+
     stored_doc = StoredDocument(
-        document_id=result.document_id,
+        document_id=effective_document_id,
         collection_id=collection,
         source_file=result.source_file,
         content_fingerprint=fingerprint,
@@ -1037,7 +1110,12 @@ def _process_single_document(
 
         chunks = chunk_document(
             markdown=markdown,
-            document_id=result.document_id,
+            # ariadne--uuo.1: chunks MUST be built under the effective id,
+            # not the extractor's fresh UUID — the chunk PK is derived from
+            # document_id, so building under the fresh UUID on the re-embed
+            # path would orphan every new chunk and make delete_by_document
+            # (which targets the resolved id) a no-op (design §6.5.1).
+            document_id=effective_document_id,
             collection_id=collection,
             file_type=result.file_type,
             config=chunk_cfg,
@@ -1128,7 +1206,51 @@ def _process_single_document(
         # store_document and update_document_metadata share the same
         # shallow-merge JSONB semantics. None falls through as '{}'::jsonb
         # for non-bw ingest paths (regular POST /api/ingest).
-        _dedup_store.store_document(stored_doc, agent_metadata=agent_metadata)
+        #
+        # ariadne--uuo.1: route the documents-row write by path. The
+        # in-place re-embed path (`existing_document_id` supplied) writes
+        # to a KNOWN, EXISTING documents.id whose content_fingerprint is
+        # CHANGING — store_document's INSERT-or-fingerprint-UPSERT would
+        # not match the old row by fingerprint and would INSERT a duplicate,
+        # orphaning the old row. update_document_content is a pure
+        # UPDATE-by-id for exactly this case (design §6.5.2). The live-write
+        # path (`existing_document_id is None`) keeps store_document.
+        if existing_document_id is not None:
+            updated = _dedup_store.update_document_content(
+                effective_document_id,
+                content_fingerprint=fingerprint,
+                markdown=markdown,
+                source_file=result.source_file,
+                title=result.title,
+                processing_chain=processing_chain,
+                processing_time_ms=result.processing_time_ms,
+                output_tokens_estimate=result.output_tokens_estimate,
+                token_savings_ratio=result.token_savings_ratio,
+                tags=tags,
+                warnings=warnings,
+                agent_metadata=agent_metadata,
+            )
+            if not updated:
+                # Caller error: the re-embed path must have resolved a real
+                # documents.id via _resolve_all_ticket_doc_ids. A missing id
+                # means the zero-resolved-IDs branch (design §6.7.2, uuo-5)
+                # should have INSERTed fresh instead of overriding.
+                return {
+                    "error": True,
+                    "message": (
+                        f"update_document_content: no documents row for "
+                        f"id {effective_document_id} — re-embed must resolve "
+                        f"an existing id before overriding."
+                    ),
+                    "document_id": effective_document_id,
+                    "source_file": result.source_file,
+                    "collection": collection,
+                    "store_status": "error",
+                }
+        else:
+            _dedup_store.store_document(
+                stored_doc, agent_metadata=agent_metadata
+            )
         logger.info(
             "dedup-miss-store",
             extra={
@@ -1136,8 +1258,14 @@ def _process_single_document(
                 "fingerprint_prefix": fingerprint[:8],
                 "source_file": _source_file_from_uri(uri),
                 "algorithm": "raw-bytes",
+                "reembed": existing_document_id is not None,
             },
         )
+    # ariadne--uuo.1: consumer 3 of the effective id. `stored_doc.document_id`
+    # was set to `effective_document_id` at construction, so the force-branch
+    # `delete_by_document(doc_id)` below targets the resolved existing id on
+    # the re-embed path — clearing exactly the old chunks the new chunks
+    # (built under the same id by chunk_document) are about to replace.
     doc_id = stored_doc.document_id
 
     response: dict[str, Any] = {

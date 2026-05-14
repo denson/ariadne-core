@@ -183,3 +183,133 @@ def test_embedding_disabled_writes_documents_row_and_chunks_without_vectors(
         assert chunk.embedding is None, (
             f"Chunk {chunk.chunk_id} has an embedding despite disabled client."
         )
+
+
+# --- ariadne--uuo.1: fingerprint-input / embed-input decoupling ---
+
+
+def test_inline_embed_content_decouples_fingerprint_from_chunk_text(monkeypatch):
+    """ariadne--uuo.1 acceptance (1): when distinct `inline_content` and
+    `inline_embed_content` are supplied, the fingerprint is computed over
+    `inline_content` (the dedup salt) while extraction/chunking/embedding
+    run over `inline_embed_content` (the clean body)."""
+    from pipeline.dedup import compute_fingerprint
+
+    monkeypatch.setattr(services, "_embedding_client", _DisabledEmbeddingClient())
+    stub_dedup, stub_vector = _fresh_stores(monkeypatch)
+
+    salt_bytes = (
+        b"---\nticket_id: uuo-1\nauthor: beadwork\n---\n\n"
+        b"The quick brown fox jumps over the lazy dog.\n"
+    )
+    embed_bytes = b"The quick brown fox jumps over the lazy dog.\n"
+    assert salt_bytes != embed_bytes  # genuinely distinct inputs
+
+    kwargs = _common_kwargs("bw://uuo-1/body", "test_uuo_decouple")
+    kwargs["inline_content"] = salt_bytes
+    kwargs["inline_embed_content"] = embed_bytes
+
+    response = services._process_single_document(**kwargs)
+    assert "error" not in response, response
+
+    # Fingerprint is over the SALT bytes, not the embed bytes.
+    assert response["content_fingerprint"] == compute_fingerprint(salt_bytes)
+    assert response["content_fingerprint"] != compute_fingerprint(embed_bytes)
+
+    # Chunk text derives from the EMBED bytes — no YAML frontmatter fence
+    # leaked into any chunk, and the clean body text is present.
+    assert len(stub_vector._chunks) > 0
+    for chunk in stub_vector._chunks.values():
+        assert "ticket_id:" not in chunk.text, (
+            f"YAML salt leaked into chunk text: {chunk.text!r}"
+        )
+        assert not chunk.text.lstrip().startswith("---"), chunk.text
+    all_chunk_text = "\n".join(c.text for c in stub_vector._chunks.values())
+    assert "quick brown fox" in all_chunk_text
+
+
+def test_existing_document_id_overrides_chunk_document_id(monkeypatch):
+    """ariadne--uuo.1 acceptance (2): when `existing_document_id=D` is
+    supplied, the chunks passed to the vector store carry `document_id=D`
+    — the resolved existing id — not the extractor's fresh UUID. Verified
+    against the chunk objects in the vector store after insert."""
+    from pipeline.dedup import StoredDocument
+
+    monkeypatch.setattr(services, "_embedding_client", _DisabledEmbeddingClient())
+    stub_dedup, stub_vector = _fresh_stores(monkeypatch)
+
+    existing_id = "11111111-1111-1111-1111-111111111111"
+    salt_bytes = (
+        b"---\nticket_id: uuo-1\n---\n\n"
+        b"The quick brown fox jumps over the lazy dog.\n"
+    )
+    embed_bytes = b"The quick brown fox jumps over the lazy dog.\n"
+
+    # The re-embed path routes the documents-row write through
+    # update_document_content (UPDATE-by-id), so the row must already
+    # exist — pre-seed it under a deliberately STALE fingerprint so the
+    # update is a genuine in-place rewrite.
+    stub_dedup.store_document(
+        StoredDocument(
+            document_id=existing_id,
+            collection_id="test_uuo_override",
+            source_file="bw://uuo-1/body",
+            content_fingerprint="stale-fingerprint-000",
+            file_type="txt",
+            engine="markitdown",
+            markdown="# stale body",
+            title="stale",
+            processing_time_ms=1,
+            output_tokens_estimate=1,
+            token_savings_ratio=None,
+            processing_chain=[],
+        )
+    )
+
+    kwargs = _common_kwargs("bw://uuo-1/body", "test_uuo_override")
+    kwargs["force"] = True  # re-embed path precondition (design §6.4)
+    kwargs["inline_content"] = salt_bytes
+    kwargs["inline_embed_content"] = embed_bytes
+    kwargs["existing_document_id"] = existing_id
+
+    response = services._process_single_document(**kwargs)
+    assert "error" not in response, response
+    assert response["document_id"] == existing_id, response
+
+    # Every chunk object in the vector store carries the resolved id,
+    # NOT the extractor's fresh UUID.
+    assert len(stub_vector._chunks) > 0
+    for chunk in stub_vector._chunks.values():
+        assert chunk.document_id == existing_id, (
+            f"Chunk built under {chunk.document_id!r}, expected the "
+            f"resolved existing id {existing_id!r}."
+        )
+
+    # The documents row was UPDATEd in place — one row, new fingerprint.
+    assert len(stub_dedup._documents) == 1
+    found = stub_dedup.find_by_fingerprint("test_uuo_override", "stale-fingerprint-000")
+    assert found is None, "stale fingerprint should no longer resolve"
+    rekeyed = next(iter(stub_dedup._documents.values()))
+    assert rekeyed.document_id == existing_id
+    assert rekeyed.content_fingerprint != "stale-fingerprint-000"
+
+
+# --- ariadne--uuo.2: inline_embed_content precondition guard (CATO uuo-1 c2) ---
+
+
+def test_inline_embed_content_without_inline_content_raises(monkeypatch):
+    """ariadne--uuo.2 (CATO uuo-1 review concern c2): supplying
+    `inline_embed_content` WITHOUT `inline_content` is an internal-caller
+    contract violation -- the embed input is meaningless without the
+    dedup-salt input -- and must raise loudly rather than silently letting
+    `raw_bytes` fall through to the URI read path. The contract is
+    bw-bridge-only; this makes it load-bearing."""
+    import pytest
+
+    _fresh_stores(monkeypatch)
+    kwargs = _common_kwargs("bw://uuo-2/body", "test_uuo2_guard")
+    # inline_content deliberately omitted; only inline_embed_content set.
+    kwargs["inline_embed_content"] = b"clean body, no salt to pair with"
+
+    with pytest.raises(ValueError, match="inline_embed_content requires inline_content"):
+        services._process_single_document(**kwargs)

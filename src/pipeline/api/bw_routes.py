@@ -662,6 +662,31 @@ class DepAdd(BaseModel):
     _strip_nul = field_validator("blocks")(_reject_null_byte)
 
 
+class ReembedRequest(BaseModel):
+    """Body for ``POST /reembed`` (ariadne--uuo.5). Both fields optional.
+
+    ``ticket_ids`` — restrict the re-embed to these tickets (uuo-6's
+    20-ticket A/B and per-ticket recovery use this). Omitted / ``None`` →
+    walk every ticket in the on-disk bw repo.
+
+    ``dry_run`` — enumerate + count + run the orphaned-ticket detection,
+    write nothing. Lets the operator see scope (including the orphaned
+    set) before committing the embedding spend.
+    """
+
+    ticket_ids: Optional[list[str]] = None
+    dry_run: bool = False
+
+    @field_validator("ticket_ids")
+    @classmethod
+    def _strip_nul_ids(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return v
+        for item in v:
+            _reject_null_byte(item)
+        return v
+
+
 # ── Router ─────────────────────────────────────────────────────────────────
 #
 # Prefix is /bw/projects/{slug}; the app mounts the existing /api router
@@ -711,13 +736,16 @@ async def create_ticket(
         await _backup_push(slug)
         ticket_id = result.get("id")
         if ticket_id:
-            # Body = title + (description or empty). bw stores the
-            # description as the body; the title goes into a separate
-            # field. We include both in the Ariadne payload so search
-            # against the title text returns the body doc.
-            text = req.title
-            if req.description:
-                text = f"{req.title}\n\n{req.description}"
+            # ariadne--uuo.2 (design §4): the body doc's text is just the
+            # description. The title is no longer string-concatenated into
+            # the body — it now reaches both the fingerprint salt (via
+            # _build_agent_metadata.ticket_title → _render_payload) and the
+            # embedded chunk text (via _render_embed_content's `# <title>`
+            # header). This makes body and comment ingest symmetric: both
+            # get the title once, via the header. A description-less
+            # ticket yields an empty `text`, but the embed content still
+            # carries the header, so extraction has non-empty input.
+            text = req.description or ""
             ingest = await _ingest_bw_write(
                 slug=slug,
                 source_type="body",
@@ -870,12 +898,15 @@ async def update_ticket(
             deleted = await _soft_delete_body_docs(
                 slug=slug, ticket_id=ticket_id,
             )
-            # New body text = (post-update) title + (post-update or
-            # prior) description. Both come from the bw result, which
-            # reflects the post-update ticket state.
-            title = result.get("title") or ""
-            description = result.get("description") or ""
-            text = title if not description else f"{title}\n\n{description}"
+            # ariadne--uuo.2 (design §4): body text is the post-update
+            # description only — same as the create path. The title is no
+            # longer concatenated into the body; it reaches the fingerprint
+            # salt and the embedded chunk text via metadata + the
+            # _render_embed_content header. This keeps create-path and
+            # patch-path body docs symmetric (both: `# <title>` header
+            # once, then description) instead of patched bodies carrying a
+            # double title.
+            text = result.get("description") or ""
             ingest = await _ingest_bw_write(
                 slug=slug,
                 source_type="body",
@@ -996,22 +1027,38 @@ async def close_ticket(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         await _backup_push(slug)
+        # ariadne--uuo.2 (r4): `bw close --json` nests the issue snapshot
+        # under "issue" — its top-level shape is
+        # ``{"issue": {...}, "unblocked": [...]}`` — UNLIKE create / comment
+        # / update, whose --json IS the issue dict directly. The ingest
+        # helpers expect a `bw show`-shaped snapshot (top-level `title` /
+        # `type` / `status` / `labels` / `comments` / ...), so unwrap here.
+        # `result` itself stays the load-bearing API response payload.
+        # Without this unwrap the close path's snapshot metadata —
+        # status / assignee / labels / title / type / comment_n — was all
+        # silently None/empty; this is a pre-existing shipped bug surfaced
+        # by the uuo-2 r4 verification task, fixed in the same seam.
+        snapshot = result.get("issue") if isinstance(result, dict) else None
+        if not isinstance(snapshot, dict):
+            # Defensive: a bw version that does NOT nest still works —
+            # fall back to treating `result` as the snapshot directly.
+            snapshot = result if isinstance(result, dict) else {}
         patch = await _patch_bw_body_metadata(
             slug=slug, ticket_id=ticket_id,
-            bw_show_snapshot=result, principal=principal,
+            bw_show_snapshot=snapshot, principal=principal,
         )
         comment_ingest = None
         if req.reason is not None:
             # The close-reason becomes a real bw comment — its
             # ``comment_n`` is the length of the resulting comments
             # array (same shape rule as the comment-add path uses).
-            comments = result.get("comments") if isinstance(result, dict) else None
+            comments = snapshot.get("comments")
             comment_n = len(comments) if comments else None
             comment_ingest = await _ingest_bw_write(
                 slug=slug,
                 source_type="comment",
                 ticket_id=ticket_id,
-                bw_show_snapshot=result,
+                bw_show_snapshot=snapshot,
                 text=req.reason,
                 comment_n=comment_n,
                 principal=principal,
@@ -1386,6 +1433,57 @@ async def export_jsonl(
     if status is not None:
         args += ["--status", status]
     return await _run_bw(slug, *args, json_output=False)
+
+
+# ── In-place re-embed (ariadne--uuo.5) ─────────────────────────────────────
+
+
+@router.post("/reembed")
+async def reembed_project(
+    slug: str = Path(...),
+    req: ReembedRequest = Body(default_factory=ReembedRequest),
+    principal: Principal = Depends(require_user),
+):
+    """Re-embed bw tickets in place — the GOOD migration path (uuo-5).
+
+    ariadne--uuo.5 (design §6). Walks the on-disk bw repo for ``slug``
+    and, for every ticket (or the ``ticket_ids`` subset), re-ingests the
+    body + every comment via the snapshot-driven ingest core with
+    ``force=True`` and the resolved existing ``documents.id`` per slot —
+    so the new clean (uuo-2) embed-content lands on the *same* document
+    rows, the old polluted chunks are deleted, and the bw repo itself is
+    only read, never written.
+
+    This does NOT recreate bw tickets (that is ``seed_bw_corpus.py`` — the
+    BAD path). It is the reusable operational capability for every future
+    ingest-logic change, and the migration path for the existing
+    ~1020-doc ``aresense`` corpus (uuo-6 runs that migration against this
+    route).
+
+    Body (both fields optional — see ``ReembedRequest``):
+      ``{"ticket_ids": [...], "dry_run": false}``
+
+    Per-ticket lock scope: the orchestrator acquires/releases the shipped
+    per-slug ``_lock_for(slug)`` at the per-ticket boundary — held
+    atomically across one ticket's body + entire comments loop, released
+    between tickets (design §6.8).
+
+    Summary response:
+      ``{reembedded, fresh_inserted, orphaned_tickets, errors, dry_run,
+         tickets_enumerated}`` — plus ``docs_would_reembed`` on a dry run.
+    """
+    from pipeline.api.bw_ingest import _reembed_tickets
+
+    _validate_slug(slug)
+    # _resolve_repo_path (called inside _reembed_tickets) enforces the
+    # initialized-repo guard and raises 404 for an uninitialized slug,
+    # consistent with every other bw route.
+    return await _reembed_tickets(
+        slug=slug,
+        ticket_ids=req.ticket_ids,
+        dry_run=req.dry_run,
+        agent_id=principal.user_id,
+    )
 
 
 # ── Deferred surface (out of v1 scope) ─────────────────────────────────────

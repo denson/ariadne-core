@@ -1617,3 +1617,326 @@ def test_synthetic_uri_yields_md_file_type():
         assert parsed.path.endswith(".md"), (uri, parsed.path)
         assert Path(parsed.path).suffix == ".md", (uri, parsed.path)
         assert _guess_file_type(uri) == "md", uri
+
+
+# ============================================================================
+# ariadne--uuo.2 -- decouple dedup-salt from embed-content
+#
+# uuo-1 split the two inputs inside _process_single_document. uuo-2 builds the
+# bw-bridge half: _render_embed_content (clean contextual-header + body), the
+# ticket_title/ticket_type metadata keys, and wires the live + replay ingest
+# call sites to feed _render_payload output as the fingerprint salt (UNCHANGED)
+# and _render_embed_content output as the embed content. Acceptance criteria
+# from design ariadne--uuo S9 uuo-2.
+# ============================================================================
+
+
+def _chunks_for_doc(doc_id: str) -> list[str]:
+    """Return the stored chunk texts for a document id (in-memory store)."""
+    from pipeline import services
+    return [
+        c.text
+        for c in services._vector_store._chunks.values()
+        if c.document_id == doc_id
+    ]
+
+
+def test_uuo2_render_embed_content_unit():
+    """_render_embed_content: selective contextual header + clean body, no YAML.
+
+    Direct unit probe of the new helper -- header carries title + type +
+    ONLY allowlisted kinded labels; non-allowlisted labels, ids, SHAs,
+    timestamps, nulls, and graph edges never enter the bytes; the body
+    text is appended verbatim.
+    """
+    metadata = {
+        "ticket_id": "ariadne--zzz",
+        "comment_n": 3,
+        "bw_commit_sha": "f" * 40,
+        "timestamp": "2026-05-14T00:00:00Z",
+        "assignee": None,
+        "parent_ticket_id": "ariadne--parent",
+        "bw_status": "open",
+        "ticket_title": "Decouple the salt",
+        "ticket_type": "feature",
+        "labels": {
+            "hypothesis": "salt-pollutes-vectors",  # allowlisted
+            "kind": "person",                        # NOT allowlisted
+        },
+        "labels_flat": ["hypothesis:salt-pollutes-vectors", "kind:person"],
+    }
+    body = "The frontmatter is pollution in the embed space."
+    out = bw_ingest._render_embed_content(metadata, body).decode("utf-8")
+
+    # Header present, in order, and only the allowlisted label.
+    assert out.startswith("# Decouple the salt\n"), out
+    assert "Ticket type: feature" in out
+    assert "hypothesis: salt-pollutes-vectors" in out
+    assert "kind: person" not in out, "non-allowlisted label leaked"
+    # Body appended verbatim after a blank line.
+    assert out.endswith("\n\n" + body), out
+    # None of the per-occurrence salt / mutable / graph fields leaked.
+    for forbidden in (
+        "ariadne--zzz", "comment_n", "f" * 40, "bw_commit_sha",
+        "2026-05-14T00:00:00Z", "assignee", "ariadne--parent",
+        "bw_status", "labels_flat", "---",
+    ):
+        assert forbidden not in out, f"{forbidden!r} leaked into embed content"
+
+
+def test_uuo2_render_embed_content_graceful_degradation():
+    """_render_embed_content: missing title/type -> bare body, no header."""
+    out = bw_ingest._render_embed_content({"labels": {}}, "just the body").decode()
+    assert out == "just the body", out
+    # Title only, no type -> header has just the title line.
+    out2 = bw_ingest._render_embed_content(
+        {"ticket_title": "Only a title"}, "body"
+    ).decode()
+    assert out2 == "# Only a title\n\nbody", out2
+
+
+def test_uuo2_d1_4_identical_comments_different_tickets_distinct_fingerprints(client):
+    """Acceptance (1)+(2): D1.4 -- two identical-text comments on DIFFERENT
+    tickets get different fingerprints (the per-occurrence salt in
+    _render_payload, UNCHANGED, still differentiates them), AND their stored
+    chunk texts are byte-identical with no frontmatter (the embed content
+    collapsed)."""
+    from pipeline import services
+
+    with patch.object(subprocess, "run") as mock_run:
+        # Ticket A -- create then comment "shared body".
+        mock_run.side_effect = [
+            _fake_completed(stdout=_bw_show_json(ticket_id="bw-aaa")),
+            _fake_completed(stdout=_bw_history_json(sha="a" * 40, ticket_id="bw-aaa")),
+        ]
+        client.post("/api/bw/projects/myproj/tickets",
+                    json={"title": "Ticket A", "description": "desc a"})
+        mock_run.side_effect = [
+            _fake_completed(stdout=_bw_show_json(
+                ticket_id="bw-aaa", title="Ticket A",
+                comments=[{"text": "shared body", "timestamp": "2026-05-12T00:00:00Z"}],
+            )),
+            _fake_completed(stdout=_bw_history_json(
+                sha="1" * 40, ticket_id="bw-aaa", intent_prefix="comment")),
+        ]
+        ra = client.post("/api/bw/projects/myproj/tickets/bw-aaa/comments",
+                         json={"text": "shared body"})
+        assert ra.status_code == 201, ra.text
+        doc_a = ra.json()["ariadne_ingest"]["document_id"]
+
+        # Ticket B -- create then comment with IDENTICAL text "shared body".
+        mock_run.side_effect = [
+            _fake_completed(stdout=_bw_show_json(ticket_id="bw-bbb")),
+            _fake_completed(stdout=_bw_history_json(sha="b" * 40, ticket_id="bw-bbb")),
+        ]
+        client.post("/api/bw/projects/myproj/tickets",
+                    json={"title": "Ticket B", "description": "desc b"})
+        mock_run.side_effect = [
+            _fake_completed(stdout=_bw_show_json(
+                ticket_id="bw-bbb", title="Ticket B",
+                comments=[{"text": "shared body", "timestamp": "2026-05-12T00:00:00Z"}],
+            )),
+            _fake_completed(stdout=_bw_history_json(
+                sha="2" * 40, ticket_id="bw-bbb", intent_prefix="comment")),
+        ]
+        rb = client.post("/api/bw/projects/myproj/tickets/bw-bbb/comments",
+                         json={"text": "shared body"})
+        assert rb.status_code == 201, rb.text
+        doc_b = rb.json()["ariadne_ingest"]["document_id"]
+
+    # Distinct documents -- the salt (ticket_id + bw_commit_sha + ticket_title)
+    # differs, so the SHA-256 over _render_payload bytes differs.
+    assert doc_a != doc_b, "D1.4 broken -- identical-text comments collided"
+    fps = {d.content_fingerprint for d in services._dedup_store._documents.values()}
+    # Two body docs + two comment docs = 4 distinct fingerprints.
+    assert len(fps) == 4, f"expected 4 distinct fingerprints, got {len(fps)}"
+
+    # Acceptance (2): the two comments' stored chunk texts are BYTE-IDENTICAL
+    # in their body portion and contain NO frontmatter fence -- the embed
+    # content collapsed even though the fingerprint did not.
+    chunks_a = _chunks_for_doc(doc_a)
+    chunks_b = _chunks_for_doc(doc_b)
+    assert chunks_a and chunks_b, (chunks_a, chunks_b)
+    text_a = "\n".join(chunks_a)
+    text_b = "\n".join(chunks_b)
+    assert "---" not in text_a, f"frontmatter leaked: {text_a!r}"
+    assert "---" not in text_b, f"frontmatter leaked: {text_b!r}"
+    assert "ticket_id:" not in text_a and "bw_commit_sha:" not in text_a
+    # SHIPPED-CHUNKER NOTE: the by-title chunker's _chunk_by_title strips
+    # the leading heading into the (now-coalesced) section and re-prepends
+    # it as `## {title}` — it normalizes the heading level to `##`
+    # regardless of the source `#`. So the stored chunk text shape is
+    # `## {title}\n\nTicket type: {type}\n\n{body}`. _render_embed_content
+    # correctly emits `# {title}` (correct source markdown for a title);
+    # the `##` is a shipped chunker artifact, NOT a uuo-2 defect. The
+    # decoupling property under test is unaffected — see verdict drift D2.
+    # The two comment chunk texts differ ONLY by the parent ticket title
+    # ("## Ticket A" vs "## Ticket B"); strip everything up to and
+    # including the title line and the remaining bytes are identical.
+    body_a = text_a.split("\n\n", 1)[-1]
+    body_b = text_b.split("\n\n", 1)[-1]
+    assert body_a == body_b == "Ticket type: task\n\nshared body", (body_a, body_b)
+
+
+def test_uuo2_comment_chunk_text_begins_with_parent_title(client):
+    """Acceptance (3): a comment doc's stored chunk text begins with the
+    parent ticket title then ``Ticket type: <type>``.
+
+    SHIPPED-CHUNKER NOTE: the design's literal "begins with `# <title>`"
+    is satisfied modulo the by-title chunker's heading-level
+    normalization — the chunker re-prepends section headings as `##`
+    regardless of the source level. So the assertion is `## <title>`.
+    The contextual header is present and functional; only the heading
+    level differs. See verdict drift D2.
+    """
+    with patch.object(subprocess, "run") as mock_run:
+        mock_run.side_effect = [
+            _fake_completed(stdout=_bw_show_json(ticket_id="bw-hdr")),
+            _fake_completed(stdout=_bw_history_json(sha="a" * 40, ticket_id="bw-hdr")),
+        ]
+        client.post("/api/bw/projects/myproj/tickets",
+                    json={"title": "Parent Ticket Title", "description": "d"})
+        mock_run.side_effect = [
+            _fake_completed(stdout=_bw_show_json(
+                ticket_id="bw-hdr", title="Parent Ticket Title",
+                comments=[{"text": "a bare comment", "timestamp": "2026-05-12T00:00:00Z"}],
+            )),
+            _fake_completed(stdout=_bw_history_json(
+                sha="9" * 40, ticket_id="bw-hdr", intent_prefix="comment")),
+        ]
+        rc = client.post("/api/bw/projects/myproj/tickets/bw-hdr/comments",
+                         json={"text": "a bare comment"})
+        assert rc.status_code == 201, rc.text
+        comment_doc = rc.json()["ariadne_ingest"]["document_id"]
+
+    chunks = _chunks_for_doc(comment_doc)
+    assert chunks, "no chunks stored for comment doc"
+    joined = "\n".join(chunks)
+    assert joined.startswith("## Parent Ticket Title"), joined
+    assert "Ticket type: task" in joined, joined
+    assert "a bare comment" in joined, joined
+
+
+def test_uuo2_selective_enrichment_metadata_not_in_chunk_text(client):
+    """Acceptance (4): bw_commit_sha / timestamp / assignee:null do NOT appear
+    in chunk text but DO appear in documents.metadata."""
+    from pipeline import services
+
+    with patch.object(subprocess, "run") as mock_run:
+        mock_run.side_effect = [
+            _fake_completed(stdout=_bw_show_json(
+                ticket_id="bw-sel", title="Selective", assignee="",
+            )),
+            _fake_completed(stdout=_bw_history_json(
+                sha="e" * 40, ticket_id="bw-sel")),
+        ]
+        r = client.post("/api/bw/projects/myproj/tickets",
+                        json={"title": "Selective", "description": "the body text"})
+        assert r.status_code == 201, r.text
+        body_doc = r.json()["ariadne_ingest"]["document_id"]
+
+    # Chunk text: clean -- no SHA, no timestamp, no null assignee.
+    chunk_text = "\n".join(_chunks_for_doc(body_doc))
+    assert "e" * 40 not in chunk_text, "bw_commit_sha leaked into chunk text"
+    assert "2026-05-12" not in chunk_text, "timestamp leaked into chunk text"
+    assert "assignee" not in chunk_text, "assignee leaked into chunk text"
+    assert "null" not in chunk_text
+
+    # documents.metadata: the structured surface DOES carry them.
+    meta = services._dedup_store._doc_metadata.get(body_doc, {})
+    assert meta.get("bw_commit_sha") == "e" * 40
+    assert meta.get("timestamp")
+    assert "assignee" in meta and meta["assignee"] is None
+    # uuo-2 additions present on the metadata surface.
+    assert meta.get("ticket_title") == "Selective"
+    assert meta.get("ticket_type") == "task"
+
+
+def test_uuo2_body_doc_no_double_title_after_concat_removal(client):
+    """Design S4: the legacy title text-concat is removed from the create
+    path -- the title appears ONCE, via the _render_embed_content header,
+    not concatenated into the body. So a body doc's chunk text has exactly
+    one ``# <title>`` occurrence."""
+    with patch.object(subprocess, "run") as mock_run:
+        mock_run.side_effect = [
+            _fake_completed(stdout=_bw_show_json(
+                ticket_id="bw-once", title="Single Title")),
+            _fake_completed(stdout=_bw_history_json(
+                sha="a" * 40, ticket_id="bw-once")),
+        ]
+        r = client.post("/api/bw/projects/myproj/tickets",
+                        json={"title": "Single Title", "description": "the description"})
+        assert r.status_code == 201, r.text
+        body_doc = r.json()["ariadne_ingest"]["document_id"]
+
+    chunk_text = "\n".join(_chunks_for_doc(body_doc))
+    assert chunk_text.count("Single Title") == 1, (
+        f"title appears {chunk_text.count('Single Title')} times "
+        f"(expected exactly 1 -- via header only): {chunk_text!r}"
+    )
+    # `## ` not `# ` — shipped by-title chunker normalizes the heading
+    # level (see verdict drift D2). The point of this test is the
+    # single-occurrence count above: the legacy text-concat is gone.
+    assert chunk_text.startswith("## Single Title"), chunk_text
+    assert "the description" in chunk_text
+
+
+def test_uuo2_r4_close_subcommand_nested_issue_snapshot_unwrapped(client):
+    """Acceptance (5) / r4: ``bw close --json`` nests the issue under
+    ``issue`` -- unlike create/comment/update. The close route must unwrap
+    it so ticket_title/ticket_type (and status/labels/comment_n) reach the
+    ingest helpers. Without the unwrap the close path's snapshot metadata
+    is silently empty."""
+    from pipeline import services
+
+    with patch.object(subprocess, "run") as mock_run:
+        # Create the ticket first.
+        mock_run.side_effect = [
+            _fake_completed(stdout=_bw_show_json(ticket_id="bw-cls", title="Closing Title")),
+            _fake_completed(stdout=_bw_history_json(sha="a" * 40, ticket_id="bw-cls")),
+        ]
+        client.post("/api/bw/projects/myproj/tickets",
+                    json={"title": "Closing Title", "description": "d"})
+
+        # Close WITH a reason -> patch-meta on body doc + a new comment doc.
+        # bw close --json returns {"issue": {...}, "unblocked": [...]}.
+        nested = json.dumps({
+            "issue": json.loads(_bw_show_json(
+                ticket_id="bw-cls", title="Closing Title", status="closed",
+                comments=[{"text": "closing reason", "timestamp": "2026-05-12T00:00:00Z"}],
+            )),
+            "unblocked": [],
+        })
+        mock_run.side_effect = [
+            _fake_completed(stdout=nested),                                  # bw close
+            _fake_completed(stdout=_bw_history_json(                         # patch-meta head
+                sha="b" * 40, ticket_id="bw-cls", intent_prefix="close")),
+            _fake_completed(stdout=_bw_history_full_json([                   # body author
+                {"hash": "a" * 40, "timestamp": "2026-05-12 00:00",
+                 "author": "alice", "intent": "create bw-cls ..."},
+                {"hash": "b" * 40, "timestamp": "2026-05-12 00:01",
+                 "author": "bob", "intent": "close bw-cls"},
+            ])),
+            _fake_completed(stdout=_bw_history_json(                         # comment-ingest head
+                sha="c" * 40, ticket_id="bw-cls", intent_prefix="close")),
+        ]
+        rc = client.post("/api/bw/projects/myproj/tickets/bw-cls/close",
+                         json={"reason": "closing reason"})
+        assert rc.status_code == 200, rc.text
+
+        comment_ingest = rc.json().get("ariadne_comment_ingest")
+        assert comment_ingest is not None, rc.json()
+        assert comment_ingest["ingest_status"] == "ok", comment_ingest
+        comment_doc = comment_ingest["document_id"]
+
+    # The unwrap worked: the comment doc's metadata carries the parent
+    # title/type/status sourced from the nested snapshot -- not None.
+    meta = services._dedup_store._doc_metadata.get(comment_doc, {})
+    assert meta.get("ticket_title") == "Closing Title", meta
+    assert meta.get("ticket_type") == "task", meta
+    assert meta.get("bw_status") == "closed", meta
+    assert meta.get("comment_n") == 1, meta
+    # And the comment chunk text gets the contextual header (`## ` per the
+    # shipped chunker's heading-level normalization — verdict drift D2).
+    chunk_text = "\n".join(_chunks_for_doc(comment_doc))
+    assert chunk_text.startswith("## Closing Title"), chunk_text

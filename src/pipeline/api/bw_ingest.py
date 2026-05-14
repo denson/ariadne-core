@@ -135,6 +135,68 @@ def _render_payload(metadata: dict[str, Any], text: str) -> bytes:
     return "\n".join(body_lines).encode("utf-8")
 
 
+# Label kinds whose value carries enough standalone semantic signal to be
+# worth folding into the embedded text (Anthropic "Contextual Retrieval").
+# Everything NOT in this allowlist — bare labels, unknown kinds, mutable
+# operational labels — still reaches ``documents.metadata.labels`` /
+# ``labels_flat`` for structured filtering, but does NOT pollute the chunk
+# text. "Meaningful" is a reviewable judgment call, so it is an explicit
+# frozenset rather than a heuristic (design §3.4). Widening it is a
+# one-line change followed by a re-embed (uuo-5) — cheap by construction.
+_EMBED_LABEL_ALLOWLIST: frozenset[str] = frozenset({
+    "hypothesis", "manifest_type", "customer", "topic", "area",
+})
+
+
+def _render_embed_content(metadata: dict[str, Any], text: str) -> bytes:
+    """Render the clean embed/extract content: contextual header + body.
+
+    The decoupled sibling of ``_render_payload`` (design §3.2). Where
+    ``_render_payload`` produces the dedup-salt input (full sorted-YAML
+    frontmatter + body — the bytes the fingerprint is SHA-256'd over),
+    this produces the bytes that are actually extracted, chunked,
+    embedded, and stored as chunk text.
+
+    The two differ deliberately:
+
+      • NO YAML frontmatter — no ``--- ... ---`` block. The per-occurrence
+        salt keys (``ticket_id`` / ``comment_n`` / ``bw_commit_sha`` /
+        ``timestamp`` / ``assignee`` / graph edges) are pollution in the
+        embed space: every chunk vector would be partly "about" them and
+        every chunk would share that prefix. They stay in
+        ``documents.metadata`` for structured filtering; they never enter
+        the embedded text.
+      • A SELECTIVE contextual header — the ticket title (``# <title>``),
+        the ticket type, and only those kinded labels in
+        ``_EMBED_LABEL_ALLOWLIST``. Body docs historically got the title
+        via the create path's text-concat; comment docs got nothing — a
+        bare comment had no anchor to its parent ticket. The header gives
+        body and comment docs a symmetric, meaningful anchor.
+
+    ``ticket_title`` / ``ticket_type`` are populated by
+    ``_build_agent_metadata`` (sourced from the ``bw show`` snapshot —
+    design §3.3). When they are absent (graceful degradation — a thinner
+    snapshot, an older retry-queue payload), the header simply shrinks or
+    disappears and this falls through to the bare body bytes. The body
+    ``text`` is never normalized — same byte-fidelity contract as
+    ``_render_payload``.
+    """
+    header_lines: list[str] = []
+    title = metadata.get("ticket_title")
+    ttype = metadata.get("ticket_type")
+    if title:
+        header_lines.append(f"# {title}")
+    if ttype:
+        header_lines.append(f"Ticket type: {ttype}")
+    # Only allowlisted kinded labels — explicit, reviewable enrichment.
+    for kind, value in (metadata.get("labels") or {}).items():
+        if kind in _EMBED_LABEL_ALLOWLIST:
+            header_lines.append(f"{kind}: {value}")
+    if header_lines:
+        return ("\n".join(header_lines) + "\n\n" + text).encode("utf-8")
+    return text.encode("utf-8")
+
+
 def _parse_label(raw: str) -> tuple[str | None, str]:
     """Split a bw label into (kind, value) using the first ``:``.
 
@@ -164,6 +226,8 @@ def _build_agent_metadata(
     bw_parent: Optional[str],
     bw_labels: list[str],
     bw_timestamp: str,
+    ticket_title: Optional[str] = None,
+    ticket_type: Optional[str] = None,
 ) -> dict[str, Any]:
     """Compose the full ``agent_metadata`` dict per design §D1.3.
 
@@ -171,6 +235,16 @@ def _build_agent_metadata(
     Phase 1 filter resolves against the latest interaction's metadata,
     so a partial payload would silently drop ``ticket_id`` / ``project``
     / etc. from the search-filter surface. See §1 fact 1 in the design.
+
+    ``ticket_title`` / ``ticket_type`` (ariadne--uuo.2): the parent
+    ticket's title and type, sourced from the ``bw show`` snapshot at the
+    call site. They serve two purposes — they join the
+    ``documents.metadata`` JSONB surface (free, they flow through
+    ``agent_metadata``), AND they feed ``_render_embed_content``'s
+    contextual header (design §3.3). Both default to ``None``: callers
+    that cannot cheaply source them (or whose snapshot is thinner than
+    ``bw show --json``) simply omit them, and the embed-content header
+    degrades gracefully to a bare body.
     """
     labels_dict: dict[str, str] = {}
     labels_flat: list[str] = []
@@ -198,6 +272,8 @@ def _build_agent_metadata(
         "assignee": bw_assignee,
         "labels": labels_dict,
         "labels_flat": labels_flat,
+        "ticket_title": ticket_title,
+        "ticket_type": ticket_type,
     }
 
 
@@ -487,51 +563,231 @@ def _resolve_all_ticket_doc_ids(*, slug: str, ticket_id: str) -> list[str]:
     return []
 
 
+def _resolve_ticket_doc_id_map(
+    *, slug: str, ticket_id: str
+) -> dict[tuple[str, Optional[int]], str]:
+    """Return a per-slot ``{(source_type, comment_n): documents.id}`` map.
+
+    ariadne--uuo.5 (design §6.7.2, W-7). ``_resolve_all_ticket_doc_ids``
+    returns a *bare, unordered* list of document IDs for a ticket — it
+    cannot tell the re-embed path *which* id is the body and which is
+    comment-3. The in-place re-embed must write comment-3's new content to
+    comment-3's *old* ``documents.id``, not comment-1's — so it needs the
+    per-slot mapping, keyed on the ``source_type`` + ``comment_n`` keys
+    that ``_build_agent_metadata`` already writes into
+    ``documents.metadata``.
+
+    Slot key shape:
+      • body  → ``("body", None)``
+      • comment N → ``("comment", N)``
+
+    A slot the re-embed walk asks for that is **absent** from this map is
+    exactly the §6.7.2 zero-resolved-IDs case — the caller takes the
+    ``existing_document_id=None`` fresh-INSERT fall-through. This makes the
+    map robust to a comment-count mismatch between original ingest and
+    re-embed (the W-7 / VERA-uuo-2 robustness concern): a comment slot
+    with no prior doc is simply INSERTed fresh, never orphaned.
+
+    Defensive shapes handled:
+      • ``>1`` doc for the same slot (a prior PATCH-body that didn't
+        soft-delete, or a duplicate ingest) — the latest by ``created_at``
+        wins, with a WARNING, mirroring ``_resolve_body_doc_id``.
+      • a doc with a missing/None ``source_type`` — skipped (it cannot be
+        slot-mapped; it will surface via ``_resolve_all_ticket_doc_ids``
+        for the orphan/diagnostic paths but is not a re-embed target).
+
+    Sync function — callers wrap in ``asyncio.to_thread``.
+    """
+    from pipeline.services import _dedup_store
+    from pipeline.dedup import InMemoryDedupStore, PgDedupStore
+
+    def _slot_key(meta: dict[str, Any]) -> tuple[str, Optional[int]] | None:
+        source_type = meta.get("source_type")
+        if source_type not in ("body", "comment"):
+            return None
+        comment_n = meta.get("comment_n")
+        if source_type == "comment":
+            # comment_n must be an int to identify the slot; a comment doc
+            # with no comment_n cannot be slot-mapped.
+            if not isinstance(comment_n, int):
+                return None
+            return ("comment", comment_n)
+        return ("body", None)
+
+    if isinstance(_dedup_store, InMemoryDedupStore):
+        # slot -> list of (created_at, doc_id) so we can pick latest on a
+        # duplicate slot.
+        buckets: dict[tuple[str, Optional[int]], list[tuple[str, str]]] = {}
+        for doc in _dedup_store._documents.values():
+            if doc.collection_id != slug:
+                continue
+            if doc.document_id in _dedup_store._deletions:
+                continue
+            meta = _dedup_store._doc_metadata.get(doc.document_id, {})
+            if meta.get("ticket_id") != ticket_id:
+                continue
+            slot = _slot_key(meta)
+            if slot is None:
+                continue
+            buckets.setdefault(slot, []).append(
+                (doc.created_at or "", doc.document_id)
+            )
+        result: dict[tuple[str, Optional[int]], str] = {}
+        for slot, rows in buckets.items():
+            if len(rows) > 1:
+                logger.warning(
+                    "_resolve_ticket_doc_id_map: %d docs for slot %s "
+                    "(slug=%s, ticket=%s); picking latest",
+                    len(rows), slot, slug, ticket_id,
+                )
+            rows.sort(key=lambda r: r[0], reverse=True)
+            result[slot] = rows[0][1]
+        return result
+
+    if isinstance(_dedup_store, PgDedupStore):
+        with _dedup_store._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT d.id::text,
+                           d.metadata->>'source_type',
+                           d.metadata->>'comment_n',
+                           d.created_at
+                    FROM documents d
+                    JOIN collections col ON d.collection_id = col.id
+                    WHERE col.name = %(slug)s
+                      AND d.metadata @> %(needle)s::jsonb
+                      AND d.deleted_at IS NULL
+                    ORDER BY d.created_at DESC
+                    """,
+                    {
+                        "slug": slug,
+                        "needle": json.dumps({"ticket_id": ticket_id}),
+                    },
+                )
+                # created_at DESC ordering means the FIRST row seen for a
+                # slot is the latest — setdefault keeps it and ignores the
+                # older duplicates.
+                pg_result: dict[tuple[str, Optional[int]], str] = {}
+                seen_dupes: set[tuple[str, Optional[int]]] = set()
+                for doc_id, source_type, comment_n_raw, _created in cur.fetchall():
+                    comment_n: Optional[int] = None
+                    if comment_n_raw is not None:
+                        try:
+                            comment_n = int(comment_n_raw)
+                        except (TypeError, ValueError):
+                            comment_n = None
+                    slot = _slot_key(
+                        {"source_type": source_type, "comment_n": comment_n}
+                    )
+                    if slot is None:
+                        continue
+                    if slot in pg_result:
+                        seen_dupes.add(slot)
+                        continue
+                    pg_result[slot] = doc_id
+                for slot in seen_dupes:
+                    logger.warning(
+                        "_resolve_ticket_doc_id_map: >1 docs for slot %s "
+                        "(slug=%s, ticket=%s); picked latest",
+                        slot, slug, ticket_id,
+                    )
+                return pg_result
+    return {}
+
+
 # ── Helper 1: new-doc ingest ────────────────────────────────────────────────
 
 
-async def _ingest_bw_write(
+async def _ingest_bw_snapshot(
     *,
     slug: str,
     source_type: str,           # 'body' | 'comment'
     ticket_id: str,
-    bw_show_snapshot: dict[str, Any],  # the bw show --json dict after the write
+    bw_show_snapshot: dict[str, Any],  # a bw show-shaped snapshot dict
     text: str,
     comment_n: Optional[int],
-    principal: Principal,
+    agent_id: str,
+    bw_commit_sha: str,
+    bw_author: Optional[str],
+    force: bool = False,
+    existing_document_id: Optional[str] = None,
+    enqueue_on_failure: bool = True,
 ) -> dict[str, Any]:
-    """Create a new Ariadne document for a fresh bw body or comment.
+    """Snapshot-driven ingest core — shared by the live-write and re-embed paths.
 
-    Called inside the per-slug lock, AFTER ``_run_bw`` returns success
-    and AFTER ``_backup_push`` runs. The lock is held through this
-    function so ordering between bw and Ariadne is preserved (see
-    design §D2.4 + W1).
+    ariadne--uuo.5 (design §6.1, §6.2). ``_ingest_bw_write`` is the
+    live-write path: it fetches the just-completed mutation's SHA + author
+    via ``_bw_history_head`` and then delegates here. The ``POST /reembed``
+    route is the re-embed path: it walks *existing* tickets, reads each
+    one's current orphan-branch SHA, resolves the existing ``documents.id``
+    per body/comment slot, and calls here with ``force=True`` +
+    ``existing_document_id=<resolved id or None>``.
 
-    Failure mode: any exception while ingesting enqueues the payload for
-    background retry (Postgres queue → file fallback). Returns the
-    ingest result dict on success, or a small ack dict on enqueued retry.
+    This core does **NO bw history calls** — ``bw_commit_sha`` and
+    ``bw_author`` are passed IN. That is the whole point of the extraction:
+    a re-embed has no "just-completed write" to read history for.
+
+    Parameters that differ per path:
+
+      • ``bw_commit_sha`` / ``bw_author`` — for a live write these come from
+        ``_bw_history_head`` (the mutation that just happened); for a
+        re-embed they come from the existing ticket's current state.
+      • ``force`` — MUST be ``True`` on the re-embed path (design §6.4): the
+        ``force`` branch in ``_process_single_document`` runs
+        ``delete_by_document`` before ``insert``, clearing the old chunks
+        the new chunks (same ``effective_document_id``) are about to
+        replace. Without it the old chunks survive and the new chunks
+        silently drop on the chunk PK collision. ``False`` for live writes
+        (a fresh doc has no old chunks).
+      • ``existing_document_id`` — when supplied, ``_process_single_document``
+        resolves ``effective_document_id`` to it and routes the
+        documents-row write through ``update_document_content``
+        (UPDATE-by-id) instead of ``store_document`` (INSERT). ``None``
+        takes the fresh-INSERT path — exactly what a live write does, and
+        what the §6.7.2 zero-resolved-IDs branch of ``/reembed`` does.
+      • ``enqueue_on_failure`` — the live-write path enqueues a failed
+        ingest for background retry (the bw write already succeeded and is
+        canonical). The re-embed path sets this ``False``: a re-embed
+        failure is collected into the route's ``errors`` summary and is
+        recoverable by re-running ``/reembed`` for that ticket (design
+        §6.4 idempotency) — routing it through the retry queue would
+        replay it as a fresh ``force=False`` ingest, losing the
+        ``existing_document_id`` reuse.
+
+    Returns the ingest result dict on success, or a small ack/error dict
+    on a failure (enqueued for retry, or surfaced for the caller).
     """
-    sha, sha_author = await _bw_history_head(slug, ticket_id)
-    # Per §D6 author semantics: for new-doc ingest, the just-completed
-    # mutation's author IS the doc author (the actor who just made the
-    # POST /tickets is the body author; the actor who just made the
-    # POST /comments is the comment author). For PATCH-meta, the
-    # original body author is fetched separately — see
-    # _patch_bw_body_metadata below.
     metadata = _build_agent_metadata(
         ticket_id=ticket_id,
         slug=slug,
         source_type=source_type,
         comment_n=comment_n,
-        bw_commit_sha=sha,
+        bw_commit_sha=bw_commit_sha,
         bw_status=bw_show_snapshot.get("status"),
-        bw_author=sha_author,
+        bw_author=bw_author,
         bw_assignee=bw_show_snapshot.get("assignee") or None,
         bw_parent=bw_show_snapshot.get("parent") or None,
         bw_labels=list(bw_show_snapshot.get("labels") or []),
         bw_timestamp=_now_utc_isoformat(),
+        # ariadne--uuo.2: title/type feed both documents.metadata and the
+        # _render_embed_content contextual header. All four bw mutation
+        # subcommands whose --json becomes this snapshot — create / comment
+        # / close / patch(update) — carry top-level "title"/"type" EXCEPT
+        # `close`, whose --json nests the issue under "issue"; the close
+        # route unwraps it before calling this helper (see bw_routes.py).
+        # The re-embed path reads `bw show --json` (un-nested) so title/type
+        # are top-level there too.
+        ticket_title=bw_show_snapshot.get("title") or None,
+        ticket_type=bw_show_snapshot.get("type") or None,
     )
+    # ariadne--uuo.2: two decoupled artifacts from one metadata dict.
+    #   payload_bytes  — the dedup-salt input; SHA-256'd for the fingerprint.
+    #                    UNCHANGED function: this is the D1.4 property source.
+    #   embed_bytes    — the clean contextual-header + body input; extracted,
+    #                    chunked, embedded, stored as chunk text. NEVER hashed.
     payload_bytes = _render_payload(metadata, text)
+    embed_bytes = _render_embed_content(metadata, text)
 
     # Synthetic URI — purely informational (displayed as source_file in
     # observability surfaces, never parsed for I/O). The ``.md`` lives in
@@ -556,8 +812,8 @@ async def _ingest_bw_write(
             store=True,
             collection=slug,
             tags=[],
-            force=False,
-            agent_id=principal.user_id,
+            force=force,
+            agent_id=agent_id,
             agent_type="bw_bridge",
             model=None,
             initiated_by="bw_routes",
@@ -567,37 +823,57 @@ async def _ingest_bw_write(
             ingest_config=None,
             action="ingest",
             inline_content=payload_bytes,
+            inline_embed_content=embed_bytes,
+            existing_document_id=existing_document_id,
         )
     except Exception as e:
-        # Ingest raised. Enqueue for retry; the bw write already succeeded.
+        if enqueue_on_failure:
+            # Ingest raised. Enqueue for retry; the bw write already
+            # succeeded (live-write path).
+            logger.warning(
+                "bw_ingest_failed: enqueuing for retry "
+                "(slug=%s, ticket=%s, type=%s): %s",
+                slug, ticket_id, source_type, e,
+            )
+            await _enqueue_retry(
+                slug=slug,
+                source_type=source_type,
+                ticket_id=ticket_id,
+                comment_n=comment_n,
+                bw_commit_sha=bw_commit_sha,
+                payload={
+                    "kind": "ingest",
+                    "slug": slug,
+                    "source_type": source_type,
+                    "ticket_id": ticket_id,
+                    "comment_n": comment_n,
+                    "text": text,
+                    "metadata": metadata,
+                    "agent_id": agent_id,
+                    "uri": uri,
+                },
+                error=e,
+            )
+            return {
+                "ingest_status": "enqueued_for_retry",
+                "ticket_id": ticket_id,
+                "source_type": source_type,
+                "bw_commit_sha": bw_commit_sha,
+                "error": str(e),
+            }
+        # Re-embed path: surface the failure to the caller (the /reembed
+        # route collects it into its `errors` summary). Recoverable by
+        # re-running /reembed for this ticket (design §6.4 idempotency).
         logger.warning(
-            "bw_ingest_failed: enqueuing for retry (slug=%s, ticket=%s, type=%s): %s",
+            "bw_reembed_failed: surfacing to caller "
+            "(slug=%s, ticket=%s, type=%s): %s",
             slug, ticket_id, source_type, e,
         )
-        await _enqueue_retry(
-            slug=slug,
-            source_type=source_type,
-            ticket_id=ticket_id,
-            comment_n=comment_n,
-            bw_commit_sha=sha,
-            payload={
-                "kind": "ingest",
-                "slug": slug,
-                "source_type": source_type,
-                "ticket_id": ticket_id,
-                "comment_n": comment_n,
-                "text": text,
-                "metadata": metadata,
-                "agent_id": principal.user_id,
-                "uri": uri,
-            },
-            error=e,
-        )
         return {
-            "ingest_status": "enqueued_for_retry",
+            "ingest_status": "error",
             "ticket_id": ticket_id,
             "source_type": source_type,
-            "bw_commit_sha": sha,
+            "bw_commit_sha": bw_commit_sha,
             "error": str(e),
         }
 
@@ -608,39 +884,52 @@ async def _ingest_bw_write(
     # column; it has been subsumed and removed.
 
     # _process_single_document can return ``{"error": True, ...}`` for
-    # non-exception failures (extraction empty, embedding failed, etc.).
-    # Treat those as enqueue-for-retry too — the bw write is canonical;
-    # we don't want to silently drop them.
+    # non-exception failures (extraction empty, embedding failed, the
+    # uuo-1 update_document_content "no documents row" caller error, etc.).
+    # Live-write path enqueues those for retry; re-embed path surfaces them.
     if isinstance(result, dict) and result.get("error"):
+        if enqueue_on_failure:
+            logger.warning(
+                "bw_ingest_error_dict: enqueuing for retry "
+                "(slug=%s, ticket=%s, type=%s): %s",
+                slug, ticket_id, source_type, result.get("message"),
+            )
+            await _enqueue_retry(
+                slug=slug,
+                source_type=source_type,
+                ticket_id=ticket_id,
+                comment_n=comment_n,
+                bw_commit_sha=bw_commit_sha,
+                payload={
+                    "kind": "ingest",
+                    "slug": slug,
+                    "source_type": source_type,
+                    "ticket_id": ticket_id,
+                    "comment_n": comment_n,
+                    "text": text,
+                    "metadata": metadata,
+                    "agent_id": agent_id,
+                    "uri": uri,
+                },
+                error=RuntimeError(str(result.get("message"))),
+            )
+            return {
+                "ingest_status": "enqueued_for_retry",
+                "ticket_id": ticket_id,
+                "source_type": source_type,
+                "bw_commit_sha": bw_commit_sha,
+                "error": result.get("message"),
+            }
         logger.warning(
-            "bw_ingest_error_dict: enqueuing for retry "
+            "bw_reembed_error_dict: surfacing to caller "
             "(slug=%s, ticket=%s, type=%s): %s",
             slug, ticket_id, source_type, result.get("message"),
         )
-        await _enqueue_retry(
-            slug=slug,
-            source_type=source_type,
-            ticket_id=ticket_id,
-            comment_n=comment_n,
-            bw_commit_sha=sha,
-            payload={
-                "kind": "ingest",
-                "slug": slug,
-                "source_type": source_type,
-                "ticket_id": ticket_id,
-                "comment_n": comment_n,
-                "text": text,
-                "metadata": metadata,
-                "agent_id": principal.user_id,
-                "uri": uri,
-            },
-            error=RuntimeError(str(result.get("message"))),
-        )
         return {
-            "ingest_status": "enqueued_for_retry",
+            "ingest_status": "error",
             "ticket_id": ticket_id,
             "source_type": source_type,
-            "bw_commit_sha": sha,
+            "bw_commit_sha": bw_commit_sha,
             "error": result.get("message"),
         }
 
@@ -648,7 +937,7 @@ async def _ingest_bw_write(
         "ingest_status": "ok",
         "document_id": result.get("document_id"),
         "source_type": source_type,
-        "bw_commit_sha": sha,
+        "bw_commit_sha": bw_commit_sha,
         # Propagated from _process_single_document so callers
         # (notably the bulk-seed adapter — see SPEC §Bulk seed adapter)
         # can distinguish "POSTed but Ariadne already had identical
@@ -656,6 +945,381 @@ async def _ingest_bw_write(
         # above leave this key absent (the ingest didn't actually run,
         # so dedup semantics are undefined).
         "was_dedup_skip": bool(result.get("was_dedup_skip", False)),
+    }
+
+
+async def _ingest_bw_write(
+    *,
+    slug: str,
+    source_type: str,           # 'body' | 'comment'
+    ticket_id: str,
+    bw_show_snapshot: dict[str, Any],  # the bw show --json dict after the write
+    text: str,
+    comment_n: Optional[int],
+    principal: Principal,
+) -> dict[str, Any]:
+    """Create a new Ariadne document for a fresh bw body or comment.
+
+    Called inside the per-slug lock, AFTER ``_run_bw`` returns success
+    and AFTER ``_backup_push`` runs. The lock is held through this
+    function so ordering between bw and Ariadne is preserved (see
+    design §D2.4 + W1).
+
+    ariadne--uuo.5: this is now a thin wrapper around
+    ``_ingest_bw_snapshot``. It still does the one thing the snapshot core
+    deliberately does NOT — fetch the just-completed mutation's SHA +
+    author from ``bw history`` — then delegates the metadata-build /
+    render / store / retry-handling tail to the shared core with
+    ``force=False`` (a fresh doc has no old chunks) and
+    ``existing_document_id=None`` (fresh INSERT via ``store_document``).
+
+    Per §D6 author semantics: for new-doc ingest, the just-completed
+    mutation's author IS the doc author (the actor who just made the
+    POST /tickets is the body author; the actor who just made the
+    POST /comments is the comment author). For PATCH-meta, the original
+    body author is fetched separately — see ``_patch_bw_body_metadata``.
+
+    Failure mode: any exception while ingesting enqueues the payload for
+    background retry (Postgres queue → file fallback). Returns the
+    ingest result dict on success, or a small ack dict on enqueued retry.
+    """
+    sha, sha_author = await _bw_history_head(slug, ticket_id)
+    return await _ingest_bw_snapshot(
+        slug=slug,
+        source_type=source_type,
+        ticket_id=ticket_id,
+        bw_show_snapshot=bw_show_snapshot,
+        text=text,
+        comment_n=comment_n,
+        agent_id=principal.user_id,
+        bw_commit_sha=sha,
+        bw_author=sha_author,
+        force=False,
+        existing_document_id=None,
+        enqueue_on_failure=True,
+    )
+
+
+# ── In-place re-embed (ariadne--uuo.5) ──────────────────────────────────────
+#
+# The GOOD migration path (design §6). `POST /reembed` walks existing bw
+# tickets on disk and re-ingests each body + comment in place — same
+# `documents.id`, new clean embed-content under the uuo-2 logic — without
+# recreating any bw ticket. `_reembed_tickets` is the orchestrator the
+# route delegates to; `_detect_orphan_tickets` is the §6.7.1
+# detect-and-report pass.
+
+
+def _collection_ticket_ids(slug: str) -> set[str]:
+    """Return the set of distinct ``ticket_id``s present in the slug's docs.
+
+    ariadne--uuo.5 (design §6.7.1). Reads the live (non-deleted)
+    ``documents`` rows for the slug's collection and collects every
+    ``metadata.ticket_id``. The set difference ``this - repo_ticket_ids``
+    is the orphaned-ticket set: docs in pgvector whose source ticket is no
+    longer in the on-disk bw repo, so the ``/reembed`` walk never visits
+    them and they keep stale chunks invisibly.
+
+    Sync function — callers wrap in ``asyncio.to_thread``.
+    """
+    from pipeline.services import _dedup_store
+    from pipeline.dedup import InMemoryDedupStore, PgDedupStore
+
+    if isinstance(_dedup_store, InMemoryDedupStore):
+        ids: set[str] = set()
+        for doc in _dedup_store._documents.values():
+            if doc.collection_id != slug:
+                continue
+            if doc.document_id in _dedup_store._deletions:
+                continue
+            meta = _dedup_store._doc_metadata.get(doc.document_id, {})
+            tid = meta.get("ticket_id")
+            if isinstance(tid, str) and tid:
+                ids.add(tid)
+        return ids
+
+    if isinstance(_dedup_store, PgDedupStore):
+        with _dedup_store._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT d.metadata->>'ticket_id'
+                    FROM documents d
+                    JOIN collections col ON d.collection_id = col.id
+                    WHERE col.name = %(slug)s
+                      AND d.deleted_at IS NULL
+                      AND d.metadata->>'ticket_id' IS NOT NULL
+                    """,
+                    {"slug": slug},
+                )
+                return {row[0] for row in cur.fetchall() if row[0]}
+    return set()
+
+
+def _detect_orphan_tickets(slug: str, repo_ticket_ids: set[str]) -> list[str]:
+    """Return the orphaned-ticket set + emit a structured log line per orphan.
+
+    ariadne--uuo.5 (design §6.7.1). An orphaned ticket is one whose docs
+    live in pgvector but whose ID is absent from the on-disk bw repo
+    enumeration (``repo_ticket_ids``). The ``/reembed`` walk cannot
+    re-embed them (no source ticket to read) — but it must make the
+    invisible visible. This is **detect-and-report, not auto-delete**:
+    auto-deleting on a transient state (a partially-synced repo, a ticket
+    mid-rename) would be destructive; the disposition is an operator call.
+
+    Emits a ``reembed-orphan-ticket`` WARNING per orphan so it surfaces in
+    deployment logs, and returns the sorted orphan list for the route's
+    summary response.
+    """
+    orphans = sorted(_collection_ticket_ids(slug) - repo_ticket_ids)
+    for ticket_id in orphans:
+        logger.warning(
+            "reembed-orphan-ticket",
+            extra={
+                "slug": slug,
+                "ticket_id": ticket_id,
+                "reason": (
+                    "documents row in pgvector but ticket absent from the "
+                    "on-disk bw repo — not re-embedded, not deleted"
+                ),
+            },
+        )
+    return orphans
+
+
+async def _reembed_tickets(
+    *,
+    slug: str,
+    ticket_ids: Optional[list[str]] = None,
+    dry_run: bool = False,
+    agent_id: str,
+) -> dict[str, Any]:
+    """Re-embed bw tickets in place — the ``POST /reembed`` orchestrator.
+
+    ariadne--uuo.5 (design §6.3). Walks the on-disk bw repo for ``slug``,
+    and for each ticket re-ingests the body + every comment via
+    ``_ingest_bw_snapshot(force=True, existing_document_id=...)`` so the
+    new clean (uuo-2) embed-content lands on the *same* ``documents.id``s.
+
+    Per-ticket lock scope (design §6.8, W-3): the shipped per-slug
+    ``_lock_for(slug)`` primitive is acquired/released at the **per-ticket
+    boundary** — held atomically across one ticket's body + entire
+    comments loop, released between tickets. This closes the half-state
+    window (a live write landing between a ticket's body and comment-3
+    re-embed) without holding the lock for the whole multi-hour corpus
+    run.
+
+    Reconciliation branches:
+      • §6.7.1 — docs in pgvector but absent from the bw repo are
+        detected, logged (``reembed-orphan-ticket``), and returned in
+        ``orphaned_tickets``; never auto-deleted.
+      • §6.7.2 — a ticket the walk visits whose slot has no resolved
+        ``documents.id`` is INSERTed fresh (``existing_document_id=None``
+        fall-through), never skipped.
+
+    ``dry_run=True`` enumerates + counts + runs the §6.7.1 orphan
+    detection, and writes nothing (no ``_process_single_document`` call).
+
+    Fingerprint note: ``content_fingerprint`` drifts run-to-run because
+    ``_build_agent_metadata`` stamps a fresh wall-clock ``bw_timestamp``
+    into the salt on every ingest. Idempotency holds anyway — the
+    re-embed path keys by ``documents.id`` (via ``update_document_content``),
+    never by fingerprint, and always passes ``force=True``. (Design §6.4's
+    "fingerprint stable across runs" prose is stale; the stable
+    operational end-state is ids + chunk count + chunk content.)
+
+    Returns the summary dict:
+      ``{reembedded, fresh_inserted, orphaned_tickets, errors, dry_run}``.
+    """
+    # bw_routes import is lazy because bw_routes imports this module;
+    # importing it at the top would create a cycle. bw_repo (stdlib-only,
+    # no cycle) is imported function-locally too, simply to keep both
+    # _reembed_tickets dependencies co-located at the one call site.
+    from pipeline.api.bw_routes import _lock_for, _resolve_repo_path
+    from pipeline.api import bw_repo
+
+    repo_path = _resolve_repo_path(slug)
+
+    # Enumerate the on-disk bw repo. A bounded git timeout keeps a wedged
+    # invocation from pinning the request thread.
+    try:
+        all_repo_ids = await asyncio.to_thread(
+            bw_repo.list_ticket_ids, repo_path, timeout=30.0
+        )
+    except bw_repo.BwRepoConfigError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "bw_repo_enumeration_failed", "message": str(exc)},
+        ) from exc
+    except bw_repo.BwRepoError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "bw_repo_enumeration_failed", "message": str(exc)},
+        ) from exc
+
+    repo_ticket_ids = set(all_repo_ids)
+
+    # Restrict to the caller's subset if supplied (uuo-6's 20-ticket A/B
+    # and per-ticket recovery use this). Unknown IDs are reported as
+    # errors rather than silently dropped.
+    errors: list[dict[str, Any]] = []
+    if ticket_ids is not None:
+        requested = list(dict.fromkeys(ticket_ids))  # de-dup, preserve order
+        walk_ids = [tid for tid in requested if tid in repo_ticket_ids]
+        for tid in requested:
+            if tid not in repo_ticket_ids:
+                errors.append({
+                    "ticket_id": tid,
+                    "error": "ticket_id not present in the on-disk bw repo",
+                })
+    else:
+        walk_ids = list(all_repo_ids)
+
+    # §6.7.1 orphan detection — runs for both dry-run and live.
+    orphaned_tickets = await asyncio.to_thread(
+        _detect_orphan_tickets, slug, repo_ticket_ids
+    )
+
+    reembedded = 0
+    fresh_inserted = 0
+
+    if dry_run:
+        # Enumerate + count + orphan-detect only — write nothing. The
+        # "count" is the number of docs that *would* be touched: body +
+        # comments per visited ticket.
+        would_touch = 0
+        for tid in walk_ids:
+            try:
+                ticket = await asyncio.to_thread(
+                    bw_repo.read_ticket, repo_path, tid, timeout=30.0
+                )
+            except bw_repo.BwRepoError as exc:
+                errors.append({"ticket_id": tid, "error": str(exc)})
+                continue
+            comments = ticket.get("comments") or []
+            would_touch += 1 + len(comments)  # body + each comment
+        return {
+            "dry_run": True,
+            "tickets_enumerated": len(walk_ids),
+            "docs_would_reembed": would_touch,
+            "reembedded": 0,
+            "fresh_inserted": 0,
+            "orphaned_tickets": orphaned_tickets,
+            "errors": errors,
+        }
+
+    # Live re-embed. One ticket at a time, lock held per-ticket.
+    lock = await _lock_for(slug)
+    for tid in walk_ids:
+        try:
+            ticket = await asyncio.to_thread(
+                bw_repo.read_ticket, repo_path, tid, timeout=30.0
+            )
+        except bw_repo.BwRepoError as exc:
+            errors.append({"ticket_id": tid, "error": str(exc)})
+            continue
+
+        # Resolve this ticket's existing per-slot doc IDs ONCE, before the
+        # lock — a read-only query, and the slot map is stable for the
+        # duration of the ticket's re-embed because the lock (acquired
+        # next) blocks any live write to the slug. Resolving inside vs
+        # outside the lock is equivalent for correctness; outside keeps
+        # the lock-held critical section to just the writes.
+        slot_map = await asyncio.to_thread(
+            _resolve_ticket_doc_id_map, slug=slug, ticket_id=tid
+        )
+
+        # SHA for the salt: the existing ticket's current orphan-branch
+        # tip (design §6.2 — "the current state of this ticket, which is
+        # exactly the salt we want"). Author for the body: the original
+        # create-row author, stable across mutations.
+        sha, _sha_author = await _bw_history_head(slug, tid)
+        body_author = await _bw_body_author(slug, tid)
+
+        # ── per-ticket lock: body + entire comments loop held atomically ──
+        async with lock:
+            # Body doc.
+            body_slot: tuple[str, Optional[int]] = ("body", None)
+            body_existing_id = slot_map.get(body_slot)
+            body_result = await _ingest_bw_snapshot(
+                slug=slug,
+                source_type="body",
+                ticket_id=tid,
+                bw_show_snapshot=ticket,
+                text=ticket.get("description") or "",
+                comment_n=None,
+                agent_id=agent_id,
+                bw_commit_sha=sha,
+                bw_author=body_author,
+                force=True,
+                existing_document_id=body_existing_id,
+                enqueue_on_failure=False,
+            )
+            if body_result.get("ingest_status") == "ok":
+                if body_existing_id is not None:
+                    reembedded += 1
+                else:
+                    fresh_inserted += 1
+            else:
+                errors.append({
+                    "ticket_id": tid,
+                    "source_type": "body",
+                    "error": body_result.get("error"),
+                })
+
+            # Comments — comment_n is 1-indexed, matching the live
+            # comment-add path's `len(comments)` rule.
+            comments = ticket.get("comments") or []
+            for idx, comment in enumerate(comments, start=1):
+                if not isinstance(comment, dict):
+                    errors.append({
+                        "ticket_id": tid,
+                        "source_type": "comment",
+                        "comment_n": idx,
+                        "error": "comment entry is not an object",
+                    })
+                    continue
+                comment_slot: tuple[str, Optional[int]] = ("comment", idx)
+                comment_existing_id = slot_map.get(comment_slot)
+                # The comment's own author from the on-disk JSON; falls
+                # back to the body author when bw didn't record one.
+                comment_author = comment.get("author") or body_author
+                comment_result = await _ingest_bw_snapshot(
+                    slug=slug,
+                    source_type="comment",
+                    ticket_id=tid,
+                    bw_show_snapshot=ticket,
+                    text=comment.get("text") or "",
+                    comment_n=idx,
+                    agent_id=agent_id,
+                    bw_commit_sha=sha,
+                    bw_author=comment_author,
+                    force=True,
+                    existing_document_id=comment_existing_id,
+                    enqueue_on_failure=False,
+                )
+                if comment_result.get("ingest_status") == "ok":
+                    if comment_existing_id is not None:
+                        reembedded += 1
+                    else:
+                        fresh_inserted += 1
+                else:
+                    errors.append({
+                        "ticket_id": tid,
+                        "source_type": "comment",
+                        "comment_n": idx,
+                        "error": comment_result.get("error"),
+                    })
+        # ── lock released here — a live write to the slug CAN now land
+        #    before the next ticket's re-embed begins (design §6.8). ──
+
+    return {
+        "dry_run": False,
+        "tickets_enumerated": len(walk_ids),
+        "reembedded": reembedded,
+        "fresh_inserted": fresh_inserted,
+        "orphaned_tickets": orphaned_tickets,
+        "errors": errors,
     }
 
 
@@ -703,6 +1367,14 @@ async def _patch_bw_body_metadata(
         bw_parent=bw_show_snapshot.get("parent") or None,
         bw_labels=list(bw_show_snapshot.get("labels") or []),
         bw_timestamp=_now_utc_isoformat(),
+        # ariadne--uuo.2: keep documents.metadata complete on PATCH-meta —
+        # title/type are part of the full re-emitted surface. The bw
+        # mutation subcommands feeding this path (update / start / label /
+        # defer / reopen / close-without-reason) carry top-level
+        # "title"/"type" in their --json; the close route unwraps its
+        # nested "issue" shape before calling here.
+        ticket_title=bw_show_snapshot.get("title") or None,
+        ticket_type=bw_show_snapshot.get("type") or None,
     )
 
     try:
@@ -1347,7 +2019,15 @@ async def _replay_ingest(payload: dict[str, Any]) -> None:
 
     metadata = payload["metadata"]
     text = payload["text"]
+    # ariadne--uuo.2: the retry-queue payload shape is UNCHANGED — `text`
+    # and `metadata` are already separate keys, and both render functions
+    # are pure. A row enqueued under pre-uuo code still carries the same
+    # `text`+`metadata`; `_render_embed_content` simply finds no
+    # `ticket_title`/`ticket_type` in an old metadata dict and degrades to
+    # the bare body. So in-flight retry rows replay correctly under new
+    # code — design §3.5 migration-safety property.
     payload_bytes = _render_payload(metadata, text)
+    embed_bytes = _render_embed_content(metadata, text)
 
     result = await asyncio.to_thread(
         _process_single_document,
@@ -1366,6 +2046,7 @@ async def _replay_ingest(payload: dict[str, Any]) -> None:
         ingest_config=None,
         action="ingest",
         inline_content=payload_bytes,
+        inline_embed_content=embed_bytes,
     )
     if isinstance(result, dict) and result.get("error"):
         raise RuntimeError(str(result.get("message")))

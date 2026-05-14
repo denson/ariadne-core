@@ -152,6 +152,23 @@ class DedupStore(Protocol):
         collection: str | None = None,
     ) -> dict[str, Any]: ...
 
+    def update_document_content(
+        self,
+        document_id: str,
+        *,
+        content_fingerprint: str,
+        markdown: str,
+        source_file: str,
+        title: str | None,
+        processing_chain: list,
+        processing_time_ms: int,
+        output_tokens_estimate: int,
+        token_savings_ratio: float,
+        tags: list[str],
+        warnings: list[str],
+        agent_metadata: dict[str, Any] | None = None,
+    ) -> bool: ...
+
     def list_documents(
         self,
         collection: str | None = None,
@@ -331,6 +348,91 @@ class PgDedupStore:
                     doc.document_id = str(row[0])
             conn.commit()
         return was_resurrected
+
+    def update_document_content(
+        self,
+        document_id: str,
+        *,
+        content_fingerprint: str,
+        markdown: str,
+        source_file: str,
+        title: str | None,
+        processing_chain: list,
+        processing_time_ms: int,
+        output_tokens_estimate: int,
+        token_savings_ratio: float,
+        tags: list[str],
+        warnings: list[str],
+        agent_metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Rewrite an EXISTING document row's content in place, keyed by id.
+
+        Used by the in-place re-embed path (ariadne--uuo): the
+        ``documents.id`` is known and fixed (resolved via
+        ``_resolve_all_ticket_doc_ids``); the content fingerprint is
+        CHANGING (new clean embed-content under new ingest logic). This is
+        a pure UPDATE — it never inserts. It is deliberately NOT an
+        ``ON CONFLICT (id)`` arm on ``store_document``'s INSERT: Postgres
+        permits one conflict target per statement and
+        ``(collection_id, content_fingerprint)`` already occupies it
+        (design §6.5.2 / W-1).
+
+        Returns ``False`` if ``document_id`` does not exist — a caller
+        error, because re-embed must have resolved a real id; a missing id
+        means the zero-resolved-IDs branch (design §6.7.2) should have been
+        taken instead.
+
+        ``metadata`` is shallow-merged
+        (``COALESCE(metadata, '{}') || agent_metadata``), mirroring
+        ``store_document``'s UPSERT-side merge so re-embed metadata
+        semantics match live ingest. ``deleted_at`` /
+        ``deletion_scheduled_at`` are deliberately left untouched — a
+        re-embed of a soft-deleted doc is out of scope (the ``/reembed``
+        walk only visits live bw tickets).
+        """
+        import json as _json
+        agent_meta_json = (
+            _json.dumps(agent_metadata) if agent_metadata is not None else "{}"
+        )
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE documents
+                    SET content_fingerprint = %(fingerprint)s,
+                        markdown = %(markdown)s,
+                        source_file = %(source_file)s,
+                        title = %(title)s,
+                        processing_chain = %(processing_chain)s::jsonb,
+                        processing_time_ms = %(processing_time_ms)s,
+                        output_tokens_estimate = %(output_tokens_estimate)s,
+                        token_savings_ratio = %(token_savings_ratio)s,
+                        tags = %(tags)s,
+                        warnings = %(warnings)s,
+                        metadata = COALESCE(metadata, '{}'::jsonb)
+                                   || %(agent_metadata)s::jsonb,
+                        updated_at = now()
+                    WHERE id = %(id)s::uuid
+                    RETURNING id
+                    """,
+                    {
+                        "id": document_id,
+                        "fingerprint": content_fingerprint,
+                        "markdown": markdown,
+                        "source_file": source_file,
+                        "title": title,
+                        "processing_chain": _json.dumps(processing_chain),
+                        "processing_time_ms": processing_time_ms,
+                        "output_tokens_estimate": output_tokens_estimate,
+                        "token_savings_ratio": token_savings_ratio,
+                        "tags": tags,
+                        "warnings": warnings or [],
+                        "agent_metadata": agent_meta_json,
+                    },
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return row is not None
 
     def record_interaction(self, interaction: DocumentInteraction) -> None:
         import json as _json
@@ -952,6 +1054,70 @@ class InMemoryDedupStore:
             existing = self._doc_metadata.setdefault(doc.document_id, {})
             existing.update(agent_metadata)
         return was_resurrected
+
+    def update_document_content(
+        self,
+        document_id: str,
+        *,
+        content_fingerprint: str,
+        markdown: str,
+        source_file: str,
+        title: str | None,
+        processing_chain: list,
+        processing_time_ms: int,
+        output_tokens_estimate: int,
+        token_savings_ratio: float,
+        tags: list[str],
+        warnings: list[str],
+        agent_metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """In-memory parity for PgDedupStore.update_document_content.
+
+        Rewrites an existing document's content in place, keyed by id.
+        Because the in-memory store keys ``_documents`` by
+        ``(collection, content_fingerprint)`` and the fingerprint is
+        CHANGING, this re-keys the dict entry under the new fingerprint —
+        mirroring how ``update_document_metadata`` re-keys on a collection
+        move. ``agent_metadata`` is shallow-merged into ``_doc_metadata``,
+        matching the Pg JSONB ``|| `` merge. Returns ``False`` if no
+        document with ``document_id`` exists (caller error — design
+        §6.5.2).
+        """
+        target_doc: StoredDocument | None = None
+        target_key: tuple[str, str] | None = None
+        for key, doc in self._documents.items():
+            if doc.document_id == document_id:
+                target_doc = doc
+                target_key = key
+                break
+        if target_doc is None or target_key is None:
+            return False
+
+        target_doc.content_fingerprint = content_fingerprint
+        target_doc.markdown = markdown
+        target_doc.source_file = source_file
+        target_doc.title = title
+        target_doc.processing_chain = processing_chain
+        target_doc.processing_time_ms = processing_time_ms
+        target_doc.output_tokens_estimate = output_tokens_estimate
+        target_doc.token_savings_ratio = token_savings_ratio
+        target_doc.tags = list(tags)
+        target_doc.warnings = list(warnings or [])
+
+        # Re-key under the new fingerprint — the dict key encodes the
+        # fingerprint and it has changed. Same pattern as the collection
+        # re-key in update_document_metadata.
+        if target_key[1] != content_fingerprint:
+            del self._documents[target_key]
+            self._documents[
+                (target_doc.collection_id, content_fingerprint)
+            ] = target_doc
+
+        if agent_metadata is not None:
+            existing = self._doc_metadata.setdefault(document_id, {})
+            existing.update(agent_metadata)
+
+        return True
 
     def record_interaction(self, interaction: DocumentInteraction) -> None:
         self._interactions.setdefault(interaction.document_id, []).append(interaction)
