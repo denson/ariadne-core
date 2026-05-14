@@ -1120,12 +1120,21 @@ async def _reembed_tickets(
     ``dry_run=True`` enumerates + counts + runs the §6.7.1 orphan
     detection, and writes nothing (no ``_process_single_document`` call).
 
+    Fingerprint note: ``content_fingerprint`` drifts run-to-run because
+    ``_build_agent_metadata`` stamps a fresh wall-clock ``bw_timestamp``
+    into the salt on every ingest. Idempotency holds anyway — the
+    re-embed path keys by ``documents.id`` (via ``update_document_content``),
+    never by fingerprint, and always passes ``force=True``. (Design §6.4's
+    "fingerprint stable across runs" prose is stale; the stable
+    operational end-state is ids + chunk count + chunk content.)
+
     Returns the summary dict:
       ``{reembedded, fresh_inserted, orphaned_tickets, errors, dry_run}``.
     """
-    # Lazy imports — bw_routes imports this module; importing it at the
-    # top would create a cycle. bw_repo has no cycle but is imported here
-    # for symmetry / locality.
+    # bw_routes import is lazy because bw_routes imports this module;
+    # importing it at the top would create a cycle. bw_repo (stdlib-only,
+    # no cycle) is imported function-locally too, simply to keep both
+    # _reembed_tickets dependencies co-located at the one call site.
     from pipeline.api.bw_routes import _lock_for, _resolve_repo_path
     from pipeline.api import bw_repo
 
