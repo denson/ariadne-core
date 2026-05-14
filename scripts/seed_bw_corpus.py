@@ -215,111 +215,79 @@ def _resolve_auth(
 
 
 # ── bw source enumeration (git show, no bw CLI dep) ────────────────────────
+#
+# ariadne--uuo.5: the enumeration logic was hoisted into the shared
+# ``pipeline.api.bw_repo`` module so the GOOD-path ``POST /reembed`` route
+# and this BAD-path bulk-seed script read the bw repo the same way. The
+# wrappers below delegate to that module and re-map its exception types
+# (``BwRepoConfigError`` / ``BwRepoError``) onto this script's contract
+# (``SeedConfigError`` / ``SeedError``) so existing callers are unchanged.
+
+
+def _bootstrap_pipeline_path() -> None:
+    """Inject ``src`` onto sys.path so ``pipeline.api.bw_repo`` is importable.
+
+    Mirrors ``_bootstrap_client_path`` — when the ``pipeline`` package is
+    not installed (the operator runs the script straight from a checkout),
+    ``<repo-root>/src`` is added so the shared enumeration module imports.
+    """
+    here = Path(__file__).resolve().parent
+    candidate = here.parent / "src"
+    if candidate.exists() and str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
 
 
 def _git_show(repo: Path, target: str) -> str:
-    """Return stdout of ``git -C <repo> show <target>``.
+    """Return stdout of ``git -C <repo> show <target>`` (delegates to bw_repo).
 
     Raises ``SeedConfigError`` for missing repo / missing branch / git
     not on PATH; raises ``SeedError`` for unexpected non-zero exits.
     """
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), "show", target],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise SeedConfigError(
-            "git binary not found on PATH"
-        ) from exc
+    _bootstrap_pipeline_path()
+    from pipeline.api import bw_repo
 
-    if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
-        # Distinguish "no such repo / no such branch" (caller fix) from
-        # other git failures (likely environment).
-        if "not a git repository" in stderr.lower() or \
-                "unknown revision" in stderr.lower() or \
-                "bad revision" in stderr.lower():
-            raise SeedConfigError(
-                f"git show {target!r} failed: {stderr}. "
-                f"Check that --bw-repo points at a bw-managed git repo "
-                f"with a populated 'beadwork' branch."
-            )
-        raise SeedError(
-            f"git show {target!r} failed (exit {proc.returncode}): "
-            f"{stderr}"
-        )
-    return proc.stdout
+    try:
+        return bw_repo.git_show(str(repo), target)
+    except bw_repo.BwRepoConfigError as exc:
+        raise SeedConfigError(str(exc)) from exc
+    except bw_repo.BwRepoError as exc:
+        raise SeedError(str(exc)) from exc
 
 
 def _list_source_ticket_ids(repo: Path) -> list[str]:
     """Enumerate ticket IDs in the source repo's beadwork branch.
 
-    ``git show beadwork:issues`` returns a tree listing (one filename
-    per line plus a header), e.g.::
-
-        tree beadwork:issues
-
-        .gitkeep
-        ariadne--16a.json
-        ariadne--1of.json
-        ...
-
-    We parse out the ``*.json`` filenames (dropping ``.gitkeep`` and
-    the header) and strip the ``.json`` suffix to recover ticket IDs.
-    Returns a sorted list so enumeration order is deterministic across
-    machines and between the initial run and a resume.
+    Thin wrapper over ``pipeline.api.bw_repo.list_ticket_ids`` — see that
+    function for the tree-listing parse. Returns a sorted list so
+    enumeration order is deterministic across machines and between an
+    initial run and a resume.
     """
-    raw = _git_show(repo, "beadwork:issues")
-    ids: list[str] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line == "tree beadwork:issues" or line.startswith("tree "):
-            continue
-        if not line.endswith(".json"):
-            continue
-        ticket_id = line[: -len(".json")]
-        if not ticket_id or ticket_id.startswith("."):
-            continue
-        ids.append(ticket_id)
-    ids.sort()
-    return ids
+    _bootstrap_pipeline_path()
+    from pipeline.api import bw_repo
+
+    try:
+        return bw_repo.list_ticket_ids(str(repo))
+    except bw_repo.BwRepoConfigError as exc:
+        raise SeedConfigError(str(exc)) from exc
+    except bw_repo.BwRepoError as exc:
+        raise SeedError(str(exc)) from exc
 
 
 def _read_source_ticket(repo: Path, ticket_id: str) -> dict[str, Any]:
     """Return the parsed JSON for one source ticket.
 
-    Schema (verified against ``bw 0.12.3`` on-disk format)::
-
-        {
-          "id": "<ticket-id>",
-          "title": "<str>",
-          "description": "<str>",
-          "type": "task|bug|feature|...",
-          "priority": 0..4,
-          "status": "open|in_progress|closed|deferred",
-          "labels": ["<str>", ...],
-          "parent": "<ticket-id>" | "",
-          "assignee": "<str>" | "",
-          "blocked_by": [...],
-          "blocks": [...],
-          "created": "<iso8601>",
-          "updated_at": "<iso8601>",
-          "comments": [
-            {"text": "<str>", "timestamp": "<iso8601>", "author": "<str>?"},
-            ...
-          ]
-        }
+    Thin wrapper over ``pipeline.api.bw_repo.read_ticket`` — see that
+    function for the verified ``bw 0.12.3`` on-disk schema.
     """
-    raw = _git_show(repo, f"beadwork:issues/{ticket_id}.json")
+    _bootstrap_pipeline_path()
+    from pipeline.api import bw_repo
+
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise SeedError(
-            f"failed to parse beadwork:issues/{ticket_id}.json: {exc}"
-        ) from exc
+        return bw_repo.read_ticket(str(repo), ticket_id)
+    except bw_repo.BwRepoConfigError as exc:
+        raise SeedConfigError(str(exc)) from exc
+    except bw_repo.BwRepoError as exc:
+        raise SeedError(str(exc)) from exc
 
 
 # ── State file (script-level idempotency anchor) ───────────────────────────

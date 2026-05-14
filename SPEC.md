@@ -361,7 +361,7 @@ All endpoints except `/api/health` and `/.well-known/ariadne-config` require an 
 | `DELETE` | `/api/collections/{name}` | Soft-delete all documents in a collection |
 | `POST` | `/api/collections/{name}/restore` | Restore a soft-deleted collection |
 | `GET` | `/api/stats` | System statistics |
-| — | `/api/bw/projects/{slug}/...` | Beadwork ticket store HTTP surface (22 endpoints — see [bw HTTP surface](#bw-http-surface)) |
+| — | `/api/bw/projects/{slug}/...` | Beadwork ticket store HTTP surface (23 endpoints — see [bw HTTP surface](#bw-http-surface)) |
 
 ---
 
@@ -949,7 +949,7 @@ System statistics.
 | `DELETE` | `/api/bw/projects/{slug}/tickets/{ticket_id}/deps/{target}` | `bw dep remove <id> blocks <target>` |
 | `GET` | `/api/bw/projects/{slug}/tickets/{ticket_id}/history` | `bw history` |
 
-**Endpoint summary — repo-level (6):**
+**Endpoint summary — repo-level (7):**
 
 | Method | Endpoint | bw subcommand |
 |--------|----------|---------------|
@@ -959,6 +959,7 @@ System statistics.
 | `GET` | `/api/bw/projects/{slug}/onboard` | `bw onboard` (no `--json`; output verbatim) |
 | `GET` | `/api/bw/projects/{slug}/prime` | `bw prime` (no `--json`; output verbatim) |
 | `GET` | `/api/bw/projects/{slug}/export` | `bw export` (JSONL output; verbatim) |
+| `POST` | `/api/bw/projects/{slug}/reembed` | In-place re-embed (no bw subcommand — reads the repo, re-ingests docs) |
 
 **Label prefix composition:** bw's CLI uses a `+` prefix to add and `-` prefix to remove labels on a single shared `bw label` subcommand. The HTTP surface splits these into two endpoints (POST to add, DELETE to remove) and composes the prefix **server-side**. A caller that prepends `+` or `-` to the label value gets a **422** `invalid_label` — use the DELETE endpoint to remove.
 
@@ -989,6 +990,8 @@ System statistics.
 **Backup hook (Phase 5, ariadne--8fd.9):** every successful mutating call invokes `_backup_push(slug)`. The hook resolves `BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}` (the slug uppercased with dashes mapped to underscores — env-var names cannot contain dashes); if the env var is **unset**, the hook is a silent no-op (slug has no configured backup, which is a legitimate operator choice for low-value repos). If set, the hook runs `git -C {repo_path} push {remote} beadwork:beadwork --force-with-lease` with a separate `BW_BACKUP_TIMEOUT_SECONDS` (default 60s, longer than the per-bw-call timeout because the push does network I/O). The hook is NOT invoked when the bw write itself fails (exit != 0); pushing a failed write would push nothing useful and could mask a real error. **Infallibility contract:** the hook MUST NOT raise. Any failure (non-zero exit, timeout, unexpected exception) logs a WARNING, increments the per-slug `_backup_skip_count`, and returns normally so the request still completes 2xx. The `_backup_skip_count` is cumulative-lifetime (Phase 5 sub-task: replace with a time-windowed Prometheus gauge). Token-bearing remote URLs (`https://x-access-token:<TOKEN>@host/...`) are masked in log lines (the pre-`@` portion becomes `***`). `--force-with-lease` is used rather than `--force` because bw is single-writer per repo in v1 (per-slug lock + single-instance deploy), so the local ref is always ahead-of-or-equal to the remote — but `--force-with-lease` refuses the push if the remote moved unexpectedly, catching the case where two operators accidentally point at the same backup remote (or where a future multi-instance deploy raced two writers).
 
 **Project initialization guard:** every bw route resolves the repo path via `_resolve_repo_path(slug)`, which verifies that `{BW_REPOS_ROOT}/{slug}/.git` exists. If missing, the route returns **404** `bw_project_uninitialized` with an operator-actionable message pointing at `bw init`. The check is intentionally NOT an auto-init (provisioning a beadwork repo is an explicit operator action, not a side effect of the first 404). The check can be disabled at module level (`BW_REQUIRE_INITIALIZED_REPO = False`) for route-level tests that mock `subprocess.run` and don't materialize a real `.git` tree.
+
+**In-place re-embed — `POST /api/bw/projects/{slug}/reembed` (ariadne--uuo.5):** the GOOD migration path. Walks the on-disk bw repo for `slug` and re-ingests every ticket's body + comments **in place** — same `documents.id`, new clean embed-content under the current ingest logic — without recreating any bw ticket. This is distinct from `scripts/seed_bw_corpus.py` (the BAD path, which recreates tickets via `POST /tickets`). It is the reusable operational capability for every future ingest-logic change. Request body (both fields optional): `{"ticket_ids": [...], "dry_run": false}` — `ticket_ids` restricts the walk to a subset (unknown IDs are reported in `errors`, not silently dropped); `dry_run=true` enumerates + counts + runs the orphaned-ticket detection and writes nothing. Mechanics: per ticket, resolve the existing `documents.id` for each body/comment slot via the `(source_type, comment_n)` keys in `documents.metadata`; re-ingest each via the snapshot-driven ingest core with `force=True` (deletes the old chunks before inserting the new ones) and `existing_document_id=<resolved id>` (routes the documents-row write through `update_document_content`, an UPDATE-by-id). A slot with no resolved id is INSERTed fresh (`existing_document_id=None`), never skipped. The per-slug write lock (`_lock_for`) is acquired/released at the **per-ticket boundary** — held atomically across one ticket's body + entire comments loop, released between tickets — so a live bw write cannot interleave within a single ticket's re-embed but can proceed between tickets. **Reconciliation:** a `documents` row whose `ticket_id` is absent from the on-disk bw repo is reported in the response's `orphaned_tickets` and emits a `reembed-orphan-ticket` WARNING log line — it is **never auto-deleted** (disposition is an operator call). Summary response: `{reembedded, fresh_inserted, orphaned_tickets, errors, dry_run, tickets_enumerated}` (plus `docs_would_reembed` on a dry run). Returns **404** `bw_repo_enumeration_failed` if the on-disk repo / `beadwork` branch is missing, **500** for an unexpected git failure.
 
 **Deferred surface — explicitly NOT in v1:**
 

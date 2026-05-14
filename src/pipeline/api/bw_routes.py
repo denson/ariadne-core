@@ -662,6 +662,31 @@ class DepAdd(BaseModel):
     _strip_nul = field_validator("blocks")(_reject_null_byte)
 
 
+class ReembedRequest(BaseModel):
+    """Body for ``POST /reembed`` (ariadne--uuo.5). Both fields optional.
+
+    ``ticket_ids`` — restrict the re-embed to these tickets (uuo-6's
+    20-ticket A/B and per-ticket recovery use this). Omitted / ``None`` →
+    walk every ticket in the on-disk bw repo.
+
+    ``dry_run`` — enumerate + count + run the orphaned-ticket detection,
+    write nothing. Lets the operator see scope (including the orphaned
+    set) before committing the embedding spend.
+    """
+
+    ticket_ids: Optional[list[str]] = None
+    dry_run: bool = False
+
+    @field_validator("ticket_ids")
+    @classmethod
+    def _strip_nul_ids(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return v
+        for item in v:
+            _reject_null_byte(item)
+        return v
+
+
 # ── Router ─────────────────────────────────────────────────────────────────
 #
 # Prefix is /bw/projects/{slug}; the app mounts the existing /api router
@@ -1408,6 +1433,57 @@ async def export_jsonl(
     if status is not None:
         args += ["--status", status]
     return await _run_bw(slug, *args, json_output=False)
+
+
+# ── In-place re-embed (ariadne--uuo.5) ─────────────────────────────────────
+
+
+@router.post("/reembed")
+async def reembed_project(
+    slug: str = Path(...),
+    req: ReembedRequest = Body(default_factory=ReembedRequest),
+    principal: Principal = Depends(require_user),
+):
+    """Re-embed bw tickets in place — the GOOD migration path (uuo-5).
+
+    ariadne--uuo.5 (design §6). Walks the on-disk bw repo for ``slug``
+    and, for every ticket (or the ``ticket_ids`` subset), re-ingests the
+    body + every comment via the snapshot-driven ingest core with
+    ``force=True`` and the resolved existing ``documents.id`` per slot —
+    so the new clean (uuo-2) embed-content lands on the *same* document
+    rows, the old polluted chunks are deleted, and the bw repo itself is
+    only read, never written.
+
+    This does NOT recreate bw tickets (that is ``seed_bw_corpus.py`` — the
+    BAD path). It is the reusable operational capability for every future
+    ingest-logic change, and the migration path for the existing
+    ~1020-doc ``aresense`` corpus (uuo-6 runs that migration against this
+    route).
+
+    Body (both fields optional — see ``ReembedRequest``):
+      ``{"ticket_ids": [...], "dry_run": false}``
+
+    Per-ticket lock scope: the orchestrator acquires/releases the shipped
+    per-slug ``_lock_for(slug)`` at the per-ticket boundary — held
+    atomically across one ticket's body + entire comments loop, released
+    between tickets (design §6.8).
+
+    Summary response:
+      ``{reembedded, fresh_inserted, orphaned_tickets, errors, dry_run,
+         tickets_enumerated}`` — plus ``docs_would_reembed`` on a dry run.
+    """
+    from pipeline.api.bw_ingest import _reembed_tickets
+
+    _validate_slug(slug)
+    # _resolve_repo_path (called inside _reembed_tickets) enforces the
+    # initialized-repo guard and raises 404 for an uninitialized slug,
+    # consistent with every other bw route.
+    return await _reembed_tickets(
+        slug=slug,
+        ticket_ids=req.ticket_ids,
+        dry_run=req.dry_run,
+        agent_id=principal.user_id,
+    )
 
 
 # ── Deferred surface (out of v1 scope) ─────────────────────────────────────
