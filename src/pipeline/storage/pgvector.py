@@ -97,9 +97,12 @@ class PgVectorStore:
             "top_k": top_k,
         }
 
-        # Exclude soft-deleted documents by default — requires a join to
-        # the documents table.
-        need_doc_join = not include_deleted
+        # The ``documents`` join is now unconditional: search results
+        # always carry ``d.metadata`` (the document's structured metadata
+        # object) regardless of ``include_deleted`` or which filters are
+        # active. It is also still needed for the ``d.deleted_at`` predicate
+        # below and for the ``source_file``/``file_type``/``tags`` filters.
+        need_doc_join = True
         if not include_deleted:
             where_clauses.append("d.deleted_at IS NULL")
         if filters:
@@ -187,7 +190,8 @@ class PgVectorStore:
                 c.text, c.section, c.page_start, c.page_end,
                 c.token_count, c.embedding_model, c.metadata,
                 col.name AS collection_name,
-                1 - (c.embedding <=> %(embedding)s::vector) AS score
+                1 - (c.embedding <=> %(embedding)s::vector) AS score,
+                d.metadata AS document_metadata
             FROM chunks c
             JOIN collections col ON c.collection_id = col.id
             {doc_join}
@@ -220,6 +224,7 @@ class PgVectorStore:
                             score=float(row[11]),
                             document_id=str(row[1]),
                             collection_id=row[10],
+                            document_metadata=row[12] or {},
                         )
                     )
         return results

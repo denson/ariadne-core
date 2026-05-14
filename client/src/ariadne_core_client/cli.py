@@ -327,6 +327,23 @@ def _format_search(resp: SearchResponse) -> str:
             meta_bits.append(f"page={r.page}")
         meta_bits.append(f"tokens={r.token_count}")
         lines.append("    " + "  ".join(meta_bits))
+        # Metadata summary line — a fixed, curated subset of the owning
+        # document's structured metadata. bw-ingested docs carry these;
+        # non-bw docs (e.g. a PDF corpus) have metadata == {} so the
+        # line is omitted entirely. Each field is also omitted if absent.
+        doc_meta = r.metadata or {}
+        summary_bits = []
+        bw_status = doc_meta.get("bw_status")
+        if bw_status:
+            summary_bits.append(f"status={bw_status}")
+        ticket_id = doc_meta.get("ticket_id")
+        if ticket_id:
+            summary_bits.append(f"ticket={ticket_id}")
+        assignee = doc_meta.get("assignee")
+        if assignee:
+            summary_bits.append(f"assignee={assignee}")
+        if summary_bits:
+            lines.append("    " + "  ".join(summary_bits))
         lines.append(f"    {preview}")
         lines.append("")
     return "\n".join(lines).rstrip()

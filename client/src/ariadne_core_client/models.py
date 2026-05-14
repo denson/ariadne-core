@@ -97,6 +97,12 @@ class SearchResult:
     relevance_score: float = 0.0
     embedding_model: str | None = None
     interactions: list[Interaction] = field(default_factory=list)
+    # The owning document's structured metadata (documents.metadata).
+    # The API guarantees this is always present and always a dict —
+    # `{}` for documents with no structured metadata (e.g. a PDF
+    # corpus), never None/missing. Typed `dict` (not `dict | None`)
+    # to match that contract.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __repr__(self) -> str:
         text_preview = self.text[:80] + "..." if len(self.text) > 80 else self.text

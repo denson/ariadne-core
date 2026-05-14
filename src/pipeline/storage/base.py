@@ -24,6 +24,13 @@ class SearchResult:
     score: float
     document_id: str
     collection_id: str
+    # The owning ``documents.metadata`` JSONB object (the document's
+    # structured metadata, e.g. ``ticket_id``/``bw_status``/``source_type``
+    # for bw-ingested docs). Distinct from ``chunk.metadata``, which is the
+    # chunk's own metadata. PgVectorStore populates this in-SQL; the
+    # in-memory store leaves it ``None`` and the search route fills it from
+    # the dedup store (see api/routes.py search handler).
+    document_metadata: dict[str, Any] | None = None
 
 
 class VectorStore(Protocol):
