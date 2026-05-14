@@ -97,12 +97,12 @@ class PgVectorStore:
             "top_k": top_k,
         }
 
-        # The ``documents`` join is now unconditional: search results
-        # always carry ``d.metadata`` (the document's structured metadata
-        # object) regardless of ``include_deleted`` or which filters are
-        # active. It is also still needed for the ``d.deleted_at`` predicate
-        # below and for the ``source_file``/``file_type``/``tags`` filters.
-        need_doc_join = True
+        # The ``documents d`` join is unconditional and inlined into the
+        # query below: search results always carry ``d.metadata`` (the
+        # document's structured metadata object) regardless of
+        # ``include_deleted`` or which filters are active. It is also
+        # needed for the ``d.deleted_at`` predicate below and for the
+        # ``source_file``/``file_type``/``tags`` filters.
         if not include_deleted:
             where_clauses.append("d.deleted_at IS NULL")
         if filters:
@@ -121,15 +121,12 @@ class PgVectorStore:
                     "d.source_file ILIKE '%%' || %(filter_source)s || '%%'"
                 )
                 params["filter_source"] = filters["source_file"]
-                need_doc_join = True
             if "file_type" in filters:
                 where_clauses.append("d.file_type = %(filter_file_type)s")
                 params["filter_file_type"] = filters["file_type"].lstrip(".")
-                need_doc_join = True
             if "tags" in filters:
                 where_clauses.append("d.tags && %(filter_tags)s::text[]")
                 params["filter_tags"] = filters["tags"]
-                need_doc_join = True
             # ``metadata`` and ``metadata_exists`` resolve against the
             # *latest* ``document_interactions.agent_metadata`` per
             # document — matching the SPEC's "per-interaction"
@@ -148,7 +145,6 @@ class PgVectorStore:
             # composition), matching the top-level AND semantics other
             # filter keys already use.
             if "metadata" in filters or "metadata_exists" in filters:
-                need_doc_join = True
                 # ``ORDER BY created_at DESC, id DESC`` gives a
                 # deterministic latest-row pick when two interactions
                 # share the same microsecond — without the ``id`` tie-
@@ -182,8 +178,6 @@ class PgVectorStore:
         if where_clauses:
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
-        doc_join = "JOIN documents d ON c.document_id = d.id" if need_doc_join else ""
-
         query = f"""
             SELECT
                 c.id, c.document_id, c.chunk_index,
@@ -194,7 +188,7 @@ class PgVectorStore:
                 d.metadata AS document_metadata
             FROM chunks c
             JOIN collections col ON c.collection_id = col.id
-            {doc_join}
+            JOIN documents d ON c.document_id = d.id
             {where_sql}
             ORDER BY c.embedding <=> %(embedding)s::vector
             LIMIT %(top_k)s
@@ -224,7 +218,12 @@ class PgVectorStore:
                             score=float(row[11]),
                             document_id=str(row[1]),
                             collection_id=row[10],
-                            document_metadata=row[12] or {},
+                            # ``document_metadata`` is left as the raw
+                            # ``d.metadata`` value (``None`` when the column
+                            # is SQL NULL). The search route is the single
+                            # canonical coalesce point — it applies ``or {}``
+                            # when building the response dict (ariadne--buc).
+                            document_metadata=row[12],
                         )
                     )
         return results
