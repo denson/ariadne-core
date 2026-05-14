@@ -311,6 +311,8 @@ class AriadneClient:
             for item in data.get("interactions", []) or []
             if isinstance(item, dict)
         ]
+        raw_metadata = data.get("metadata")
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
         return SearchResult(
             chunk_id=data.get("chunk_id", "") or "",
             document_id=data.get("document_id", "") or "",
@@ -322,6 +324,7 @@ class AriadneClient:
             relevance_score=float(data.get("relevance_score") or 0.0),
             embedding_model=data.get("embedding_model"),
             interactions=interactions,
+            metadata=metadata,
         )
 
     @staticmethod
