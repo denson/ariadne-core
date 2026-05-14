@@ -125,3 +125,74 @@ class TestInMemoryDedupStore:
 
     def test_no_interactions(self):
         assert self.store.get_interactions("nonexistent") == []
+
+    def test_update_document_content_updates_in_place(self):
+        """ariadne--uuo.1 acceptance (3): update_document_content on an
+        existing row with old fingerprint F_old UPDATEs the row in place —
+        same document_id, new fingerprint, new markdown, shallow-merged
+        metadata — and creates no second row."""
+        # Seed a row with F_old and some initial metadata.
+        self.store.store_document(
+            self.doc, agent_metadata={"ticket_id": "uuo", "keep_me": "yes"}
+        )
+        assert len(self.store._documents) == 1
+
+        result = self.store.update_document_content(
+            "doc-1",
+            content_fingerprint="def456",  # F_new — different from F_old
+            markdown="# Updated body",
+            source_file="test.txt",
+            title="Updated",
+            processing_chain=[{"step": "extraction", "tool": "markitdown"}],
+            processing_time_ms=99,
+            output_tokens_estimate=20,
+            token_savings_ratio=0.5,
+            tags=["re-embedded"],
+            warnings=[],
+            agent_metadata={"keep_me": "overwritten", "new_key": "added"},
+        )
+        assert result is True
+
+        # No second row — the UPDATE re-keyed in place, not inserted.
+        assert len(self.store._documents) == 1, self.store._documents
+
+        # Old fingerprint no longer resolves; new one does — same doc id.
+        assert self.store.find_by_fingerprint("default", "abc123") is None
+        found = self.store.find_by_fingerprint("default", "def456")
+        assert found is not None
+        assert found.document_id == "doc-1"
+        assert found.content_fingerprint == "def456"
+        assert found.markdown == "# Updated body"
+        assert found.title == "Updated"
+        assert found.tags == ["re-embedded"]
+
+        # Metadata shallow-merged: unmentioned key preserved, named key
+        # overwritten, new key added — mirrors store_document's || merge.
+        meta = self.store._doc_metadata["doc-1"]
+        assert meta == {
+            "ticket_id": "uuo",
+            "keep_me": "overwritten",
+            "new_key": "added",
+        }
+
+    def test_update_document_content_missing_id_returns_false(self):
+        """ariadne--uuo.1: a missing document_id is a caller error —
+        update_document_content returns False and inserts nothing (design
+        §6.5.2: re-embed must resolve a real id; a missing id means the
+        zero-resolved-IDs INSERT-fresh branch should have run instead)."""
+        result = self.store.update_document_content(
+            "no-such-doc",
+            content_fingerprint="def456",
+            markdown="# body",
+            source_file="x.txt",
+            title=None,
+            processing_chain=[],
+            processing_time_ms=1,
+            output_tokens_estimate=1,
+            token_savings_ratio=0.0,
+            tags=[],
+            warnings=[],
+            agent_metadata=None,
+        )
+        assert result is False
+        assert self.store._documents == {}
