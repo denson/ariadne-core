@@ -711,13 +711,16 @@ async def create_ticket(
         await _backup_push(slug)
         ticket_id = result.get("id")
         if ticket_id:
-            # Body = title + (description or empty). bw stores the
-            # description as the body; the title goes into a separate
-            # field. We include both in the Ariadne payload so search
-            # against the title text returns the body doc.
-            text = req.title
-            if req.description:
-                text = f"{req.title}\n\n{req.description}"
+            # ariadne--uuo.2 (design §4): the body doc's text is just the
+            # description. The title is no longer string-concatenated into
+            # the body — it now reaches both the fingerprint salt (via
+            # _build_agent_metadata.ticket_title → _render_payload) and the
+            # embedded chunk text (via _render_embed_content's `# <title>`
+            # header). This makes body and comment ingest symmetric: both
+            # get the title once, via the header. A description-less
+            # ticket yields an empty `text`, but the embed content still
+            # carries the header, so extraction has non-empty input.
+            text = req.description or ""
             ingest = await _ingest_bw_write(
                 slug=slug,
                 source_type="body",
@@ -870,12 +873,15 @@ async def update_ticket(
             deleted = await _soft_delete_body_docs(
                 slug=slug, ticket_id=ticket_id,
             )
-            # New body text = (post-update) title + (post-update or
-            # prior) description. Both come from the bw result, which
-            # reflects the post-update ticket state.
-            title = result.get("title") or ""
-            description = result.get("description") or ""
-            text = title if not description else f"{title}\n\n{description}"
+            # ariadne--uuo.2 (design §4): body text is the post-update
+            # description only — same as the create path. The title is no
+            # longer concatenated into the body; it reaches the fingerprint
+            # salt and the embedded chunk text via metadata + the
+            # _render_embed_content header. This keeps create-path and
+            # patch-path body docs symmetric (both: `# <title>` header
+            # once, then description) instead of patched bodies carrying a
+            # double title.
+            text = result.get("description") or ""
             ingest = await _ingest_bw_write(
                 slug=slug,
                 source_type="body",
@@ -996,22 +1002,38 @@ async def close_ticket(
     async with lock:
         result = await _run_bw(slug, *args, json_output=True)
         await _backup_push(slug)
+        # ariadne--uuo.2 (r4): `bw close --json` nests the issue snapshot
+        # under "issue" — its top-level shape is
+        # ``{"issue": {...}, "unblocked": [...]}`` — UNLIKE create / comment
+        # / update, whose --json IS the issue dict directly. The ingest
+        # helpers expect a `bw show`-shaped snapshot (top-level `title` /
+        # `type` / `status` / `labels` / `comments` / ...), so unwrap here.
+        # `result` itself stays the load-bearing API response payload.
+        # Without this unwrap the close path's snapshot metadata —
+        # status / assignee / labels / title / type / comment_n — was all
+        # silently None/empty; this is a pre-existing shipped bug surfaced
+        # by the uuo-2 r4 verification task, fixed in the same seam.
+        snapshot = result.get("issue") if isinstance(result, dict) else None
+        if not isinstance(snapshot, dict):
+            # Defensive: a bw version that does NOT nest still works —
+            # fall back to treating `result` as the snapshot directly.
+            snapshot = result if isinstance(result, dict) else {}
         patch = await _patch_bw_body_metadata(
             slug=slug, ticket_id=ticket_id,
-            bw_show_snapshot=result, principal=principal,
+            bw_show_snapshot=snapshot, principal=principal,
         )
         comment_ingest = None
         if req.reason is not None:
             # The close-reason becomes a real bw comment — its
             # ``comment_n`` is the length of the resulting comments
             # array (same shape rule as the comment-add path uses).
-            comments = result.get("comments") if isinstance(result, dict) else None
+            comments = snapshot.get("comments")
             comment_n = len(comments) if comments else None
             comment_ingest = await _ingest_bw_write(
                 slug=slug,
                 source_type="comment",
                 ticket_id=ticket_id,
-                bw_show_snapshot=result,
+                bw_show_snapshot=snapshot,
                 text=req.reason,
                 comment_n=comment_n,
                 principal=principal,

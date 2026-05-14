@@ -292,3 +292,24 @@ def test_existing_document_id_overrides_chunk_document_id(monkeypatch):
     rekeyed = next(iter(stub_dedup._documents.values()))
     assert rekeyed.document_id == existing_id
     assert rekeyed.content_fingerprint != "stale-fingerprint-000"
+
+
+# --- ariadne--uuo.2: inline_embed_content precondition guard (CATO uuo-1 c2) ---
+
+
+def test_inline_embed_content_without_inline_content_raises(monkeypatch):
+    """ariadne--uuo.2 (CATO uuo-1 review concern c2): supplying
+    `inline_embed_content` WITHOUT `inline_content` is an internal-caller
+    contract violation -- the embed input is meaningless without the
+    dedup-salt input -- and must raise loudly rather than silently letting
+    `raw_bytes` fall through to the URI read path. The contract is
+    bw-bridge-only; this makes it load-bearing."""
+    import pytest
+
+    _fresh_stores(monkeypatch)
+    kwargs = _common_kwargs("bw://uuo-2/body", "test_uuo2_guard")
+    # inline_content deliberately omitted; only inline_embed_content set.
+    kwargs["inline_embed_content"] = b"clean body, no salt to pair with"
+
+    with pytest.raises(ValueError, match="inline_embed_content requires inline_content"):
+        services._process_single_document(**kwargs)

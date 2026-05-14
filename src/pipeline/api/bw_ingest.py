@@ -135,6 +135,68 @@ def _render_payload(metadata: dict[str, Any], text: str) -> bytes:
     return "\n".join(body_lines).encode("utf-8")
 
 
+# Label kinds whose value carries enough standalone semantic signal to be
+# worth folding into the embedded text (Anthropic "Contextual Retrieval").
+# Everything NOT in this allowlist — bare labels, unknown kinds, mutable
+# operational labels — still reaches ``documents.metadata.labels`` /
+# ``labels_flat`` for structured filtering, but does NOT pollute the chunk
+# text. "Meaningful" is a reviewable judgment call, so it is an explicit
+# frozenset rather than a heuristic (design §3.4). Widening it is a
+# one-line change followed by a re-embed (uuo-5) — cheap by construction.
+_EMBED_LABEL_ALLOWLIST: frozenset[str] = frozenset({
+    "hypothesis", "manifest_type", "customer", "topic", "area",
+})
+
+
+def _render_embed_content(metadata: dict[str, Any], text: str) -> bytes:
+    """Render the clean embed/extract content: contextual header + body.
+
+    The decoupled sibling of ``_render_payload`` (design §3.2). Where
+    ``_render_payload`` produces the dedup-salt input (full sorted-YAML
+    frontmatter + body — the bytes the fingerprint is SHA-256'd over),
+    this produces the bytes that are actually extracted, chunked,
+    embedded, and stored as chunk text.
+
+    The two differ deliberately:
+
+      • NO YAML frontmatter — no ``--- ... ---`` block. The per-occurrence
+        salt keys (``ticket_id`` / ``comment_n`` / ``bw_commit_sha`` /
+        ``timestamp`` / ``assignee`` / graph edges) are pollution in the
+        embed space: every chunk vector would be partly "about" them and
+        every chunk would share that prefix. They stay in
+        ``documents.metadata`` for structured filtering; they never enter
+        the embedded text.
+      • A SELECTIVE contextual header — the ticket title (``# <title>``),
+        the ticket type, and only those kinded labels in
+        ``_EMBED_LABEL_ALLOWLIST``. Body docs historically got the title
+        via the create path's text-concat; comment docs got nothing — a
+        bare comment had no anchor to its parent ticket. The header gives
+        body and comment docs a symmetric, meaningful anchor.
+
+    ``ticket_title`` / ``ticket_type`` are populated by
+    ``_build_agent_metadata`` (sourced from the ``bw show`` snapshot —
+    design §3.3). When they are absent (graceful degradation — a thinner
+    snapshot, an older retry-queue payload), the header simply shrinks or
+    disappears and this falls through to the bare body bytes. The body
+    ``text`` is never normalized — same byte-fidelity contract as
+    ``_render_payload``.
+    """
+    header_lines: list[str] = []
+    title = metadata.get("ticket_title")
+    ttype = metadata.get("ticket_type")
+    if title:
+        header_lines.append(f"# {title}")
+    if ttype:
+        header_lines.append(f"Ticket type: {ttype}")
+    # Only allowlisted kinded labels — explicit, reviewable enrichment.
+    for kind, value in (metadata.get("labels") or {}).items():
+        if kind in _EMBED_LABEL_ALLOWLIST:
+            header_lines.append(f"{kind}: {value}")
+    if header_lines:
+        return ("\n".join(header_lines) + "\n\n" + text).encode("utf-8")
+    return text.encode("utf-8")
+
+
 def _parse_label(raw: str) -> tuple[str | None, str]:
     """Split a bw label into (kind, value) using the first ``:``.
 
@@ -164,6 +226,8 @@ def _build_agent_metadata(
     bw_parent: Optional[str],
     bw_labels: list[str],
     bw_timestamp: str,
+    ticket_title: Optional[str] = None,
+    ticket_type: Optional[str] = None,
 ) -> dict[str, Any]:
     """Compose the full ``agent_metadata`` dict per design §D1.3.
 
@@ -171,6 +235,16 @@ def _build_agent_metadata(
     Phase 1 filter resolves against the latest interaction's metadata,
     so a partial payload would silently drop ``ticket_id`` / ``project``
     / etc. from the search-filter surface. See §1 fact 1 in the design.
+
+    ``ticket_title`` / ``ticket_type`` (ariadne--uuo.2): the parent
+    ticket's title and type, sourced from the ``bw show`` snapshot at the
+    call site. They serve two purposes — they join the
+    ``documents.metadata`` JSONB surface (free, they flow through
+    ``agent_metadata``), AND they feed ``_render_embed_content``'s
+    contextual header (design §3.3). Both default to ``None``: callers
+    that cannot cheaply source them (or whose snapshot is thinner than
+    ``bw show --json``) simply omit them, and the embed-content header
+    degrades gracefully to a bare body.
     """
     labels_dict: dict[str, str] = {}
     labels_flat: list[str] = []
@@ -198,6 +272,8 @@ def _build_agent_metadata(
         "assignee": bw_assignee,
         "labels": labels_dict,
         "labels_flat": labels_flat,
+        "ticket_title": ticket_title,
+        "ticket_type": ticket_type,
     }
 
 
@@ -530,8 +606,22 @@ async def _ingest_bw_write(
         bw_parent=bw_show_snapshot.get("parent") or None,
         bw_labels=list(bw_show_snapshot.get("labels") or []),
         bw_timestamp=_now_utc_isoformat(),
+        # ariadne--uuo.2: title/type feed both documents.metadata and the
+        # _render_embed_content contextual header. All four bw mutation
+        # subcommands whose --json becomes this snapshot — create / comment
+        # / close / patch(update) — carry top-level "title"/"type" EXCEPT
+        # `close`, whose --json nests the issue under "issue"; the close
+        # route unwraps it before calling this helper (see bw_routes.py).
+        ticket_title=bw_show_snapshot.get("title") or None,
+        ticket_type=bw_show_snapshot.get("type") or None,
     )
+    # ariadne--uuo.2: two decoupled artifacts from one metadata dict.
+    #   payload_bytes  — the dedup-salt input; SHA-256'd for the fingerprint.
+    #                    UNCHANGED function: this is the D1.4 property source.
+    #   embed_bytes    — the clean contextual-header + body input; extracted,
+    #                    chunked, embedded, stored as chunk text. NEVER hashed.
     payload_bytes = _render_payload(metadata, text)
+    embed_bytes = _render_embed_content(metadata, text)
 
     # Synthetic URI — purely informational (displayed as source_file in
     # observability surfaces, never parsed for I/O). The ``.md`` lives in
@@ -567,6 +657,7 @@ async def _ingest_bw_write(
             ingest_config=None,
             action="ingest",
             inline_content=payload_bytes,
+            inline_embed_content=embed_bytes,
         )
     except Exception as e:
         # Ingest raised. Enqueue for retry; the bw write already succeeded.
@@ -703,6 +794,14 @@ async def _patch_bw_body_metadata(
         bw_parent=bw_show_snapshot.get("parent") or None,
         bw_labels=list(bw_show_snapshot.get("labels") or []),
         bw_timestamp=_now_utc_isoformat(),
+        # ariadne--uuo.2: keep documents.metadata complete on PATCH-meta —
+        # title/type are part of the full re-emitted surface. The bw
+        # mutation subcommands feeding this path (update / start / label /
+        # defer / reopen / close-without-reason) carry top-level
+        # "title"/"type" in their --json; the close route unwraps its
+        # nested "issue" shape before calling here.
+        ticket_title=bw_show_snapshot.get("title") or None,
+        ticket_type=bw_show_snapshot.get("type") or None,
     )
 
     try:
@@ -1347,7 +1446,15 @@ async def _replay_ingest(payload: dict[str, Any]) -> None:
 
     metadata = payload["metadata"]
     text = payload["text"]
+    # ariadne--uuo.2: the retry-queue payload shape is UNCHANGED — `text`
+    # and `metadata` are already separate keys, and both render functions
+    # are pure. A row enqueued under pre-uuo code still carries the same
+    # `text`+`metadata`; `_render_embed_content` simply finds no
+    # `ticket_title`/`ticket_type` in an old metadata dict and degrades to
+    # the bare body. So in-flight retry rows replay correctly under new
+    # code — design §3.5 migration-safety property.
     payload_bytes = _render_payload(metadata, text)
+    embed_bytes = _render_embed_content(metadata, text)
 
     result = await asyncio.to_thread(
         _process_single_document,
@@ -1366,6 +1473,7 @@ async def _replay_ingest(payload: dict[str, Any]) -> None:
         ingest_config=None,
         action="ingest",
         inline_content=payload_bytes,
+        inline_embed_content=embed_bytes,
     )
     if isinstance(result, dict) and result.get("error"):
         raise RuntimeError(str(result.get("message")))

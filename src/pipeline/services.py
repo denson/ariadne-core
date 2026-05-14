@@ -649,6 +649,20 @@ def _process_single_document(
     # callers; the variable ``raw_bytes`` is the single hand-off the URI
     # path produces, and the inline branch sets it directly.
     raw_bytes: bytes | None = None
+    # ariadne--uuo.2 (CATO uuo-1 review, concern c2): make the
+    # ``inline_embed_content`` contract load-bearing. ``inline_embed_content``
+    # is a bw-bridge-only kwarg that decouples the embed input from the
+    # dedup-salt input — it is meaningless without ``inline_content`` (the
+    # salt) also being set, because ``raw_bytes`` (the fingerprint input)
+    # would otherwise come from the URI read path and silently diverge from
+    # the caller's intent. This is an internal-caller programming error, not
+    # operator input, so it raises rather than returning an ``{"error": ...}``
+    # dict.
+    if inline_embed_content is not None and inline_content is None:
+        raise ValueError(
+            "inline_embed_content requires inline_content to also be set "
+            "(bw-bridge-only contract — ariadne--uuo)"
+        )
     if inline_content is not None:
         raw_bytes = inline_content
 
