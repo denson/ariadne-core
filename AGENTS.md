@@ -82,7 +82,7 @@ If the user's domain is borderline (e.g., a knowledge worker with some handoff p
    ariadne stats     # confirms server reachable
    ```
 
-5. **Try the demo** (~5-7m hands-on): invoke `factory-demo-walkthrough` (see below).
+5. **Try a demo** (~5-7m hands-on): demos live in their own repos. The canonical example is the **ARESense factory-manager game** at [`github.com/denson/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense) — clone separately and invoke `factory-demo-walkthrough` from there. Other demos can exist for other domains.
 
 **Access model:** the agent (you) drives Ariadne via shell commands — `ariadne` CLI for vector search / listing / ingest, and `curl` against the REST API (e.g., `https://ariadne-core-production.up.railway.app/api/bw/projects/<slug>/...`) for `bw`-side ticket retrieval. There is NO MCP integration today; do not attempt `claude mcp add` even if the README mentions it (that path is currently broken). For auth, the bearer token lives in the OS keyring after `ariadne login` — your agent can retrieve via the CLI for most operations, or via `python -c "import keyring; print(keyring.get_password('ariadne-core', '<host>:token'))"` for curl-based REST API calls.
 
@@ -104,8 +104,8 @@ Don't dump this whole page. Tailor your response to what the user actually told 
 
 Then **wait for the user's response.** Three real responses:
 
-- *"Yes, install + show me the demo"* → invoke `ariadne-core-install` (handles steps 1-4), then `factory-demo-walkthrough` (step 5)
-- *"Just show me the demo first"* → install only what's needed for the demo (steps 1-2 + plugin), then `factory-demo-walkthrough`. Skip step 4 if the user doesn't have data to ingest yet
+- *"Yes, install + show me the demo"* → invoke `ariadne-core-install` (handles steps 1-4), then have the user clone [`github.com/denson/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense) and invoke `factory-demo-walkthrough` from that workspace (step 5)
+- *"Just show me the demo first"* → install only what's needed for the demo (steps 1-2 + plugin), then have the user clone the demo repo above and invoke `factory-demo-walkthrough` from it. Skip step 4 if the user doesn't have data to ingest yet
 - *"No / maybe later"* → respect that. Optionally offer to bookmark the URL or note it for later
 
 ---
@@ -118,7 +118,7 @@ When the plugin is installed, these are the skills your user can invoke (or that
 |---|---|
 | **[`invitation`](skills/invitation/SKILL.md)** | First contact — diagnostic conversation that produces a tailored fit recommendation. Run this BEFORE installing if the user is on the fence. |
 | **[`ariadne-core-walkthrough`](skills/ariadne-core-walkthrough/SKILL.md)** | Top-of-funnel visual overview ("what is Ariadne Core?"). 5-minute Claude Code Desktop preview-panel walkthrough with images. |
-| **[`factory-demo-walkthrough`](skills/factory-demo-walkthrough/SKILL.md)** | Hands-on 5-minute gamified demo. User takes over a factory investigation from a manager who just left. The agent (you) coaches them through the substrate. **Best try-before-buy** for evaluating fit. |
+| **External demos** (separate repos) | Hands-on demos live in their own repos so the same Ariadne can be wired for many domains. Canonical example: the ARESense factory-manager game at [`github.com/denson/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense) — user clones the repo and invokes `factory-demo-walkthrough` from there. **Best try-before-buy** for evaluating fit. |
 | **[`ariadne-core-install`](skills/ariadne-core-install/SKILL.md)** | Deploy + connect. Handles plugin install, `ariadne login` (auth), and verification. AI agents can drive this autonomously with terminal access. |
 | **[`ariadne-core-deploy`](skills/ariadne-core-deploy/SKILL.md)** | Platform-specific deployment (Railway, Fly.io, Hetzner, any Docker host) for users who want to run their own instance. |
 | **[`ariadne-core-build`](skills/ariadne-core-build/SKILL.md)** | Developer skill — for users modifying the codebase. Don't invoke unless the user is building on Ariadne, not just using it. |
@@ -129,7 +129,9 @@ When the plugin is installed, these are the skills your user can invoke (or that
 
 ## Try-before-install (recommended)
 
-The demo runs against a hosted demo corpus (no install of the user's own deployment required for the eval). To invoke after step 3 of install:
+Demos live in their own repos, separate from generic Ariadne. The canonical example is the **ARESense factory-manager game** at [`github.com/denson/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense). The user clones it as a sibling workspace, then invokes `factory-demo-walkthrough` from inside that workspace.
+
+The demo runs against a hosted demo corpus (no install of the user's own deployment required for the eval) — but they DO need a clone of beadwork-demo-aresense to access the skill. After cloning + steps 1-3 of install above, invoke from that workspace with:
 
 ```
 factory demo

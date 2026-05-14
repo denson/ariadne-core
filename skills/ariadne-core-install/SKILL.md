@@ -166,7 +166,7 @@ Once authed, they can run `ariadne search "test"` to confirm the corpus is reach
 
 ### Plugin (skill discoverability)
 
-The Ariadne Core plugin packages the agent-facing skills (walkthrough, install, deploy, document-intelligence, factory-demo, invitation, etc.). Install it in Claude Code Desktop so agents can invoke the skills:
+The Ariadne Core plugin packages the agent-facing skills (walkthrough, install, deploy, document-intelligence, invitation, etc.). Install it in Claude Code Desktop so agents can invoke the skills:
 
 ```bash
 # Add the marketplace (one-time)
@@ -271,6 +271,6 @@ ariadne stats
 Point the user (or agent) to:
 
 - **ariadne-document-intelligence** skill — best practices for using the tools: collection strategy, caller metadata, search-first patterns, provenance tracking.
-- **factory-demo-walkthrough** skill — 5-minute hands-on demo against a pre-seeded corpus, if they want to feel the substrate before committing to their own data.
+- **External demos** — demos live in their own repos so the same Ariadne can host many domains. Canonical example: the ARESense factory-manager game at [`github.com/denson/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense). User clones the repo and invokes `factory-demo-walkthrough` from there to feel the substrate before committing to their own data.
 
 For the visual version with illustrations, use the **ariadne-core-walkthrough** skill.

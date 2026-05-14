@@ -75,7 +75,7 @@ Combine the signals from Q1+Q2 (+Q4 if asked):
 | Strong handoff + flat content + shell-capable harness | **MAYBE — try the demo first.** The substrate's relational layer won't fully apply but the persistence + audit-trail layers might. Let them feel it before deciding. |
 | Single-session work + shell-capable harness | **PROBABLY NO.** The substrate's load-bearing value (persistence across sessions, accumulating context) doesn't apply. Recommend basic RAG / Claude Projects instead. |
 | Single-session + no shell-capable harness | **NO.** Not the right fit. |
-| Borderline / unclear | **DEMO FIRST.** Run the `factory-demo-walkthrough` skill — let the user feel it for 5 minutes, then they'll know. |
+| Borderline / unclear | **DEMO FIRST.** Have the user clone [`github.com/denson/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense) and invoke the `factory-demo-walkthrough` skill from there — let them feel it for 5 minutes, then they'll know. |
 
 ## Deliver the recommendation
 
@@ -104,7 +104,7 @@ Based on what you described:
 Three-step handoff:
 
 1. **Install:** invoke `ariadne-core-install` (handles plugin install + `ariadne login` auth + verification).
-2. **Demo:** invoke `factory-demo-walkthrough` (the gamified 5-min hands-on).
+2. **Demo:** have the user clone [`github.com/denson/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense) (the canonical demo lives in its own repo so the same Ariadne can host many domain demos), then invoke `factory-demo-walkthrough` from that workspace (the gamified 5-min hands-on).
 3. **Real use:** after the demo, the user has a working CLI + auth — invoke `ariadne-document-intelligence` if they want to start ingesting their own work, or run `ariadne --help` to see what's available.
 
 You can drive all three with the user's permission, gating at each step (don't auto-install without explicit go).
@@ -123,8 +123,8 @@ Skip the install gate; do the minimum to run the demo:
 
 1. Install `pip install ariadne-core-client` (just the CLI, for auth)
 2. Run `ariadne login --host https://ariadne-core-production.up.railway.app` (auth)
-3. Install the plugin to make `factory-demo-walkthrough` discoverable
-4. Invoke `factory-demo-walkthrough`
+3. Have the user clone [`github.com/denso/beadwork-demo-aresense`](https://github.com/denson/beadwork-demo-aresense) (the demo lives in its own repo)
+4. Invoke `factory-demo-walkthrough` from inside that workspace
 
 After the demo, ask: *"Now that you've felt it — does this fit your work?"* Their answer is more reliable than the diagnostic alone.
 
