@@ -1116,8 +1116,11 @@ async def search_documents(
     # per-result in this loop.
     if is_in_memory:
         for r in results:
-            r.document_metadata = (
-                _svc._dedup_store._doc_metadata.get(r.document_id) or {}
+            # Left raw (``None`` when the doc has no metadata entry); the
+            # response-dict construction below is the single canonical
+            # ``or {}`` coalesce point (ariadne--buc).
+            r.document_metadata = _svc._dedup_store._doc_metadata.get(
+                r.document_id
             )
 
     response_results = []
