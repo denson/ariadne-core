@@ -766,7 +766,8 @@ Semantic search over all stored document chunks. Returns ranked results with sou
 |-------|------|---------|-------------|
 | `query` | string | (required) | Natural language search query |
 | `top_k` | int | `5` | Number of results (max 20) |
-| `collection` | string | `null` | Scope to a specific collection |
+| `collection` | string | `null` | Scope to a single collection. Mutually exclusive with `collections`. |
+| `collections` | list[str] | `null` | Scope to multiple collections (list-membership). Each element must match the slug allow-list `^[a-z0-9_-]{1,64}$`. Mutually exclusive with `collection`; empty list rejected (omit the field to search every collection). ariadne--wgi. |
 | `filters` | dict | `null` | Additional filters (see below) |
 | `include_deleted` | bool | `false` | Include soft-deleted documents in results |
 | `agent_id` | string | `null` | Caller identity |
@@ -781,6 +782,7 @@ Semantic search over all stored document chunks. Returns ranked results with sou
 | Filter key | Type | Behavior |
 |------------|------|----------|
 | `collection` | string | Match chunks in this collection. Same as the top-level `collection` parameter — either works. If both are provided, the filter value takes precedence. |
+| `collection_in` | list[str] | Match chunks whose collection is in this list (list-membership). Typically set indirectly via the top-level `collections` parameter (which mirrors into `filters.collection_in`); a caller may also set it directly in the `filters` dict for parity with the other filter keys. AND-composed with the other filter keys. Pg backend uses `WHERE col.name = ANY(...)`; in-memory backend uses Python `in`. ariadne--wgi. |
 | `document_id` | string | Match chunks from a specific document |
 | `source_file` | string | Substring match (case-insensitive) against filename |
 | `file_type` | string | Exact match against extension. Both `.pdf` and `pdf` accepted |
@@ -792,7 +794,9 @@ Unknown filter keys are silently ignored.
 
 See § Search › Filters for composition semantics and indexing details.
 
-**Response:** JSON with `query`, `top_k`, `collection`, `results_count`, `results` array. Each result: `chunk_id`, `document_id`, `collection`, `text`, `section`, `page`, `token_count`, `relevance_score`, `embedding_model`, `metadata` object, `interactions` array. The `metadata` object is the owning document's full `documents.metadata` (the structured metadata folded in at ingest via `agent_metadata` — e.g. `ticket_id`, `bw_status`, `source_type` for bw-ingested documents); it is `{}` for documents ingested without structured metadata.
+**Multi-collection scope (ariadne--wgi):** the top-level `collection` (single string) and `collections` (list of slugs) are **mutually exclusive** at the request layer — sending both returns **422** `mutually_exclusive_collections`. An empty `collections: []` is also **422** `empty_collections_list` (ambiguous: caller meant `null` to get the no-filter case). Each element of `collections` must match the slug allow-list `^[a-z0-9_-]{1,64}$`; a bad element returns **422** `invalid_collection_slug`. When `collections` is set, the search route mirrors the list into `filters.collection_in` so both backends apply the same list-membership predicate. The response always includes both `collection` and `collections` fields (one is `null` depending on which the caller used) for shape stability across pre-wgi and wgi clients.
+
+**Response:** JSON with `query`, `top_k`, `collection`, `collections`, `results_count`, `results` array. Each result: `chunk_id`, `document_id`, `collection`, `text`, `section`, `page`, `token_count`, `relevance_score`, `embedding_model`, `metadata` object, `interactions` array. The `metadata` object is the owning document's full `documents.metadata` (the structured metadata folded in at ingest via `agent_metadata` — e.g. `ticket_id`, `bw_status`, `source_type` for bw-ingested documents); it is `{}` for documents ingested without structured metadata. Top-level `collection` and `collections` echo back whichever scope was sent — at most one is non-null per response (mutual exclusion is enforced at the request layer).
 
 **Requires embedding:** Search only works when an embedding API key is configured. Returns 503 if not.
 
