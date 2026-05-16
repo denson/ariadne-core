@@ -96,6 +96,16 @@ class SearchLogEntry:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     query: str = ""
     collection: str | None = None
+    # ariadne--wgi: multi-collection scope. ``collection`` (single) and
+    # ``collections`` (list) are mutually exclusive at the request layer
+    # so at most one is non-None per entry. The Postgres ``search_log``
+    # table has no ``collections`` column, so ``PgDedupStore.record_search``
+    # ignores this field for persistence — but the list is recoverable
+    # from the ``filters`` JSONB column (which carries
+    # ``collection_in: [...]`` for multi-collection searches). In-memory
+    # store appends the dataclass as-is, so the field is observable in
+    # tests / in-process callers regardless of column shape.
+    collections: list[str] | None = None
     filters: dict[str, Any] | None = None
     top_k: int = 5
     results_count: int = 0

@@ -167,6 +167,17 @@ class InMemoryVectorStore:
                 c for c in candidates if c.collection_id == filters["collection"]
             ]
 
+        # ariadne--wgi: multi-collection scope (list-membership). The
+        # search route sets ``collection_in`` when ``SearchRequest.collections``
+        # is non-None; mutually exclusive with ``collection`` at the
+        # request layer, so the two keys do not appear together in
+        # practice. We still handle both defensively (e.g., a future
+        # caller that bypasses the route validator) — composition is
+        # AND, matching every other top-level filter key.
+        if "collection_in" in filters:
+            allowed = filters["collection_in"]
+            candidates = [c for c in candidates if c.collection_id in allowed]
+
         if "document_id" in filters:
             candidates = [
                 c for c in candidates if c.document_id == filters["document_id"]

@@ -21,11 +21,19 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from pipeline.api.signing import mark_signature_used, verify_signature
 from pipeline.auth_oauth import Principal, require_user
 import pipeline.services as _svc
+
+# ariadne--wgi: re-use the slug allow-list pattern from bw_routes for
+# validating each element of ``SearchRequest.collections``. We import
+# the compiled regex rather than redefining it so a future change to
+# the allow-list (e.g., relaxing/tightening the character set) lands
+# in one place. Same pattern callers already use for the bw URL slug
+# and the bw POST /projects body.
+from pipeline.api.bw_routes import _SLUG_PATTERN
 
 router = APIRouter()
 
@@ -209,9 +217,62 @@ class DocumentRequest(CallerMetadata):
 class SearchRequest(CallerMetadata):
     query: str
     top_k: int = Field(default=5, ge=1, le=20)
+    # Single-collection scope (back-compat: pre-wgi callers).
     collection: Optional[str] = None
+    # Multi-collection scope (ariadne--wgi). Mutually exclusive with
+    # ``collection``; empty list rejected (set to ``None`` to "no filter").
+    # Each element must match the slug allow-list (``_SLUG_PATTERN``).
+    collections: Optional[list[str]] = None
     filters: Optional[dict] = None
     include_deleted: bool = False
+
+    @model_validator(mode="after")
+    def _validate_collection_scope(self) -> "SearchRequest":
+        """Reject mutually-exclusive / malformed collection scopes.
+
+        Three failure shapes, all surfaced as 422 with a structured
+        detail dict the caller can dispatch on:
+
+          • Both ``collection`` and ``collections`` set →
+            ``mutually_exclusive_collections``. Each parameter alone
+            is well-defined; together the intent is ambiguous.
+          • ``collections == []`` → ``empty_collections_list``. An
+            empty list is semantically "no collection filter", which
+            is exactly what ``None`` already means; accepting it would
+            silently mask a caller bug (e.g., a list-comprehension
+            that produced no slugs).
+          • Any element of ``collections`` failing the slug allow-list
+            → ``invalid_collection_slug``. Same allow-list every other
+            slug-bearing surface uses (bw routes, ``POST /bw/projects``).
+
+        Pydantic v2 ``model_validator(mode="after")`` runs after
+        per-field validation, so by the time we get here the types are
+        already coerced — we only check semantic invariants between
+        fields and across list elements.
+
+        Raises ``ValueError`` (Pydantic surfaces as a 422 with our
+        structured detail in the standard validation-error envelope).
+        """
+        if self.collection is not None and self.collections is not None:
+            raise ValueError(
+                "mutually_exclusive_collections: set either `collection` "
+                "(single) or `collections` (list), not both."
+            )
+        if self.collections is not None:
+            if len(self.collections) == 0:
+                raise ValueError(
+                    "empty_collections_list: `collections` cannot be the "
+                    "empty list. Omit the field (or set it to null) to "
+                    "search every collection."
+                )
+            for slug in self.collections:
+                if not isinstance(slug, str) or not _SLUG_PATTERN.match(slug):
+                    raise ValueError(
+                        f"invalid_collection_slug: every element of "
+                        f"`collections` must match ^[a-z0-9_-]{{1,64}}$; "
+                        f"got {slug!r}."
+                    )
+        return self
 
 
 class UpdateDocumentRequest(CallerMetadata):
@@ -1091,7 +1152,17 @@ async def search_documents(
         )
 
     search_filters: dict[str, Any] = {}
-    if req.collection:
+    # ariadne--wgi: ``collections`` (multi) and ``collection`` (single) are
+    # mutually exclusive at the request layer (enforced by the model
+    # validator), so the branch order is unambiguous here. ``collections``
+    # flows through as ``collection_in`` — a new filter key handled by
+    # both backends' ``_apply_filters`` / WHERE-builder. ``collection``
+    # keeps the shipped single-string key so pre-wgi callers and pre-wgi
+    # filter dicts (including agent-supplied filters that set
+    # ``filters: {"collection": ...}``) keep their behavior intact.
+    if req.collections:
+        search_filters["collection_in"] = req.collections
+    elif req.collection:
         search_filters["collection"] = req.collection
     if req.filters:
         search_filters.update(req.filters)
@@ -1162,6 +1233,14 @@ async def search_documents(
         SearchLogEntry(
             query=req.query,
             collection=req.collection,
+            # ariadne--wgi: record the multi-collection list alongside the
+            # single-collection field. Persistence is dataclass-only for
+            # now (in-memory store appends as-is; PgDedupStore ignores
+            # the new field because the search_log table has no
+            # ``collections`` column — multi-collection callers can still
+            # reconstruct the scope from the ``filters`` JSONB column,
+            # which carries ``collection_in: [...]``).
+            collections=req.collections,
             filters=search_filters if search_filters else None,
             top_k=req.top_k,
             results_count=len(response_results),
@@ -1178,7 +1257,13 @@ async def search_documents(
     return {
         "query": req.query,
         "top_k": req.top_k,
+        # ariadne--wgi: surface whichever scope was set. Both fields are
+        # always present in the response for shape stability (pre-wgi
+        # clients that only read ``collection`` keep working; multi-
+        # collection callers read ``collections``). Mutual exclusion at
+        # the request layer means at most one is non-null at a time.
         "collection": req.collection,
+        "collections": req.collections,
         "results_count": len(response_results),
         "results": response_results,
     }

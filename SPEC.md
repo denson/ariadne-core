@@ -766,7 +766,8 @@ Semantic search over all stored document chunks. Returns ranked results with sou
 |-------|------|---------|-------------|
 | `query` | string | (required) | Natural language search query |
 | `top_k` | int | `5` | Number of results (max 20) |
-| `collection` | string | `null` | Scope to a specific collection |
+| `collection` | string | `null` | Scope to a single collection. Mutually exclusive with `collections`. |
+| `collections` | list[str] | `null` | Scope to multiple collections (list-membership). Each element must match the slug allow-list `^[a-z0-9_-]{1,64}$`. Mutually exclusive with `collection`; empty list rejected (omit the field to search every collection). ariadne--wgi. |
 | `filters` | dict | `null` | Additional filters (see below) |
 | `include_deleted` | bool | `false` | Include soft-deleted documents in results |
 | `agent_id` | string | `null` | Caller identity |
@@ -780,7 +781,8 @@ Semantic search over all stored document chunks. Returns ranked results with sou
 
 | Filter key | Type | Behavior |
 |------------|------|----------|
-| `collection` | string | Match chunks in this collection. Same as the top-level `collection` parameter — either works. If both are provided, the filter value takes precedence. |
+| `collection` | string | Match chunks in this collection. Same as the top-level `collection` parameter — either works. If both are provided, the filter value takes precedence. AND-composes with `collection_in` when both are present in the filters dict — the chunk's collection must satisfy both predicates (so `collection: "z"` plus `collection_in: ["x", "y"]` returns rows only if `z ∈ ["x", "y"]`). The recommended path is the mutually-exclusive top-level `collection` / `collections` fields, not direct filter-dict use. |
+| `collection_in` | list[str] | Match chunks whose collection is in this list (list-membership). Typically set indirectly via the top-level `collections` parameter (which mirrors into `filters.collection_in`); a caller may also set it directly in the `filters` dict for parity with the other filter keys. AND-composed with the other filter keys including `collection` (see the `collection` row above). Pg backend uses `WHERE col.name = ANY(...)`; in-memory backend uses Python `in`. ariadne--wgi. |
 | `document_id` | string | Match chunks from a specific document |
 | `source_file` | string | Substring match (case-insensitive) against filename |
 | `file_type` | string | Exact match against extension. Both `.pdf` and `pdf` accepted |
@@ -792,7 +794,9 @@ Unknown filter keys are silently ignored.
 
 See § Search › Filters for composition semantics and indexing details.
 
-**Response:** JSON with `query`, `top_k`, `collection`, `results_count`, `results` array. Each result: `chunk_id`, `document_id`, `collection`, `text`, `section`, `page`, `token_count`, `relevance_score`, `embedding_model`, `metadata` object, `interactions` array. The `metadata` object is the owning document's full `documents.metadata` (the structured metadata folded in at ingest via `agent_metadata` — e.g. `ticket_id`, `bw_status`, `source_type` for bw-ingested documents); it is `{}` for documents ingested without structured metadata.
+**Multi-collection scope (ariadne--wgi):** the top-level `collection` (single string) and `collections` (list of slugs) are **mutually exclusive** at the request layer — sending both returns **422** `mutually_exclusive_collections`. An empty `collections: []` is also **422** `empty_collections_list` (ambiguous: caller meant `null` to get the no-filter case). Each element of `collections` must match the slug allow-list `^[a-z0-9_-]{1,64}$`; a bad element returns **422** `invalid_collection_slug`. When `collections` is set, the search route mirrors the list into `filters.collection_in` so both backends apply the same list-membership predicate. The response always includes both `collection` and `collections` fields (one is `null` depending on which the caller used) for shape stability across pre-wgi and wgi clients.
+
+**Response:** JSON with `query`, `top_k`, `collection`, `collections`, `results_count`, `results` array. Each result: `chunk_id`, `document_id`, `collection`, `text`, `section`, `page`, `token_count`, `relevance_score`, `embedding_model`, `metadata` object, `interactions` array. The `metadata` object is the owning document's full `documents.metadata` (the structured metadata folded in at ingest via `agent_metadata` — e.g. `ticket_id`, `bw_status`, `source_type` for bw-ingested documents); it is `{}` for documents ingested without structured metadata. Top-level `collection` and `collections` echo back whichever scope was sent — at most one is non-null per response (mutual exclusion is enforced at the request layer).
 
 **Requires embedding:** Search only works when an embedding API key is configured. Returns 503 if not.
 
@@ -949,6 +953,12 @@ System statistics.
 | `DELETE` | `/api/bw/projects/{slug}/tickets/{ticket_id}/deps/{target}` | `bw dep remove <id> blocks <target>` |
 | `GET` | `/api/bw/projects/{slug}/tickets/{ticket_id}/history` | `bw history` |
 
+**Endpoint summary — collection-level (1, ariadne--9e7):**
+
+| Method | Endpoint | bw subcommand |
+|--------|----------|---------------|
+| `POST` | `/api/bw/projects` | `mkdir + git init + bw init --prefix` (mounted on its own router because the path has no `{slug}` — body carries the slug). Returns **201**. |
+
 **Endpoint summary — repo-level (7):**
 
 | Method | Endpoint | bw subcommand |
@@ -989,15 +999,42 @@ System statistics.
 
 **Backup hook (Phase 5, ariadne--8fd.9):** every successful mutating call invokes `_backup_push(slug)`. The hook resolves `BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}` (the slug uppercased with dashes mapped to underscores — env-var names cannot contain dashes); if the env var is **unset**, the hook is a silent no-op (slug has no configured backup, which is a legitimate operator choice for low-value repos). If set, the hook runs `git -C {repo_path} push {remote} beadwork:beadwork --force-with-lease` with a separate `BW_BACKUP_TIMEOUT_SECONDS` (default 60s, longer than the per-bw-call timeout because the push does network I/O). The hook is NOT invoked when the bw write itself fails (exit != 0); pushing a failed write would push nothing useful and could mask a real error. **Infallibility contract:** the hook MUST NOT raise. Any failure (non-zero exit, timeout, unexpected exception) logs a WARNING, increments the per-slug `_backup_skip_count`, and returns normally so the request still completes 2xx. The `_backup_skip_count` is cumulative-lifetime (Phase 5 sub-task: replace with a time-windowed Prometheus gauge). Token-bearing remote URLs (`https://x-access-token:<TOKEN>@host/...`) are masked in log lines (the pre-`@` portion becomes `***`). `--force-with-lease` is used rather than `--force` because bw is single-writer per repo in v1 (per-slug lock + single-instance deploy), so the local ref is always ahead-of-or-equal to the remote — but `--force-with-lease` refuses the push if the remote moved unexpectedly, catching the case where two operators accidentally point at the same backup remote (or where a future multi-instance deploy raced two writers).
 
-**Project initialization guard:** every bw route resolves the repo path via `_resolve_repo_path(slug)`, which verifies that `{BW_REPOS_ROOT}/{slug}/.git` exists. If missing, the route returns **404** `bw_project_uninitialized` with an operator-actionable message pointing at `bw init`. The check is intentionally NOT an auto-init (provisioning a beadwork repo is an explicit operator action, not a side effect of the first 404). The check can be disabled at module level (`BW_REQUIRE_INITIALIZED_REPO = False`) for route-level tests that mock `subprocess.run` and don't materialize a real `.git` tree.
+**Project initialization guard:** every bw route resolves the repo path via `_resolve_repo_path(slug)`, which verifies that `{BW_REPOS_ROOT}/{slug}/.git` exists. If missing, the route returns **404** `bw_project_uninitialized` with an operator-actionable message naming both the API-driven path (`POST /api/bw/projects`, ariadne--9e7) and the host-shell `bw init` sequence. The check is intentionally NOT an auto-init (provisioning a beadwork repo is an explicit operator action, not a side effect of the first 404). The check can be disabled at module level (`BW_REQUIRE_INITIALIZED_REPO = False`) for route-level tests that mock `subprocess.run` and don't materialize a real `.git` tree.
 
 **In-place re-embed — `POST /api/bw/projects/{slug}/reembed` (ariadne--uuo.5):** the GOOD migration path. Walks the on-disk bw repo for `slug` and re-ingests every ticket's body + comments **in place** — same `documents.id`, new clean embed-content under the current ingest logic — without recreating any bw ticket. This is distinct from `scripts/seed_bw_corpus.py` (the BAD path, which recreates tickets via `POST /tickets`). It is the reusable operational capability for every future ingest-logic change. Request body (both fields optional): `{"ticket_ids": [...], "dry_run": false}` — `ticket_ids` restricts the walk to a subset (unknown IDs are reported in `errors`, not silently dropped); `dry_run=true` enumerates + counts + runs the orphaned-ticket detection and writes nothing. Mechanics: per ticket, resolve the existing `documents.id` for each body/comment slot via the `(source_type, comment_n)` keys in `documents.metadata`; re-ingest each via the snapshot-driven ingest core with `force=True` (deletes the old chunks before inserting the new ones) and `existing_document_id=<resolved id>` (routes the documents-row write through `update_document_content`, an UPDATE-by-id). A slot with no resolved id is INSERTed fresh (`existing_document_id=None`), never skipped. The per-slug write lock (`_lock_for`) is acquired/released at the **per-ticket boundary** — held atomically across one ticket's body + entire comments loop, released between tickets — so a live bw write cannot interleave within a single ticket's re-embed but can proceed between tickets. **Reconciliation:** a `documents` row whose `ticket_id` is absent from the on-disk bw repo is reported in the response's `orphaned_tickets` and emits a `reembed-orphan-ticket` WARNING log line — it is **never auto-deleted** (disposition is an operator call). Summary response: `{reembedded, fresh_inserted, orphaned_tickets, errors, dry_run, tickets_enumerated}` (plus `docs_would_reembed` on a dry run). Returns **404** `bw_repo_enumeration_failed` if the on-disk repo / `beadwork` branch is missing, **500** for an unexpected git failure.
+
+**Project bootstrap — `POST /api/bw/projects` (ariadne--9e7):** initializes a new bw project on disk without an SSH shell on the host. Closes the gap left by Phase 5 (8fd.9), whose operator-setup checklist hard-coded a manual `mkdir + git init + bw init` sequence. The handler runs the same three steps under the per-slug write lock; rollback (`shutil.rmtree`) restores the pre-call state on any failure in step 2 or 3 so the next operator attempt starts clean.
+
+Request body:
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `slug` | string | yes | 1..64 chars; must match `^[a-z0-9_-]{1,64}$` (same allow-list as the slug-scoped routes). |
+| `options` | dict | no | Reserved-for-future per-project knobs. Accepted for shape stability; ignored in v1. Backup-remote configuration stays env-var-driven via `BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}`. |
+
+Response:
+
+| Status | `detail` shape |
+|--------|----------------|
+| **201** | `{"slug": <slug>, "status": "created", "repo_path": <absolute path>}` |
+| **409** | `{"error": "slug_already_exists", "slug": <slug>, "repo_path": <str>, "message": <operator-action str>}` — the slug directory already exists on disk. Refusing to re-initialize is intentional (idempotent re-init would silently destroy the orphan beadwork branch). |
+| **422** | `{"error": "invalid_slug", "message": <str>}` — slug failed the allow-list. |
+| **500** | `{"error": "init_failed", "step": "git_init" \| "bw_init" \| "makedirs", "slug": <slug>, "exit_code": <int (optional)>, "stderr": <str>}` — any subprocess in the chain returned non-zero or raised an OS error. The partial slug dir is rolled back before returning. |
+| **500** | `{"error": "bw_binary_missing", "message": <str>}` — same shape as every other bw route. |
+| **401** | (FastAPI default) — same `require_user` dependency as the rest of the bw surface. |
+
+Init chain (all under the per-slug lock):
+
+1. `os.makedirs({BW_REPOS_ROOT}/{slug}, exist_ok=False)` — `exist_ok=False` is the 409 trigger.
+2. `git init {BW_REPOS_ROOT}/{slug}` via subprocess. Rolls back on failure.
+3. `bw -C {BW_REPOS_ROOT}/{slug} init --prefix {slug}` via subprocess. Rolls back on failure.
+
+This endpoint replaces step 2 of the Phase 5 operator-setup checklist below. Operators may still run the three-command sequence on the host directly (e.g., as a one-shot exec, init container, or Railway "Run command") for non-interactive provisioning; both paths produce the same on-disk layout.
 
 **Deferred surface — explicitly NOT in v1:**
 
 | bw subcommand | Reason for deferral |
 |---------------|---------------------|
-| `bw init` | Repo bootstrap. v1 assumes `BW_REPOS_ROOT` is pre-populated; provisioning lives in Phase 5. |
 | `bw upgrade` | Admin / manual ops; not an agent-facing call. |
 | `bw config` | Admin surface. Defer until an ACL story exists; until then config changes happen on the host directly. |
 | `bw registry` | Host-local registry; per-process state, not per-repo. Not relevant to the slug-routed API. |
@@ -1041,7 +1078,7 @@ Every bw-related environment variable, in one place. Phase 5 (ariadne--8fd.9) is
 | Env var | Default | Required | Semantics |
 |---------|---------|----------|-----------|
 | `BW_BINARY` | `shutil.which("bw")` at app import | No | Path to the `bw` binary. Resolved once at module import. If `None`, every endpoint returns **500** `bw_binary_missing`. The Dockerfile installs bw at `/usr/local/bin/bw`. |
-| `BW_REPOS_ROOT` | `/data/bw-repos` | Yes (production) | Root directory for per-slug bw repos. Layout: `{BW_REPOS_ROOT}/{slug}/.git`. App startup `makedirs(..., exist_ok=True)` the root; per-slug subdirs are operator-provisioned via `bw init`. |
+| `BW_REPOS_ROOT` | `/data/bw-repos` | Yes (production) | Root directory for per-slug bw repos. Layout: `{BW_REPOS_ROOT}/{slug}/.git`. App startup `makedirs(..., exist_ok=True)` the root; per-slug subdirs are operator-provisioned via `POST /api/bw/projects` (ariadne--9e7) or the host-shell `bw init` sequence (see Project bootstrap). |
 | `BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}` | unset | No | Per-project git remote URL for `_backup_push`. Slug `my-project` maps to `BW_BACKUP_REMOTE_MY_PROJECT` (uppercased, dashes → underscores). If unset for a slug, that slug's writes do NOT push to a backup remote (silent no-op). Set to a private git URL (HTTPS-with-token or SSH) to enable. |
 | `BW_SUBPROCESS_TIMEOUT_SECONDS` | `30.0` | No | Per-bw-call subprocess timeout. Set at module load. |
 | `BW_BACKUP_TIMEOUT_SECONDS` | `60.0` | No | Per-backup-push subprocess timeout. Separate from `BW_SUBPROCESS_TIMEOUT_SECONDS` because git push does network I/O. |
@@ -1055,13 +1092,15 @@ Every bw-related environment variable, in one place. Phase 5 (ariadne--8fd.9) is
 **Operator setup checklist (per Ariadne deployment):**
 
 1. **Provision a persistent volume** mounted at `/data/bw-repos`. On Railway: dashboard → Service → Settings → Volumes → "Add volume", mount path `/data/bw-repos` (Railway's docs explicitly ban the Dockerfile `VOLUME` keyword, so the layer hint is intentionally omitted). On a self-hosted Docker host: bind-mount or named volume at runtime (`-v <host-path>:/data/bw-repos`). Override via `BW_REPOS_ROOT` if the deployment target requires a different writable path.
-2. **Initialize the per-project bw repo.** `bw 0.12.3 init` runs in CWD and requires the CWD to already be a git repo (it does NOT accept a path argument). For each slug that needs an HTTP-driven bw repo, the operator runs (via a one-shot exec, init container, or Railway "Run command"):
-   ```
-   mkdir -p {BW_REPOS_ROOT}/{slug}
-   git init {BW_REPOS_ROOT}/{slug}
-   cd {BW_REPOS_ROOT}/{slug} && bw init --prefix {slug}
-   ```
-   This creates the slug subdir, initializes a git repo, and creates the orphan beadwork branch with the slug as the ticket-ID prefix. No auto-init — the explicit step prevents a typo'd slug from materializing an empty repo on first 404.
+2. **Initialize the per-project bw repo.** Two equivalent paths:
+   - **API (preferred, ariadne--9e7):** `POST /api/bw/projects` with body `{"slug": "<slug>"}` and a valid Bearer JWT. The handler runs the three steps below under the per-slug lock; rolls back on failure; returns **409** if the slug directory already exists. See the "Project bootstrap" section above for the full request/response contract.
+   - **Manual (host shell):** for non-interactive provisioning (a one-shot exec, init container, or Railway "Run command"):
+     ```
+     mkdir -p {BW_REPOS_ROOT}/{slug}
+     git init {BW_REPOS_ROOT}/{slug}
+     cd {BW_REPOS_ROOT}/{slug} && bw init --prefix {slug}
+     ```
+   Both paths create the slug subdir, initialize a git repo, and create the orphan beadwork branch with the slug as the ticket-ID prefix. No auto-init — the explicit step (whichever path) prevents a typo'd slug from materializing an empty repo on first 404.
 3. **Configure per-project backup** (optional). For each project that needs a backup remote, set `BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}` to a private git URL. The URL may carry an access token (`https://x-access-token:<TOKEN>@host/...`); the bw HTTP surface masks the credential portion in log lines. With no env var set, the slug's writes complete locally and skip the backup (no failures, no counter bumps). **First-push note:** the backup remote should be empty / freshly created. If it already carries unrelated content (e.g., the operator pointed at the wrong remote), `--force-with-lease` correctly rejects with `stale info` rather than clobbering — recoverable by either repointing the env var or running a one-time manual seed (`git fetch && git push --force` to align the remote intentionally).
 4. **Verify** via `GET /api/bw/projects/{slug}/health` (any initialized slug) — returns the ingest-retry depth and is also a smoke test that `BW_REPOS_ROOT` and the slug subdir are wired correctly.
 

@@ -184,8 +184,11 @@ def _resolve_repo_path(slug: str) -> str:
                 "message": (
                     f"Project {slug!r} is not initialized on this "
                     f"Ariadne instance. Operator action: "
-                    f"`mkdir -p {repo_path} && git init {repo_path}"
-                    f" && cd {repo_path} && bw init --prefix {slug}`."
+                    f"`POST /api/bw/projects {{\"slug\": {slug!r}}}` "
+                    f"(API-driven init, ariadne--9e7) OR `mkdir -p "
+                    f"{repo_path} && git init {repo_path} && cd "
+                    f"{repo_path} && bw init --prefix {slug}` "
+                    f"(host-shell init)."
                 ),
             },
         )
@@ -662,6 +665,25 @@ class DepAdd(BaseModel):
     _strip_nul = field_validator("blocks")(_reject_null_byte)
 
 
+class ProjectCreate(BaseModel):
+    """Body for ``POST /bw/projects`` (ariadne--9e7).
+
+    Replaces the manual three-step operator sequence
+    (``mkdir -p ... && git init ... && bw init --prefix ...``) with a
+    single authenticated API call. The slug is validated against the
+    same allow-list every other bw route uses (``_SLUG_PATTERN``).
+
+    ``options`` is reserved for forward-compat: future per-project
+    knobs (e.g., inline backup-remote configuration) will hang off
+    here. v1 accepts the field for shape stability but does not
+    consume it — per-slug backup remotes stay env-var-driven via the
+    shipped ``BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}`` convention.
+    """
+
+    slug: str = Field(..., min_length=1, max_length=64)
+    options: Optional[dict[str, Any]] = None
+
+
 class ReembedRequest(BaseModel):
     """Body for ``POST /reembed`` (ariadne--uuo.5). Both fields optional.
 
@@ -687,14 +709,24 @@ class ReembedRequest(BaseModel):
         return v
 
 
-# ── Router ─────────────────────────────────────────────────────────────────
+# ── Routers ────────────────────────────────────────────────────────────────
 #
-# Prefix is /bw/projects/{slug}; the app mounts the existing /api router
-# at prefix="/api" (see app.py), so we follow the same convention.
-# Mounting wires the full path /api/bw/projects/{slug}/... — matches
-# the Phase 2 plan exactly.
+# Two routers share this module:
+#
+#   • ``router`` — prefix ``/bw/projects/{slug}``. The Phase 2 ticket-shaped
+#     and repo-level surface; ``{slug}`` is the path-prefix-per-project
+#     convention every endpoint hangs off.
+#   • ``projects_router`` — prefix ``/bw/projects`` (NO slug). The
+#     collection-level surface introduced by ariadne--9e7: ``POST`` to
+#     create a new on-disk bw project. Because the path has no ``{slug}``,
+#     it cannot share the ``router`` prefix (a route with the slug in
+#     the prefix would force the URL to contain a slug segment).
+#
+# The app mounts both routers under ``/api`` (see app.py), giving the
+# full paths ``/api/bw/projects/{slug}/...`` and ``/api/bw/projects``.
 
 router = APIRouter(prefix="/bw/projects/{slug}", tags=["bw"])
+projects_router = APIRouter(prefix="/bw/projects", tags=["bw"])
 
 
 # ── Ticket-shaped endpoints ────────────────────────────────────────────────
@@ -1486,14 +1518,200 @@ async def reembed_project(
     )
 
 
+# ── Project bootstrap (ariadne--9e7) ───────────────────────────────────────
+#
+# ``POST /api/bw/projects`` lets an authenticated caller initialize a brand-
+# new bw project without holding an SSH shell on the host. Closes the gap
+# left by Phase 5 (8fd.9), whose "Operator setup checklist" hard-coded a
+# three-step manual sequence:
+#
+#   mkdir -p {BW_REPOS_ROOT}/{slug}
+#   git init {BW_REPOS_ROOT}/{slug}
+#   bw -C {BW_REPOS_ROOT}/{slug} init --prefix {slug}
+#
+# The handler runs the same three steps under the per-slug write lock,
+# rolls back on partial failure, and returns 409 if the slug already
+# exists on disk (idempotent re-init would silently destroy the orphan
+# beadwork branch — operator surface this rather than swallow it).
+
+
+@projects_router.post("", status_code=201)
+async def create_project(
+    req: ProjectCreate = Body(...),
+    principal: Principal = Depends(require_user),
+):
+    """Initialize a new bw project on disk.
+
+    Sequence (all under the per-slug lock):
+
+      1. ``os.makedirs(<repo_path>, exist_ok=False)`` — if the slug dir
+         already exists, return **409** ``slug_already_exists`` without
+         touching it.
+      2. ``git init <repo_path>`` via subprocess. On failure, roll back
+         the directory and return **500** ``init_failed`` with step set
+         to ``git_init`` and bw's stderr (sanitized) in the body.
+      3. ``bw -C <repo_path> init --prefix <slug>`` via subprocess. Same
+         rollback + 500 semantics on failure, with step set to
+         ``bw_init``.
+
+    Rollback uses ``shutil.rmtree(..., ignore_errors=True)`` so the next
+    operator attempt starts clean. The slug-dir creation, the git init,
+    and the bw init are NOT atomic at the filesystem level — but the
+    rollback restores the pre-call state for any failure on steps 2 or
+    3, and step 1's ``exist_ok=False`` makes step 1's failure
+    distinguishable (409, not 500). The whole sequence is held under
+    the per-slug lock so a concurrent create against the same slug
+    serializes — the second attempt will see step 1's ``exist_ok=False``
+    failure and return 409 even if the first attempt is still mid-flight.
+
+    Returns **201** with ``{"slug": <slug>, "status": "created",
+    "repo_path": <absolute path>}`` on success.
+
+    The ``options`` field on the request body is accepted for forward-
+    compat but ignored in v1 — per-slug knobs (e.g., inline backup-remote
+    config) stay env-var-driven via ``BW_BACKUP_REMOTE_{SLUG_UPPER_UNDERSCORE}``.
+    """
+    _validate_slug(req.slug)
+
+    if BW_BINARY is None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "bw_binary_missing",
+                "message": (
+                    "The bw binary was not found on PATH at app import. "
+                    "Check the Dockerfile install step (Phase 5)."
+                ),
+            },
+        )
+
+    repo_path = os.path.join(BW_REPOS_ROOT, req.slug)
+    lock = await _lock_for(req.slug)
+    async with lock:
+        # Step 1: create the slug directory. ``exist_ok=False`` is the
+        # 409 trigger — a pre-existing directory means the slug is
+        # already in some prior state (initialized, half-initialized,
+        # or holding unrelated content), and silently re-initing would
+        # destroy it.
+        try:
+            os.makedirs(repo_path, exist_ok=False)
+        except FileExistsError:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "slug_already_exists",
+                    "slug": req.slug,
+                    "repo_path": repo_path,
+                    "message": (
+                        f"Project {req.slug!r} already exists at "
+                        f"{repo_path}. Refusing to re-initialize "
+                        f"(would destroy any existing orphan beadwork "
+                        f"branch). Operator action: choose a different "
+                        f"slug, or remove the existing directory after "
+                        f"manual inspection."
+                    ),
+                },
+            )
+        except OSError as e:
+            # Permission / mount-unavailable / disk-full / etc.
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "init_failed",
+                    "step": "makedirs",
+                    "slug": req.slug,
+                    "stderr": str(e),
+                },
+            ) from e
+
+        # Step 2: git init. Rolls back on failure.
+        try:
+            git_proc = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "init", repo_path],
+                capture_output=True,
+                text=True,
+                timeout=BW_SUBPROCESS_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            shutil.rmtree(repo_path, ignore_errors=True)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "init_failed",
+                    "step": "git_init",
+                    "slug": req.slug,
+                    "stderr": str(e),
+                },
+            ) from e
+        if git_proc.returncode != 0:
+            shutil.rmtree(repo_path, ignore_errors=True)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "init_failed",
+                    "step": "git_init",
+                    "slug": req.slug,
+                    "exit_code": git_proc.returncode,
+                    "stderr": (git_proc.stderr or "").strip()[:2000],
+                },
+            )
+
+        # Step 3: bw init --prefix <slug>. Rolls back on failure.
+        # ``bw 0.12.3 init`` runs in CWD and does NOT accept a path
+        # argument — but ``bw -C <dir>`` sets the working directory
+        # for the subprocess. Same pattern as every other bw call.
+        try:
+            bw_proc = await asyncio.to_thread(
+                subprocess.run,
+                [BW_BINARY, "-C", repo_path, "init", "--prefix", req.slug],
+                capture_output=True,
+                text=True,
+                timeout=BW_SUBPROCESS_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            shutil.rmtree(repo_path, ignore_errors=True)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "init_failed",
+                    "step": "bw_init",
+                    "slug": req.slug,
+                    "stderr": str(e),
+                },
+            ) from e
+        if bw_proc.returncode != 0:
+            shutil.rmtree(repo_path, ignore_errors=True)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "init_failed",
+                    "step": "bw_init",
+                    "slug": req.slug,
+                    "exit_code": bw_proc.returncode,
+                    "stderr": (bw_proc.stderr or "").strip()[:2000],
+                },
+            )
+
+    logger.info(
+        "bw project initialized: slug=%s repo_path=%s actor=%s",
+        req.slug, repo_path, principal.user_id,
+    )
+    return {
+        "slug": req.slug,
+        "status": "created",
+        "repo_path": repo_path,
+    }
+
+
 # ── Deferred surface (out of v1 scope) ─────────────────────────────────────
 #
 # These subcommands exist in bw 0.12.3 but don't have a clear v1 HTTP
 # shape, so we explicitly do NOT scaffold them. Surfaced here so a
 # future ticket can pick them up.
 #
-#   • bw init        — repo bootstrap. v1 assumes BW_REPOS_ROOT is
-#                       pre-populated; provisioning lives in Phase 5.
 #   • bw upgrade     — admin / manual ops; not an agent-facing call.
 #   • bw config      — admin surface. Defer until a real ACL story
 #                       exists; until then config changes happen on

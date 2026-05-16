@@ -111,6 +111,18 @@ class PgVectorStore:
                     "col.name = %(filter_collection)s"
                 )
                 params["filter_collection"] = filters["collection"]
+            # ariadne--wgi: multi-collection scope via list-membership.
+            # ``ANY(%(...)s)`` is the psycopg-clean pattern for binding
+            # a Python list — cleaner than expanding ``IN (%s, %s, ...)``
+            # by hand. Mutually exclusive with the single ``collection``
+            # filter at the request layer, but handled here as an
+            # AND-composed clause for defensive consistency with the
+            # in-memory backend.
+            if "collection_in" in filters:
+                where_clauses.append(
+                    "col.name = ANY(%(filter_collection_in)s)"
+                )
+                params["filter_collection_in"] = list(filters["collection_in"])
             if "document_id" in filters:
                 where_clauses.append(
                     "c.document_id = %(filter_doc_id)s::uuid"
