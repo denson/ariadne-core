@@ -96,15 +96,13 @@ class SearchLogEntry:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     query: str = ""
     collection: str | None = None
-    # ariadne--wgi: multi-collection scope. ``collection`` (single) and
+    # Multi-collection scope (ariadne--wgi). ``collection`` (single) and
     # ``collections`` (list) are mutually exclusive at the request layer
-    # so at most one is non-None per entry. The Postgres ``search_log``
-    # table has no ``collections`` column, so ``PgDedupStore.record_search``
-    # ignores this field for persistence — but the list is recoverable
-    # from the ``filters`` JSONB column (which carries
-    # ``collection_in: [...]`` for multi-collection searches). In-memory
-    # store appends the dataclass as-is, so the field is observable in
-    # tests / in-process callers regardless of column shape.
+    # so at most one is non-None per entry. Persisted as a first-class
+    # TEXT[] column on ``search_log`` (ariadne--2cf — migration 004 /
+    # folded forward into 001) with a GIN index for analytics fast-path
+    # queries like ``'X' = ANY(collections)`` and
+    # ``unnest(collections) GROUP BY``.
     collections: list[str] | None = None
     filters: dict[str, Any] | None = None
     top_k: int = 5
@@ -190,6 +188,7 @@ class DedupStore(Protocol):
         tag: str | None = None,
         has_warnings: bool | None = None,
         has_source_reference: bool | None = None,
+        collections: list[str] | None = None,
     ) -> tuple[list[StoredDocument], int]: ...
 
 
@@ -539,16 +538,22 @@ class PgDedupStore:
         try:
             with self._pool.connection() as conn:
                 with conn.cursor() as cur:
+                    # ariadne--2cf: ``collections`` is a first-class TEXT[]
+                    # column (migration 004 / folded into 001). NULL on
+                    # single-collection / no-collection searches; populated
+                    # on multi-collection searches so analytics queries
+                    # like ``'X' = ANY(collections)`` are GIN-indexed and
+                    # ``unnest(collections) GROUP BY`` is straightforward.
                     cur.execute(
                         """
                         INSERT INTO search_log (
-                            id, query, collection, filters, top_k,
-                            results_count, result_document_ids,
+                            id, query, collection, collections, filters,
+                            top_k, results_count, result_document_ids,
                             agent_id, agent_type, model, initiated_by,
                             agent_notes, agent_metadata
                         ) VALUES (
                             %(id)s::uuid, %(query)s, %(collection)s,
-                            %(filters)s::jsonb, %(top_k)s,
+                            %(collections)s, %(filters)s::jsonb, %(top_k)s,
                             %(results_count)s, %(result_document_ids)s::uuid[],
                             %(agent_id)s, %(agent_type)s, %(model)s,
                             %(initiated_by)s, %(agent_notes)s,
@@ -559,6 +564,7 @@ class PgDedupStore:
                             "id": entry.id,
                             "query": entry.query,
                             "collection": entry.collection,
+                            "collections": entry.collections,
                             "filters": _json.dumps(entry.filters)
                             if entry.filters
                             else None,
@@ -622,16 +628,30 @@ class PgDedupStore:
         tag: str | None = None,
         has_warnings: bool | None = None,
         has_source_reference: bool | None = None,
+        collections: list[str] | None = None,
     ) -> tuple[list[StoredDocument], int]:
         """List documents with pagination. Returns (docs, total_count).
 
-        The three keyword-only filters are pushed into SQL so COUNT(*)
-        is always exact and pagination is correct across pages.
+        The keyword-only filters are pushed into SQL so COUNT(*) is always
+        exact and pagination is correct across pages.
+
+        ``collection`` (single) and ``collections`` (list) are mutually
+        exclusive at the HTTP request layer (ariadne--vis); the storage
+        path tolerates both being None or exactly one being set. If both
+        slip through, ``collections`` wins (the multi-scope is strictly
+        more general) — but the HTTP validator should prevent this.
         """
         where_clauses: list[str] = []
         params: dict[str, Any] = {"limit": limit, "offset": offset}
 
-        if collection:
+        if collections:
+            # ariadne--vis: multi-collection scope. ``ANY(%(collections)s)``
+            # binds the list as a TEXT[] parameter so callers cannot inject
+            # via slug content (the HTTP layer also validates each slug
+            # against ``_SLUG_PATTERN`` before reaching here).
+            where_clauses.append("col.name = ANY(%(collections)s)")
+            params["collections"] = collections
+        elif collection:
             where_clauses.append("col.name = %(collection)s")
             params["collection"] = collection
         if file_type:
@@ -1153,13 +1173,20 @@ class InMemoryDedupStore:
         tag: str | None = None,
         has_warnings: bool | None = None,
         has_source_reference: bool | None = None,
+        collections: list[str] | None = None,
     ) -> tuple[list[StoredDocument], int]:
         """In-memory analogue of PgDedupStore.list_documents with symmetric filters."""
         docs = list(self._documents.values())
 
         if not include_deleted:
             docs = [d for d in docs if d.document_id not in self._deletions]
-        if collection:
+        if collections:
+            # ariadne--vis: multi-collection scope. Mirrors the Pg
+            # ``col.name = ANY(...)`` arm; mutual exclusion with
+            # ``collection`` enforced at the HTTP layer.
+            allowed = set(collections)
+            docs = [d for d in docs if d.collection_id in allowed]
+        elif collection:
             docs = [d for d in docs if d.collection_id == collection]
         if file_type:
             ft = file_type.lstrip(".")

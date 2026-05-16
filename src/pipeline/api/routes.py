@@ -534,6 +534,14 @@ async def aggregate_documents(
         ),
     ),
     collection: Optional[str] = Query(None),
+    collections: Optional[list[str]] = Query(
+        None,
+        description=(
+            "Match docs whose collection is in this list. Repeat the "
+            "query param: collections=a&collections=b. Mutually "
+            "exclusive with `collection`."
+        ),
+    ),
     file_type: Optional[str] = Query(None),
     tag: Optional[str] = Query(None),
     has_warnings: Optional[bool] = Query(None),
@@ -547,6 +555,8 @@ async def aggregate_documents(
     _reject_unknown_query_params(
         request, _AGGREGATE_PARAMS, "/api/documents/aggregate"
     )
+
+    _validate_collections_scope(collection, collections)
 
     if group_by not in _AGGREGATE_REGISTRY:
         raise HTTPException(
@@ -564,6 +574,7 @@ async def aggregate_documents(
     # native SQL GROUP BY query in a future pass.
     all_docs, _ = _svc._dedup_store.list_documents(
         collection=collection,
+        collections=collections,
         file_type=file_type,
         limit=100000,
         offset=0,
@@ -607,6 +618,7 @@ async def aggregate_documents(
     applied_filters = {
         k: v for k, v in {
             "collection": collection,
+            "collections": collections,
             "file_type": file_type,
             "tag": tag,
             "has_warnings": has_warnings,
@@ -733,6 +745,14 @@ async def get_document(
 
 _FILTER_REGISTRY: dict[str, str] = {
     "collection": "Exact match on collection name.",
+    "collections": (
+        "Match docs whose collection is in this list (repeat the query "
+        "param: collections=a&collections=b). Mutually exclusive with "
+        "`collection` — set one or the other, not both. Empty list "
+        "(`collections=` with no value) rejected with 422. Each slug "
+        "must match ^[a-z0-9_-]{1,64}$. Mirrors the POST /api/search "
+        "`collections` parameter (ariadne--vis)."
+    ),
     "file_type": "Exact match (leading dot stripped - 'pdf' and '.pdf' both match).",
     "tag": "Docs whose tag list contains this tag (single-value, OR-semantics across repeated calls).",
     "has_warnings": "true -> only docs with >=1 warning; false -> only clean docs.",
@@ -797,10 +817,80 @@ def _reject_unknown_query_params(
         )
 
 
+def _validate_collections_scope(
+    collection: Optional[str],
+    collections: Optional[list[str]],
+) -> None:
+    """Reject mutually-exclusive / malformed collection scopes on /documents.
+
+    ariadne--vis: mirrors the SearchRequest model validator's three
+    422 failure shapes so /api/documents and /api/documents/aggregate
+    surface identical errors to a single-surface-conventional caller.
+    Kept as a free helper rather than a Pydantic model because the
+    /documents handlers use FastAPI's declarative Query params (no
+    request-body model to hang ``model_validator`` on).
+
+      • Both ``collection`` and ``collections`` set →
+        ``mutually_exclusive_collections``.
+      • ``collections == []`` → ``empty_collections_list``.
+      • Any element of ``collections`` failing the slug allow-list
+        → ``invalid_collection_slug``.
+
+    No-op when ``collections`` is None (the back-compat single-scope
+    path); raises HTTPException(422) on any violation.
+    """
+    if collection is not None and collections is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": (
+                    "mutually_exclusive_collections: set either "
+                    "`collection` (single) or `collections` (list), "
+                    "not both."
+                ),
+                "see": "SPEC.md § Querying documents",
+            },
+        )
+    if collections is not None:
+        if len(collections) == 0:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": (
+                        "empty_collections_list: `collections` cannot "
+                        "be the empty list. Omit the field to list "
+                        "across every collection."
+                    ),
+                    "see": "SPEC.md § Querying documents",
+                },
+            )
+        for slug in collections:
+            if not isinstance(slug, str) or not _SLUG_PATTERN.match(slug):
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": (
+                            f"invalid_collection_slug: every element of "
+                            f"`collections` must match ^[a-z0-9_-]"
+                            f"{{1,64}}$; got {slug!r}."
+                        ),
+                        "see": "SPEC.md § Querying documents",
+                    },
+                )
+
+
 @router.get("/documents")
 async def list_documents(
     request: Request,
     collection: Optional[str] = Query(None),
+    collections: Optional[list[str]] = Query(
+        None,
+        description=(
+            "Match docs whose collection is in this list. Repeat the "
+            "query param: collections=a&collections=b. Mutually "
+            "exclusive with `collection`."
+        ),
+    ),
     file_type: Optional[str] = Query(None),
     tag: Optional[str] = Query(
         None,
@@ -835,6 +925,8 @@ async def list_documents(
         request, _LIST_DOCUMENTS_PARAMS, "/api/documents"
     )
 
+    _validate_collections_scope(collection, collections)
+
     bad_includes = [i for i in include if i not in _VALID_INCLUDES]
     if bad_includes:
         raise HTTPException(
@@ -864,6 +956,7 @@ async def list_documents(
 
     page_docs, total = _svc._dedup_store.list_documents(
         collection=collection,
+        collections=collections,
         file_type=file_type,
         limit=limit,
         offset=offset,
@@ -1233,13 +1326,11 @@ async def search_documents(
         SearchLogEntry(
             query=req.query,
             collection=req.collection,
-            # ariadne--wgi: record the multi-collection list alongside the
-            # single-collection field. Persistence is dataclass-only for
-            # now (in-memory store appends as-is; PgDedupStore ignores
-            # the new field because the search_log table has no
-            # ``collections`` column — multi-collection callers can still
-            # reconstruct the scope from the ``filters`` JSONB column,
-            # which carries ``collection_in: [...]``).
+            # ariadne--wgi + ariadne--2cf: record the multi-collection
+            # list alongside the single-collection field. Persisted as a
+            # first-class TEXT[] column on ``search_log`` (migration 004 /
+            # folded into 001) with a GIN index for analytics fast-path
+            # queries. NULL on single-collection / no-collection rows.
             collections=req.collections,
             filters=search_filters if search_filters else None,
             top_k=req.top_k,

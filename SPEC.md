@@ -551,7 +551,8 @@ List stored documents. Returns metadata only — use `GET /api/documents/{id}` f
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `collection` | string | `null` | Filter to a specific collection |
+| `collection` | string | `null` | Filter to a specific collection. Mutually exclusive with `collections` |
+| `collections` | list[string] | `null` | Filter to docs whose collection is in this list. Repeat the query param: `collections=a&collections=b`. Mutually exclusive with `collection`. Empty list rejected (422). Each slug must match `^[a-z0-9_-]{1,64}$`. Mirrors the `POST /api/search` `collections` parameter (ariadne--vis) |
 | `file_type` | string | `null` | Filter by extension (e.g. `pdf`, `docx`) |
 | `tag` | string | `null` | Match docs whose tag list contains this tag |
 | `has_warnings` | bool | `null` | If `true`, only docs with at least one warning; if `false`, only docs with none |
@@ -569,7 +570,8 @@ List stored documents. Returns metadata only — use `GET /api/documents/{id}` f
 
 | Param | Type | Effect |
 |---|---|---|
-| `collection` | string | Exact match on collection name |
+| `collection` | string | Exact match on collection name. Mutually exclusive with `collections` |
+| `collections` | list[string] | Match docs whose collection is in this list (repeat the query param). Mutually exclusive with `collection` |
 | `file_type` | string | Exact match (leading dot stripped, so `pdf` and `.pdf` both work) |
 | `tag` | string | Match docs whose tag list contains this tag |
 | `has_warnings` | bool | If `true`, only docs with at least one warning; if `false`, only docs with none |
@@ -577,6 +579,15 @@ List stored documents. Returns metadata only — use `GET /api/documents/{id}` f
 | `include_deleted` | bool | Include soft-deleted docs (default `false`) |
 | `limit` | int | Max rows per page (shape-dependent cap — see below) |
 | `offset` | int | Pagination offset |
+
+> **Multi-collection scoping (ariadne--vis):** `collection` (single) and
+> `collections` (list) are mutually exclusive at the request layer.
+> Passing both returns `422` with `mutually_exclusive_collections`.
+> Passing `collections=` with no value (empty list) returns `422` with
+> `empty_collections_list` — omit the parameter to list across every
+> collection. Each element of `collections` must match
+> `^[a-z0-9_-]{1,64}$` or `422 invalid_collection_slug`. The same
+> mutual-exclusion semantics apply on `/api/documents/aggregate`.
 
 > **Filter backing note:** `has_warnings` queries the persisted
 > `warnings_count` column; it does not walk `processing_chain`.
@@ -651,7 +662,7 @@ while True:
 
 **Required:** `group_by` (one of `collection`, `file_type`, `tags`).
 
-**Optional filters** (same semantics as `/api/documents`, applied as a WHERE clause before grouping): `collection`, `file_type`, `tag`, `has_warnings`, `has_source_reference`, `include_deleted`.
+**Optional filters** (same semantics as `/api/documents`, applied as a WHERE clause before grouping): `collection`, `collections`, `file_type`, `tag`, `has_warnings`, `has_source_reference`, `include_deleted`. `collection` and `collections` are mutually exclusive — same 422 dispatch shapes as `/api/documents` (see the multi-collection callout above).
 
 **Response shape:**
 
@@ -1793,8 +1804,9 @@ The `search_log` table stores:
 |--------|------|-------------|
 | `id` | UUID | Primary key |
 | `query` | text | The search query |
-| `collection` | text | Collection scope (null = all collections) |
-| `filters` | JSONB | Filters applied (file_type, source_file, tags, document_id) |
+| `collection` | text | Single-collection scope (null = either multi-scope or no filter) |
+| `collections` | text[] | Multi-collection scope (ariadne--2cf). NULL on single-collection / no-collection searches. GIN-indexed for `'X' = ANY(collections)` and `unnest(collections) GROUP BY` analytics |
+| `filters` | JSONB | Filters applied (file_type, source_file, tags, document_id, etc.). Multi-collection scope is also reachable via `filters @> '{"collection_in": [...]}'::jsonb` — the `collections` column is the analytics fast-path; the JSONB filter is the general dispatch mechanism |
 | `top_k` | int | Number of results requested |
 | `results_count` | int | Number of results actually returned |
 | `result_document_ids` | UUID[] | Document IDs of the results, in rank order |
@@ -1807,6 +1819,24 @@ The `search_log` table stores:
 | `created_at` | timestamptz | When the search happened |
 
 The `agent_metadata` field is the key extensibility point. Any agent builder can store whatever structured context they need — project IDs, task descriptions, batch identifiers, client names, filing types — anything that helps them organize and trace their usage of the knowledge store later.
+
+**Analytics on multi-collection usage (ariadne--2cf):**
+
+```sql
+-- Multi-collection usage rate
+SELECT COUNT(*) AS multi_scope_searches
+FROM search_log WHERE collections IS NOT NULL;
+
+-- Co-occurrence: which collections do agents query together?
+SELECT unnest(collections) AS collection_name, COUNT(*) AS hits
+FROM search_log
+WHERE collections IS NOT NULL
+GROUP BY 1 ORDER BY hits DESC;
+
+-- Every search that touched collection X (covers both single + multi scope)
+SELECT * FROM search_log
+WHERE collection = 'X' OR 'X' = ANY(collections);
+```
 
 ## Pipeline order
 
