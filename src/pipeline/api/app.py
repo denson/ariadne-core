@@ -14,7 +14,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from pipeline.api.bw_ingest import _bw_retry_worker
-from pipeline.api.bw_routes import router as bw_router
+from pipeline.api.bw_routes import (
+    projects_router as bw_projects_router,
+    router as bw_router,
+)
 from pipeline.api.confirmation import configure_confirmation
 from pipeline.api.discovery import router as discovery_router
 from pipeline.api.routes import router
@@ -235,6 +238,12 @@ app.include_router(router, prefix="/api")
 # the full path ``/api/bw/projects/{slug}/...`` — matches the Phase 2
 # plan's locked path-prefix-per-project convention.
 app.include_router(bw_router, prefix="/api")
+# bw project bootstrap (ariadne--9e7). ``POST /api/bw/projects`` initializes
+# a new on-disk bw project (mkdir + git init + bw init) under the per-slug
+# lock, replacing the prior SSH-required operator step. The router has no
+# ``{slug}`` in its prefix (the slug arrives in the request body), so it
+# cannot share ``bw_router``'s prefix and is mounted separately.
+app.include_router(bw_projects_router, prefix="/api")
 # `/.well-known/ariadne-config` lives at the app root, not under /api.
 # Unauthenticated by construction — a client that can't auth yet must
 # be able to read how to auth.
