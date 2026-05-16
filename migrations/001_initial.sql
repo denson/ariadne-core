@@ -151,11 +151,20 @@ CREATE INDEX idx_chunks_document ON chunks (document_id);
 
 -- ============================================================================
 -- Search log: one row per /api/search call
+--
+-- ``collections`` (TEXT[]) carries the multi-collection scope from
+-- ``SearchRequest.collections`` (ariadne--wgi + ariadne--2cf). NULL on
+-- single-collection / no-collection searches; populated on multi-
+-- collection searches. GIN-indexed for ``'X' = ANY(collections)`` and
+-- ``unnest(collections) GROUP BY`` analytics. Folded forward from
+-- migration 004; the IF NOT EXISTS arms keep the legacy backfill path
+-- safe (where 004 may have run separately against an existing deploy).
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS search_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     query TEXT NOT NULL,
     collection TEXT,
+    collections TEXT[],
     filters JSONB,
     top_k INTEGER,
     results_count INTEGER,
@@ -172,6 +181,8 @@ CREATE TABLE IF NOT EXISTS search_log (
 CREATE INDEX IF NOT EXISTS idx_search_log_created_at ON search_log (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_search_log_agent_id ON search_log (agent_id);
 CREATE INDEX IF NOT EXISTS idx_search_log_initiated_by ON search_log (initiated_by);
+CREATE INDEX IF NOT EXISTS idx_search_log_collections
+    ON search_log USING GIN (collections);
 
 -- ============================================================================
 -- Jobs: batch processing tracking
