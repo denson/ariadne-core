@@ -13,11 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the bw (beadwork) binary. Version pinned to match the
-# workspace's local bw 0.12.3 — when bumping, also bump the SHA256
+# workspace's local bw 0.13.0 — when bumping, also bump the SHA256
 # below to the matching value from
 # https://github.com/jallum/beadwork/releases. ariadne--8fd.2 / Phase 2.
-ARG BW_VERSION=0.12.3
-ARG BW_SHA256=fd16d25f03506f5b09389437786c533fe71e205952dfab3bcc2255d9bcbf767d
+ARG BW_VERSION=0.13.0
+ARG BW_SHA256=97fa35b38bbefe0a1572956c85dd867eade13d0c1bbed4b5495e08d04778263c
 RUN set -eux; \
     curl -fsSL -o /tmp/bw.tar.gz \
       "https://github.com/jallum/beadwork/releases/download/v${BW_VERSION}/beadwork_${BW_VERSION}_linux_amd64.tar.gz"; \
