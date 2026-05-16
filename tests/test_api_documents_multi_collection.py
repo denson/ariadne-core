@@ -162,25 +162,13 @@ def test_list_documents_both_collection_and_collections_returns_422(docs_fixture
 
 
 def test_list_documents_collections_empty_returns_422(docs_fixture):
-    """Empty ``collections=`` (with value present but list empty under
-    FastAPI's list[str] coercion) is rejected. We force empty by passing
-    no values for the param name."""
+    """The query-string surface ``collections=`` (empty value) parses as
+    one-element list containing the empty string, which trips the slug
+    allow-list (422 invalid_collection_slug). The strictly-empty list
+    case is unreachable from the query string; the validator unit test
+    below covers it directly."""
     f = docs_fixture
-    # Sending a string with no value for the key produces an empty list
-    # in FastAPI's parsing; we trigger the validator path via a direct
-    # call with the empty list shape using ``params={'collections': []}``
-    # which FastAPI's testclient drops, so we exercise the handler
-    # programmatically by hitting the route with a constructed list.
-    # Simpler: rely on the validator being called only when the list is
-    # *parsed* — the realistic way callers hit this is to omit values
-    # repeatedly. Use repeated empty values via the test client.
     resp = f.client.get("/api/documents?collections=")
-    # FastAPI treats ``collections=`` as a single empty string, which
-    # fails the per-element slug match → 422 invalid_collection_slug.
-    # That is the user-visible error for "I meant to pass slugs and
-    # passed nothing"; the strictly-empty-list case is unreachable
-    # through the query-string surface but still asserted via the
-    # validator unit test below.
     assert resp.status_code == 422, resp.text
     assert "invalid_collection_slug" in resp.text
 
