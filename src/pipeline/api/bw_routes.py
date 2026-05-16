@@ -184,8 +184,11 @@ def _resolve_repo_path(slug: str) -> str:
                 "message": (
                     f"Project {slug!r} is not initialized on this "
                     f"Ariadne instance. Operator action: "
-                    f"`mkdir -p {repo_path} && git init {repo_path}"
-                    f" && cd {repo_path} && bw init --prefix {slug}`."
+                    f"`POST /api/bw/projects {{\"slug\": {slug!r}}}` "
+                    f"(API-driven init, ariadne--9e7) OR `mkdir -p "
+                    f"{repo_path} && git init {repo_path} && cd "
+                    f"{repo_path} && bw init --prefix {slug}` "
+                    f"(host-shell init)."
                 ),
             },
         )
