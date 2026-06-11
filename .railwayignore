@@ -1,0 +1,25 @@
+# What `railway up` uploads to the Railway builder.
+# Mirror of .dockerignore — those exclusions keep files OUT of the image at
+# COPY time, this file keeps them out of the upload tarball entirely.
+# Without this, the CLI uploads ~150MB of skill assets, docs, and walkthrough
+# images over a single TLS connection, which Windows AV/firewall middleware
+# regularly corrupts (BadRecordMac on the upload POST).
+
+skills/
+docs/
+walkthrough_html/
+benchmarks/
+tests/
+
+.claude/
+.claude-plugin/
+.git/
+.github/
+
+*.md
+LICENSE
+.env
+.env.example
+docker-compose.yml
+eval_harness.py
+skill.md
